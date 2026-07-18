@@ -53,6 +53,8 @@ enum FilterModes CPP_11(: Int);
 // ------------------------------------------------------------------------------------------------
 constexpr const Real ViewDefaultPitchRadians = DEG_TO_RADF(37.5f);
 constexpr const Real ViewDefaultLowPitchRadians = DEG_TO_RADF(37.0f);
+// TheSuperHackers @tweak nathan 18/07/2026 Pitch threshold for wide terrain draw (extreme zoom out / low angle).
+constexpr const Real ViewWidePitchRadians = DEG_TO_RADF(25.0f);
 constexpr const Real ViewDefaultYawRadians = DEG_TO_RADF(0.0f);
 constexpr const Real ViewDefaultMaxHeightAboveTerrain = 310.0f;
 
