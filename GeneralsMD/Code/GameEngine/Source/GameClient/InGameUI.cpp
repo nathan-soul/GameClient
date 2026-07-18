@@ -31,9 +31,6 @@
 
 #define DEFINE_SHADOW_NAMES
 
-#include <cstdarg>  // TheSuperHackers: va_list for overlayLog
-#include <cstdio>    // TheSuperHackers: fopen/vfprintf for overlayLog
-
 #include "Common/ActionManager.h"
 #include "Common/FramePacer.h"
 #include "Common/GameAudio.h"
@@ -141,32 +138,6 @@ static const UpgradeTemplate* safeGetProductionUpgrade(const ProductionEntry* en
 }
 #pragma warning(pop)
 
-// TheSuperHackers @feature 15/07/2026 Debug logging for overlay diagnostics
-static FILE* g_overlayLogFile = nullptr;
-static void overlayLog(const char* fmt, ...)
-{
-	__try {
-		if (!g_overlayLogFile) {
-			g_overlayLogFile = fopen("genovly_debug.log", "a");
-			
-			if (g_overlayLogFile) {
-				fprintf(g_overlayLogFile, "=== genovly overlay log started ===\n");
-				fflush(g_overlayLogFile);
-			}
-		}
-		if (g_overlayLogFile) {
-			va_list args;
-			va_start(args, fmt);
-			vfprintf(g_overlayLogFile, fmt, args);
-			va_end(args);
-			fflush(g_overlayLogFile);
-		}
-	}
-	__except(EXCEPTION_EXECUTE_HANDLER) {
-		// Logging itself failed — silently ignore, don't crash the game
-	}
-}
-
 // TheSuperHackers @feature 15/07/2026 SEH-safe wrappers for overlay drawing calls.
 // These ensure the game never crashes due to overlay rendering failures.
 #pragma warning(push)
@@ -177,7 +148,6 @@ static void safeDrawUnitQueues(InGameUI* ui, Int baseX, Int baseY, Int lineH, Re
 		ui->drawUnitQueuesImpl(baseX, baseY, lineH, scale);
 	}
 	__except(EXCEPTION_EXECUTE_HANDLER) {
-		overlayLog("SEH CRASH in drawUnitQueues — caught, game continues\n");
 	}
 }
 static void safeDrawPowerCooldowns(InGameUI* ui, Int baseX, Int baseY, Int lineH, Real scale)
@@ -186,7 +156,6 @@ static void safeDrawPowerCooldowns(InGameUI* ui, Int baseX, Int baseY, Int lineH
 		ui->drawPowerCooldownsImpl(baseX, baseY, lineH, scale);
 	}
 	__except(EXCEPTION_EXECUTE_HANDLER) {
-		overlayLog("SEH CRASH in drawPowerCooldowns — caught, game continues\n");
 	}
 }
 static void safeDrawPowerFlashes(InGameUI* ui)
@@ -195,7 +164,6 @@ static void safeDrawPowerFlashes(InGameUI* ui)
 		ui->drawPowerFlashesImpl();
 	}
 	__except(EXCEPTION_EXECUTE_HANDLER) {
-		overlayLog("SEH CRASH in drawPowerFlashes — caught, game continues\n");
 	}
 }
 static void safeDrawUnitQueueClicks(InGameUI* ui)
@@ -204,7 +172,6 @@ static void safeDrawUnitQueueClicks(InGameUI* ui)
 		ui->drawUnitQueueClicksImpl();
 	}
 	__except(EXCEPTION_EXECUTE_HANDLER) {
-		overlayLog("SEH CRASH in drawUnitQueueClicks — caught, game continues\n");
 	}
 }
 static void safeGatherOverlayExtData(InGameUI* ui)
@@ -213,7 +180,6 @@ static void safeGatherOverlayExtData(InGameUI* ui)
 		ui->gatherOverlayExtDataImpl();
 	}
 	__except(EXCEPTION_EXECUTE_HANDLER) {
-		overlayLog("SEH CRASH in gatherOverlayExtData — caught, game continues\n");
 	}
 }
 #pragma warning(pop)
@@ -6642,8 +6608,6 @@ void InGameUI::notifySpecialPowerUsed(Player* player, const SpecialPowerTemplate
 
 void InGameUI::drawObserverStats(Int & x, Int & y)
 {
-	overlayLog("OBS: drawObserverStats called\n");
-
 	// do we need to re-create our fonts?
 	if (m_observerStatsPointSize != TheGlobalData->m_observerStatsFontSize)
 	{
@@ -6664,14 +6628,11 @@ void InGameUI::drawObserverStats(Int & x, Int & y)
 	Player* localPlayer = ThePlayerList->getLocalPlayer();
 	if (!localPlayer || (TheGameLogic && TheGameLogic->getFrame() <= 1))
 	{
-		overlayLog("OBS: early return — no localPlayer or frame<=1\n");
 		return;
 	}
 
 		if (!localPlayer->isPlayerObserver() && !localPlayer->isPlayerDead())
 		{
-			overlayLog("OBS: early return — not observer and not dead (observer=%d dead=%d)\n",
-					(Int)localPlayer->isPlayerObserver(), (Int)localPlayer->isPlayerDead());
 			return;
 		}
 
@@ -6988,7 +6949,6 @@ void InGameUI::drawObserverStats(Int & x, Int & y)
 	// Cache score bar edges for queue positioning (P1 left, P2 right)
 	m_scoreBarLeft = baseX;
 	m_scoreBarRight = baseX + bgW;
-	overlayLog("LAYOUT: scoreBar left=%d right=%d width=%d\n", m_scoreBarLeft, m_scoreBarRight, bgW);
 }
 
 void InGameUI::refreshObserverNotificationResources(void)
@@ -7527,8 +7487,6 @@ void InGameUI::drawPlayerInfoList()
 			Bool isProdBuilding = name.endsWith("WarFactory") || name.endsWith("Barracks") || name.endsWith("AirField") || name.endsWith("CommandCenter");
 			if (!isProdBuilding) return;
 
-			overlayLog("COLLECT: found building %s\n", name.str());
-
 			// Get the world position of this building for future click-to-navigate.
 			// In replay mode getPosition() may return nullptr — use zero vec as fallback.
 			Coord3D buildingPos = { 0, 0, 0 };
@@ -7538,10 +7496,9 @@ void InGameUI::drawPlayerInfoList()
 			// TheSuperHackers @test step 3: try production module access
 			ProductionUpdateInterface* prod = (ProductionUpdateInterface*)obj->findUpdateModule(
 				TheNameKeyGenerator->nameToKey("ProductionUpdate"));
-			if (!prod) { overlayLog("COLLECT: %s has NO ProductionUpdate module\n", name.str()); return; }
+			if (!prod) { return; }
 			UnsignedInt prodCount = safeGetProductionCount(prod);
-			if (prodCount == 0) { overlayLog("COLLECT: %s prodCount=0\n", name.str()); return; }
-			overlayLog("COLLECT: %s prodCount=%u\n", name.str(), prodCount);
+			if (prodCount == 0) { return; }
 
 			// TheSuperHackers @test step 4: slot-finding loop
 			Int slot = -1;
@@ -7552,15 +7509,13 @@ void InGameUI::drawPlayerInfoList()
 				Player* pp = ThePlayerList->findPlayerWithNameKey(TheNameKeyGenerator->nameToKey(nsk));
 				if (pp && obj->getControllingPlayer() == pp) { slot = s; break; }
 			}
-			if (slot < 0) { overlayLog("COLLECT: %s slot not found\n", name.str()); return; }
+			if (slot < 0) { return; }
 
 			InGameUI* ui = (InGameUI*)userData;
 			InGameUI::PlayerOverlayExt& ext = ui->m_playerOverlayExt[slot];
 
 			const ProductionEntry* entry = safeFirstProduction(prod);
 			if (!entry) {
-				overlayLog("COLLECT: %s slot=%d firstProduction=nullptr (prodCount=%u) — replay mode, linked list not restored\n",
-					name.str(), slot, prodCount);
 				// Fallback: push a single placeholder entry with just the building info
 				InGameUI::QueueEntry qe = {};
 				qe.tmpl = tmpl;  // use building template so we get the building icon
@@ -7574,7 +7529,6 @@ void InGameUI::drawPlayerInfoList()
 			while (entry)
 			{
 				ProductionType pt = safeGetProductionType(entry);
-				overlayLog("COLLECT: %s entry type=%d\n", name.str(), (Int)pt);
 				if (pt == PRODUCTION_UNIT)
 				{
 					InGameUI::QueueEntry qe = {};
@@ -7584,11 +7538,7 @@ void InGameUI::drawPlayerInfoList()
 					qe.buildingName = name;
 					ext.queue.push_back(qe);
 
-					overlayLog("Queue: slot=%d building=%s unit=%s pct=%.0f%%\n",
-						slot, name.str(),
-						qe.tmpl ? qe.tmpl->getName().str() : "NULL",
-						qe.percentComplete);
-				}
+					}
 				else if (pt == PRODUCTION_UPGRADE)
 				{
 					InGameUI::QueueEntry qe = {};
@@ -7598,11 +7548,7 @@ void InGameUI::drawPlayerInfoList()
 					qe.buildingName = name;
 					ext.queue.push_back(qe);
 
-					overlayLog("Queue: slot=%d building=%s upgrade=%s pct=%.0f%%\n",
-						slot, name.str(),
-						qe.upgradeTmpl ? qe.upgradeTmpl->getUpgradeName().str() : "NULL",
-						qe.percentComplete);
-				}
+					}
 				entry = safeNextProduction(prod, entry);
 			}
 		}
@@ -7736,11 +7682,7 @@ void InGameUI::drawPlayerInfoList()
 			qe.producer = producer;
 			m_playerOverlayExt[slot].queue.push_back(qe);
 
-			overlayLog("QUEUED: slot=%d building=%s unit=%s pct=%.0f%%\n",
-				slot, buildingName.str(),
-				unitType ? unitType->getName().str() : "NULL",
-				percentComplete);
-		}
+			}
 
 		// TheSuperHackers @feature 15/07/2026 Called from ProductionUpdate::update hook.
 		// Removes the completed unit from the shadow queue.
@@ -7765,9 +7707,6 @@ void InGameUI::drawPlayerInfoList()
 			{
 				if (q[i].producer == producer && q[i].tmpl == unitType)
 				{
-					overlayLog("COMPLETED: slot=%d building=%s unit=%s removed\n",
-						slot, q[i].buildingName.str(),
-						unitType->getName().str());
 					q.erase(q.begin() + i);
 					return;
 				}
@@ -7799,9 +7738,6 @@ void InGameUI::drawPlayerInfoList()
 			{
 				if (q[i].producer == producer && q[i].tmpl == unitType)
 				{
-					overlayLog("CANCEL: slot=%d building=%s unit=%s removed\n",
-						slot, q[i].buildingName.str(),
-						unitType->getName().str());
 					q.erase(q.begin() + i);
 					return;
 				}
@@ -7812,24 +7748,13 @@ void InGameUI::drawPlayerInfoList()
 		void InGameUI::onUpgradeQueued(Player* player, const UpgradeTemplate* upgradeType, Object* producer, Real percentComplete)
 		{
 
-			// TheSuperHackers @debug 17/07/2026 H2: does the hook fire but get filtered by an early return?
-			overlayLog("UPGRADE_HOOK: onUpgradeQueued entry frame=%d replay=%d isValid1v1=%d player=%p upgrade=%s producer=%p pct=%.0f%%\n",
-				TheGameLogic ? (Int)TheGameLogic->getFrame() : -1,
-				(TheRecorder && TheRecorder->isPlaybackMode()) ? 1 : 0,
-				m_isValid1v1 ? 1 : 0,
-				(void*)player,
-				upgradeType ? upgradeType->getUpgradeName().str() : "NULL",
-				(void*)producer,
-				percentComplete);
 			if (!player || !upgradeType || !producer || !ThePlayerList || !TheNameKeyGenerator)
 			{
-				overlayLog("UPGRADE_HOOK: onUpgradeQueued early-return reason=null_ptr\n");
 				return;
 			}
 
 			if (!m_isValid1v1)
 			{
-				overlayLog("UPGRADE_HOOK: onUpgradeQueued early-return reason=invalid_1v1\n");
 				return;
 			}
 
@@ -7843,12 +7768,10 @@ void InGameUI::drawPlayerInfoList()
 			}
 			if (slot < 0 || slot >= MAX_SLOTS)
 			{
-				overlayLog("UPGRADE_HOOK: onUpgradeQueued early-return reason=slot_not_found player=%p\n", (void*)player);
 				return;
 			}
 			if (!m_playerOverlayExt[slot].isPresent)
 			{
-				overlayLog("UPGRADE_HOOK: onUpgradeQueued early-return reason=slot_not_present slot=%d\n", slot);
 				return;
 			}
 
@@ -7868,23 +7791,12 @@ void InGameUI::drawPlayerInfoList()
 			qe.producer = producer;
 			m_playerOverlayExt[slot].queue.push_back(qe);
 
-			overlayLog("QUEUED: slot=%d building=%s upgrade=%s pct=%.0f%%\n",
-				slot, buildingName.str(),
-				upgradeType ? upgradeType->getUpgradeName().str() : "NULL",
-				percentComplete);
-		}
+			}
 
 		// TheSuperHackers @feature 17/07/2026 Called from ProductionUpdate::update hook (upgrade completion).
 		void InGameUI::onUpgradeCompleted(Player* player, const UpgradeTemplate* upgradeType, Object* producer)
 		{
 
-			// TheSuperHackers @debug 17/07/2026 H3: does onUpgradeCompleted fire (possibly same frame as queued)?
-			overlayLog("UPGRADE_HOOK: onUpgradeCompleted entry frame=%d replay=%d player=%p upgrade=%s producer=%p\n",
-				TheGameLogic ? (Int)TheGameLogic->getFrame() : -1,
-				(TheRecorder && TheRecorder->isPlaybackMode()) ? 1 : 0,
-				(void*)player,
-				upgradeType ? upgradeType->getUpgradeName().str() : "NULL",
-				(void*)producer);
 			if (!player || !upgradeType || !producer || !ThePlayerList || !TheNameKeyGenerator)
 				return;
 
@@ -7904,9 +7816,6 @@ void InGameUI::drawPlayerInfoList()
 			{
 				if (q[i].upgradeTmpl == upgradeType && q[i].producer == producer)
 				{
-					overlayLog("COMPLETED: slot=%d building=%s upgrade=%s removed\n",
-						slot, q[i].buildingName.str(),
-						upgradeType->getUpgradeName().str());
 					q.erase(q.begin() + i);
 					return;
 				}
@@ -7917,13 +7826,6 @@ void InGameUI::drawPlayerInfoList()
 		void InGameUI::onUpgradeCancelled(Player* player, const UpgradeTemplate* upgradeType, Object* producer)
 		{
 
-			// TheSuperHackers @debug 17/07/2026 H3: does onUpgradeCancelled fire (possibly same frame as queued)?
-			overlayLog("UPGRADE_HOOK: onUpgradeCancelled entry frame=%d replay=%d player=%p upgrade=%s producer=%p\n",
-				TheGameLogic ? (Int)TheGameLogic->getFrame() : -1,
-				(TheRecorder && TheRecorder->isPlaybackMode()) ? 1 : 0,
-				(void*)player,
-				upgradeType ? upgradeType->getUpgradeName().str() : "NULL",
-				(void*)producer);
 			if (!player || !upgradeType || !producer || !ThePlayerList || !TheNameKeyGenerator)
 				return;
 
@@ -7943,9 +7845,6 @@ void InGameUI::drawPlayerInfoList()
 			{
 				if (q[i].upgradeTmpl == upgradeType && q[i].producer == producer)
 				{
-					overlayLog("CANCELLED: slot=%d building=%s upgrade=%s removed\n",
-						slot, q[i].buildingName.str(),
-						upgradeType->getUpgradeName().str());
 					q.erase(q.begin() + i);
 					return;
 				}
@@ -7966,10 +7865,6 @@ void InGameUI::drawPlayerInfoList()
 				{
 					if (q[i].producer == producer)
 					{
-						const char* nameStr = q[i].tmpl ? q[i].tmpl->getName().str() :
-							(q[i].upgradeTmpl ? q[i].upgradeTmpl->getUpgradeName().str() : "UNKNOWN");
-						overlayLog("DESTROYED: slot=%d building=%s entry=%s removed\n",
-							slot, q[i].buildingName.str(), nameStr);
 						q.erase(q.begin() + i);
 						// don't increment i — erase shifts elements
 					}
@@ -7985,7 +7880,6 @@ void InGameUI::drawPlayerInfoList()
 		{
 			if (!TheGameLogic || !ThePlayerList || !TheNameKeyGenerator)
 			{
-				overlayLog("GATHER: early return — null globals\n");
 				return;
 			}
 
@@ -7995,10 +7889,6 @@ void InGameUI::drawPlayerInfoList()
 
 			// Resolve the two 1v1 player slots
 			resolveOverlayPlayers();
-
-			overlayLog("GATHER: frame=%u isValid=%d slots=[%d,%d]\n",
-				currentFrame, (Int)m_isValid1v1,
-				m_overlayPlayerSlots[0], m_overlayPlayerSlots[1]);
 
 			// Clear all overlay ext slots first (only in live mode — replay uses shadow queue)
 			if (!isReplay)
@@ -8038,15 +7928,12 @@ void InGameUI::drawPlayerInfoList()
 				if (!isReplay)
 				{
 					m_playerOverlayExt[slot].queue.clear();
-					overlayLog("GATHER: about to iterateObjects for slot=%d (live mode)\n", slot);
 					p->iterateObjects(collectQueueEntries, this);
-					overlayLog("GATHER: done iterateObjects slot=%d queueSize=%zu\n", slot, m_playerOverlayExt[slot].queue.size());
 				}
 				else
 				{
 					// Replay mode: queue is built by onUnitQueued hook — don't clear it
-					overlayLog("GATHER: replay mode slot=%d queueSize=%zu (shadow queue)\n", slot, m_playerOverlayExt[slot].queue.size());
-				}
+					}
 
 														// ---- General power cooldowns ----
 				const PlayerTemplate* pt = p->getPlayerTemplate();
@@ -8126,21 +8013,15 @@ void InGameUI::drawPlayerInfoList()
 
 		void InGameUI::drawUnitQueuesImpl(Int baseX, Int baseY, Int lineH, Real scale)
 		{
-			if (!TheDisplay || !m_isValid1v1) return;
+						if (!TheDisplay || !m_isValid1v1) return;
 
-			overlayLog("DRAW_Q: entry valid1v1=%d\n", (Int)m_isValid1v1);
-
-			Int screenW = TheDisplay->getWidth();
-			Int screenH = TheDisplay->getHeight();
+						Int screenH = TheDisplay->getHeight();
 			Int iconSize = Int(24 * scale);
 			Int iconSpacing = Int(3 * scale);
 
 			static const Int MAX_COLS = 3;
 			static const Int MAX_VISIBLE_ROWS = 3;
 			Int step = iconSize + iconSpacing;
-
-			overlayLog("LAYOUT: dims scale=%.3f iconSize=%d step=%d screenW=%d screenH=%d\n",
-				scale, iconSize, step, screenW, screenH);
 
 			for (Int ovIdx = 0; ovIdx < 2; ++ovIdx)
 			{
@@ -8149,7 +8030,6 @@ void InGameUI::drawPlayerInfoList()
 				if (!m_playerOverlayExt[slot].isPresent) continue;
 
 				const std::vector<QueueEntry>& q = m_playerOverlayExt[slot].queue;
-				overlayLog("DRAW_Q: player slot=%d ovIdx=%d queueSize=%zu\n", slot, ovIdx, q.size());
 				if (q.empty()) continue;
 
 				// Compute panel X: position queue relative to the stats/score bar
@@ -8188,9 +8068,6 @@ void InGameUI::drawPlayerInfoList()
 				// Shift grid down by one row height (user feedback: was sitting too high)
 				bottomY += step;
 
-				overlayLog("LAYOUT: ovIdx=%d panelX=%d bottomY=%d gridRefX=%d gridRefBotY=%d\n",
-					ovIdx, panelX, bottomY, m_queuePanelX[ovIdx], m_queuePanelBottomY[ovIdx]);
-
 				// Show the OLDEST items first (row 0 at top of visible area)
 				for (size_t ei = 0; ei < q.size(); ++ei)
 				{
@@ -8201,9 +8078,6 @@ void InGameUI::drawPlayerInfoList()
 					Int ix = panelX + col * step;
 					// row 0 = top visible row, row 2 = bottom (against screen edge)
 					Int iy = bottomY - (MAX_VISIBLE_ROWS - row) * step;
-
-					overlayLog("LAYOUT: draw ovIdx=%d ei=%zu row=%d col=%d ix=%d iy=%d (botY=%d)\n",
-						ovIdx, ei, row, col, ix, iy, bottomY);
 
 					// Try drawing the button image (unit or upgrade)
 					const Image* img = nullptr;
@@ -8243,8 +8117,6 @@ void InGameUI::drawPlayerInfoList()
 		void InGameUI::drawPowerCooldownsImpl(Int baseX, Int baseY, Int lineH, Real scale)
 		{
 			if (!TheGameLogic || !m_isValid1v1) return;
-
-			overlayLog("DRAW_P: entry valid1v1=%d\n", (Int)m_isValid1v1);
 
 			UnsignedInt currentFrame = TheGameLogic->getFrame();
 			Int ringSize = Int(44 * scale);
@@ -8353,7 +8225,6 @@ void InGameUI::drawPlayerInfoList()
 			if (!TheDisplay || !TheMouse || !TheTacticalView || !m_isValid1v1)
 				return;
 
-			overlayLog("DRAW_F: entry valid1v1=%d\n", (Int)m_isValid1v1);
 			if (!TheGameLogic)
 				return;
 
@@ -8543,9 +8414,7 @@ void InGameUI::drawPlayerInfoList()
 						radarWin->winGetRegion(&radarRegion);
 						radarRight = radarRegion.hi.x;
 						radarBottomY = radarRegion.hi.y;
-						overlayLog("LAYOUT: radar region lo=(%d,%d) hi=(%d,%d)\n",
-							radarRegion.lo.x, radarRegion.lo.y, radarRegion.hi.x, radarRegion.hi.y);
-					}
+						}
 
 					// Right HUD / command panel (for left-edge X reference only — Y is NOT at screen bottom)
 					GameWindow* rightHUD = TheWindowManager->winGetWindowFromId(nullptr,
@@ -8555,8 +8424,6 @@ void InGameUI::drawPlayerInfoList()
 						IRegion2D hudRegion;
 						rightHUD->winGetRegion(&hudRegion);
 						rightHUDLeft = hudRegion.lo.x;
-						overlayLog("LAYOUT: rightHUD region lo=(%d,%d) hi=(%d,%d)\n",
-							hudRegion.lo.x, hudRegion.lo.y, hudRegion.hi.x, hudRegion.hi.y);
 					}
 				}
 
@@ -8570,14 +8437,9 @@ void InGameUI::drawPlayerInfoList()
 					: TheDisplay->getHeight() - Int(40 * (Real)TheDisplay->getWidth() / 1920.0f);
 				m_queuePanelBottomY[0] = commonBottomY;
 				m_queuePanelBottomY[1] = commonBottomY;
+				}
 
-				overlayLog("LAYOUT: queue refs: P1=(xRef=%d, botY=%d) P2=(xRef=%d, botY=%d) screenW=%d screenH=%d\n",
-					m_queuePanelX[0], m_queuePanelBottomY[0],
-					m_queuePanelX[1], m_queuePanelBottomY[1],
-					TheDisplay->getWidth(), TheDisplay->getHeight());
-			}
-
-			if (!localPlayer->isPlayerObserver() && !localPlayer->isPlayerDead())
+				if (!localPlayer->isPlayerObserver() && !localPlayer->isPlayerDead())
 				return;
 
 			// Delay 60 frames (1s) to let replay mode fully initialize game state
