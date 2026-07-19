@@ -7732,6 +7732,15 @@ void InGameUI::drawPlayerInfoList()
 
 			m_playerOverlayExt[slot].queue.push_back(qe);
 
+			// DEBUG: log queue event
+			{
+				UnicodeString msg;
+				msg.format(L"Q+ %hs @%hs [slot %d, q=%d]", 
+					unitType->getName().str(), buildingName.str(),
+					slot, (Int)m_playerOverlayExt[slot].queue.size());
+				messageNoFormat(msg);
+			}
+
 			}
 
 		// TheSuperHackers @feature 15/07/2026 Called from ProductionUpdate::update hook.
@@ -7757,6 +7766,7 @@ void InGameUI::drawPlayerInfoList()
 			{
 				if (q[i].producer == producer && q[i].tmpl == unitType)
 				{
+					AsciiString unitName = unitType->getName();
 					q.erase(q.begin() + i);
 
 					// Reset build timer for the next entry of the same producer
@@ -7769,15 +7779,30 @@ void InGameUI::drawPlayerInfoList()
 							break;
 						}
 					}
+
+					// DEBUG
+					{
+						UnicodeString msg;
+						msg.format(L"Q- %hs [slot %d, q=%d]", 
+							unitName.str(), slot, (Int)q.size());
+						messageNoFormat(msg);
+					}
 					return;
 				}
 			}
-		}
+			// Not found
+			{
+				UnicodeString msg;
+				msg.format(L"Q-? %hs [slot %d, NOT FOUND]", 
+					unitType->getName().str(), slot);
+				messageNoFormat(msg);
+			}
+			}
 
-		// TheSuperHackers @feature 15/07/2026 Called from ProductionUpdate::cancelUnitCreate hook.
-		// Removes the matching entry from the shadow queue.
-		void InGameUI::onUnitCancelled(Player* player, const ThingTemplate* unitType, Object* producer)
-		{
+			// TheSuperHackers @feature 15/07/2026 Called from ProductionUpdate::cancelUnitCreate hook.
+			// Removes the matching entry from the shadow queue.
+			void InGameUI::onUnitCancelled(Player* player, const ThingTemplate* unitType, Object* producer)
+			{
 			if (!player || !unitType || !producer || !ThePlayerList || !TheNameKeyGenerator)
 				return;
 
@@ -7799,6 +7824,7 @@ void InGameUI::drawPlayerInfoList()
 			{
 				if (q[i].producer == producer && q[i].tmpl == unitType)
 				{
+					AsciiString unitName = unitType->getName();
 					q.erase(q.begin() + i);
 
 					// Reset build timer for the next entry of the same producer
@@ -7811,8 +7837,23 @@ void InGameUI::drawPlayerInfoList()
 							break;
 						}
 					}
+
+					// DEBUG
+					{
+						UnicodeString msg;
+						msg.format(L"X %hs [slot %d, q=%d]", 
+							unitName.str(), slot, (Int)q.size());
+						messageNoFormat(msg);
+					}
 					return;
 				}
+			}
+			// Not found
+			{
+				UnicodeString msg;
+				msg.format(L"X? %hs [slot %d, NOT FOUND]", 
+					unitType->getName().str(), slot);
+				messageNoFormat(msg);
 			}
 			}
 
@@ -8131,33 +8172,6 @@ void InGameUI::drawPlayerInfoList()
 				}
 				// else: keep existing percentComplete from collectQueueEntries (live mode)
 				// or onUnitQueued (replay mode) — don't overwrite with 0
-			}
-
-			// Step 1b: cleanup — remove entries that reached 100% but weren't removed
-			// by onUnitCompleted (e.g. cancelled, exit blocked, or hook race condition).
-			// Only clean tracked entries (buildTime > 0) to avoid nuking live-mode data.
-			for (size_t i = 0; i < q.size(); )
-			{
-				if (q[i].buildTime > 0 && q[i].percentComplete >= 100.0f)
-				{
-					// Reset queuedFrame on the next entry of the SAME producer
-					// so it starts getting progress from this frame.
-					Object* prod = q[i].producer;
-					q.erase(q.begin() + i);
-					for (size_t j = i; j < q.size(); ++j)
-					{
-						if (q[j].producer == prod)
-						{
-							q[j].queuedFrame = currentFrame;
-							break;
-						}
-					}
-					// Don't increment i — element at i was just replaced
-				}
-				else
-				{
-					++i;
-				}
 			}
 
 			// Step 2: compute estimated completion frame per entry (chained per building)
