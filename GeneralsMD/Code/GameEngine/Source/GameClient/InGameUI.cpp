@@ -7744,6 +7744,17 @@ void InGameUI::drawPlayerInfoList()
 				if (q[i].producer == producer && q[i].tmpl == unitType)
 				{
 					q.erase(q.begin() + i);
+
+					// Reset build timer for the next entry of the same producer
+					UnsignedInt now = TheGameLogic ? TheGameLogic->getFrame() : 0;
+					for (size_t j = i; j < q.size(); ++j)
+					{
+						if (q[j].producer == producer)
+						{
+							q[j].queuedFrame = now;
+							break;
+						}
+					}
 					return;
 				}
 			}
@@ -7775,10 +7786,21 @@ void InGameUI::drawPlayerInfoList()
 				if (q[i].producer == producer && q[i].tmpl == unitType)
 				{
 					q.erase(q.begin() + i);
+
+					// Reset build timer for the next entry of the same producer
+					UnsignedInt now = TheGameLogic ? TheGameLogic->getFrame() : 0;
+					for (size_t j = i; j < q.size(); ++j)
+					{
+						if (q[j].producer == producer)
+						{
+							q[j].queuedFrame = now;
+							break;
+						}
+					}
 					return;
 				}
 			}
-		}
+			}
 
 		// TheSuperHackers @feature 17/07/2026 Shadow upgrade queue: called from ProductionUpdate::queueUpgrade hook.
 		void InGameUI::onUpgradeQueued(Player* player, const UpgradeTemplate* upgradeType, Object* producer, Real percentComplete)
@@ -7857,12 +7879,23 @@ void InGameUI::drawPlayerInfoList()
 				if (q[i].upgradeTmpl == upgradeType && q[i].producer == producer)
 				{
 					q.erase(q.begin() + i);
+
+					// Reset build timer for the next entry of the same producer
+					UnsignedInt now = TheGameLogic ? TheGameLogic->getFrame() : 0;
+					for (size_t j = i; j < q.size(); ++j)
+					{
+						if (q[j].producer == producer)
+						{
+							q[j].queuedFrame = now;
+							break;
+						}
+					}
 					return;
 				}
 			}
-		}
+			}
 
-		// TheSuperHackers @feature 17/07/2026 Called from ProductionUpdate::cancelUpgrade hook.
+			// TheSuperHackers @feature 17/07/2026 Called from ProductionUpdate::cancelUpgrade hook.
 		void InGameUI::onUpgradeCancelled(Player* player, const UpgradeTemplate* upgradeType, Object* producer)
 		{
 
