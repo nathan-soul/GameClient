@@ -7562,6 +7562,7 @@ void InGameUI::drawPlayerInfoList()
 				qe.percentComplete = 0.0f;
 				qe.buildingPos = buildingPos;
 				qe.buildingName = name;
+				qe.producer = obj;
 				ext.queue.push_back(qe);
 				return;
 			}
@@ -7576,6 +7577,7 @@ void InGameUI::drawPlayerInfoList()
 					qe.percentComplete = safeGetPercentComplete(entry);
 					qe.buildingPos = buildingPos;
 					qe.buildingName = name;
+					qe.producer = obj;
 					ext.queue.push_back(qe);
 
 					}
@@ -7586,6 +7588,7 @@ void InGameUI::drawPlayerInfoList()
 					qe.percentComplete = safeGetPercentComplete(entry);
 					qe.buildingPos = buildingPos;
 					qe.buildingName = name;
+					qe.producer = obj;
 					ext.queue.push_back(qe);
 
 					}
@@ -8124,10 +8127,8 @@ void InGameUI::drawPlayerInfoList()
 					if (pct > 100.0f) pct = 100.0f;
 					q[i].percentComplete = pct;
 				}
-				else
-				{
-					q[i].percentComplete = 0.0f;
-				}
+				// else: keep existing percentComplete from collectQueueEntries (live mode)
+				// or onUnitQueued (replay mode) — don't overwrite with 0
 			}
 
 			// Step 2: compute estimated completion frame per entry (chained per building)
