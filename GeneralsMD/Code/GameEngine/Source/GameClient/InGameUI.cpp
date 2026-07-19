@@ -8134,11 +8134,11 @@ void InGameUI::drawPlayerInfoList()
 							ix + iconSize, iy + iconSize);
 					}
 
-					// Clock wedge: darken completed portion, grows as unit builds
+					// Clock wedge: clearing grows clockwise as unit builds
 					Int pct = (Int)(q[ei].percentComplete);
 					if (pct > 0 && pct <= 100)
 					{
-						TheDisplay->drawRectClock(
+						TheDisplay->drawRemainingRectClock(
 							ix, iy, iconSize, iconSize,
 							pct,
 							GameMakeColor(0, 0, 0, 160));
@@ -8214,11 +8214,11 @@ void InGameUI::drawPlayerInfoList()
 						if (progress < 0) progress = 0;
 						if (progress > 1) progress = 1;
 
-						// Darken the COMPLETED portion — wedge grows as cooldown progresses
+						// Cooldown indicator — clearing wedge grows clockwise, remaining is dark
 						Int pct = (Int)(100.0f * progress);
 						if (pct > 0 && pct <= 100)
 						{
-							TheDisplay->drawRectClock(
+							TheDisplay->drawRemainingRectClock(
 								panelX, curY, ringSize, ringSize,
 								pct,
 								GameMakeColor(0, 0, 0, 140));
