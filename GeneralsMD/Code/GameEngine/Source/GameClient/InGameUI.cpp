@@ -8088,6 +8088,7 @@ void InGameUI::drawPlayerInfoList()
 	{
 		// Update percentComplete from elapsed frames for observer/replay mode.
 		// Only the FIRST entry per building gets progress; later entries stay at 0.
+		// Then sort by estimated completion time so the next-finishing unit appears first.
 		if (!TheGameLogic) return;
 		UnsignedInt currentFrame = TheGameLogic->getFrame();
 
@@ -8095,11 +8096,11 @@ void InGameUI::drawPlayerInfoList()
 		{
 			if (!m_playerOverlayExt[slot].isPresent) continue;
 			std::vector<QueueEntry>& q = m_playerOverlayExt[slot].queue;
+			if (q.empty()) continue;
 
-			// Track which producers we've already seen the "active" entry for
+			// Step 1: update percentComplete per building (first entry only)
 			for (size_t i = 0; i < q.size(); ++i)
 			{
-				// Check if this is the first entry for this producer
 				Bool isFirst = true;
 				for (size_t j = 0; j < i; ++j)
 				{
@@ -8117,6 +8118,38 @@ void InGameUI::drawPlayerInfoList()
 				else
 				{
 					q[i].percentComplete = 0.0f;
+				}
+			}
+
+			// Step 2: compute estimated completion frame per entry (chained per building)
+			// Use a temporary map: producer -> running completion frame accumulator
+			std::vector<UnsignedInt> estCompletion(q.size(), 0);
+			for (size_t i = 0; i < q.size(); ++i)
+			{
+				// Find the previous entry for the same producer to chain build times
+				UnsignedInt prevCompletion = currentFrame; // start from now for first entry
+				for (size_t j = 0; j < i; ++j)
+				{
+					if (q[j].producer == q[i].producer)
+					{
+						prevCompletion = estCompletion[j];
+						break;
+					}
+				}
+				estCompletion[i] = prevCompletion + q[i].buildTime;
+			}
+
+			// Step 3: sort by estimated completion (ascending — soonest first)
+			// Bubble sort preserving relative order for equal estimates (stable)
+			for (size_t i = 0; i < q.size(); ++i)
+			{
+				for (size_t j = i + 1; j < q.size(); ++j)
+				{
+					if (estCompletion[j] < estCompletion[i])
+					{
+						std::swap(q[i], q[j]);
+						std::swap(estCompletion[i], estCompletion[j]);
+					}
 				}
 			}
 		}
