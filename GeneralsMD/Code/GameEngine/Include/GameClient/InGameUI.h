@@ -668,6 +668,9 @@ public: // TheSuperHackers: overlay methods must be public for file-scope safe* 
 	void drawPowerFlashes();
 	void drawUnitQueueClicks();  // click-to-navigate for queue icons
 
+	// TheSuperHackers @feature 19/07/2026 Per-building queues (world-space, Ctrl+Q toggle)
+	void drawPerBuildingQueues();
+
 	// TheSuperHackers @feature 17/07/2026 Hotkey-toggles for overlay elements.
 	// Toggled on key-UP (see CommandXlat.cpp MSG_RAW_KEY_UP) so a future hold+arrows
 	// move-mode (step 2) can distinguish tap (=toggle) from hold (=move with arrows).
@@ -675,6 +678,10 @@ public: // TheSuperHackers: overlay methods must be public for file-scope safe* 
 	void toggleOverlayQueues() { m_overlayQueuesVisible = !m_overlayQueuesVisible; }
 	Bool isOverlayPowersVisible() const { return m_overlayPowersVisible; }
 	Bool isOverlayQueuesVisible() const { return m_overlayQueuesVisible; }
+
+	// TheSuperHackers @feature 19/07/2026 Per-building queue mode (Ctrl+Q toggle)
+	void cyclePerBuildingQueueMode();
+	QueueDisplayMode getPerBuildingQueueMode() const { return m_perBuildingQueueMode; }
 
 	// TheSuperHackers @feature 19/07/2026 Reposition panel (F7 toggle).
 		// Offset is persisted to Options.ini when exiting reposition mode.
@@ -702,6 +709,9 @@ public: // TheSuperHackers: overlay methods must be public for file-scope safe* 
 	void drawUnitQueueClicksImpl();  // click-to-navigate for queue icons
 	void drawRepositionPanelImpl(Real scale);
 	void handleRepositionClicksImpl(Real scale);
+
+	// TheSuperHackers @feature 19/07/2026 Per-building queue Impl (SEH-safe via safeDrawPerBuildingQueues wrapper)
+	void drawPerBuildingQueuesImpl();
 
 protected:
 
@@ -1148,6 +1158,14 @@ protected:
 	static const Int MAX_POWERS_PER_PLAYER = 8;
 	enum BuildingType { BUILDING_WAR_FACTORY, BUILDING_BARRACKS, BUILDING_AIRFIELD, BUILDING_COUNT };
 
+	// TheSuperHackers @feature 19/07/2026 Per-building queue display modes (Ctrl+Q cycles)
+	enum QueueDisplayMode
+	{
+		QUEUE_DISPLAY_ALWAYS,       // always show above every production building
+		QUEUE_DISPLAY_ON_HOVER,     // only show above building under mouse
+		QUEUE_DISPLAY_HIDDEN        // hidden — fallback to flat queues at screen bottom
+	};
+
 	struct QueueEntry
 	{
 		const ThingTemplate* tmpl;           // unit template (nullptr for upgrades)
@@ -1189,6 +1207,7 @@ protected:
 	// Default true; intentionally NOT reset in reset() so streamer preference survives game/replay switches.
 	Bool m_overlayPowersVisible;    // F8: general power cooldown panels (left/right screen edge)
 	Bool m_overlayQueuesVisible;    // F9: unit queue panels (screen bottom)
+	QueueDisplayMode m_perBuildingQueueMode;  // Ctrl+Q: per-building queue display mode
 	Int m_overlayOffsetX;           // Horizontal offset in pixels for overlay repositioning
 	Bool m_repositionMode;          // F7 toggle for overlay reposition panel
 	Int m_repositionClickedBtn;     // Which button was clicked (-1 = none), for flash feedback

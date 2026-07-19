@@ -199,6 +199,14 @@ static void safeHandleRepositionClicks(InGameUI* ui, Real scale)
 	__except(EXCEPTION_EXECUTE_HANDLER) {
 	}
 }
+static void safeDrawPerBuildingQueues(InGameUI* ui)
+{
+	__try {
+		ui->drawPerBuildingQueuesImpl();
+	}
+	__except(EXCEPTION_EXECUTE_HANDLER) {
+	}
+}
 #pragma warning(pop)
 
 // ------------------------------------------------------------------------------------------------
@@ -1401,6 +1409,7 @@ InGameUI::InGameUI()
 		m_queuePanelBottomY[1] = 0;
 		m_overlayPowersVisible = true;
 		m_overlayQueuesVisible = true;
+		m_perBuildingQueueMode = QUEUE_DISPLAY_ON_HOVER;
 		m_scoreBarLeft = 0;
 		m_scoreBarRight = 0;
 		m_overlayOffsetX = 0;
@@ -8654,6 +8663,137 @@ void InGameUI::drawPlayerInfoList()
 			}
 		}
 
+		// TheSuperHackers @feature 19/07/2026 Per-building queue mode (Ctrl+Q toggle).
+		void InGameUI::cyclePerBuildingQueueMode()
+		{
+			m_perBuildingQueueMode = (QueueDisplayMode)(((int)m_perBuildingQueueMode + 1) % 3);
+		}
+
+		// TheSuperHackers @feature 19/07/2026 Render queue icons above each production building in 3D world space.
+		void InGameUI::drawPerBuildingQueuesImpl()
+		{
+			if (!TheTacticalView || !TheDisplay || !TheWindowManager || !m_isValid1v1)
+				return;
+
+			refreshQueueProgress();
+
+			// Compute icon size using the same scale as flat queues
+			Int screenW = TheDisplay->getWidth();
+			Real baseScale = (Real)screenW / 1920.0f;
+			baseScale = (baseScale < 0.7f) ? 0.7f : (baseScale > 2.0f) ? 2.0f : baseScale;
+			Int fontSize = TheGlobalData ? TheGlobalData->m_observerStatsFontSize : 8;
+			Real uiMultiplier = 1.0f + (fontSize - 8) * 0.125f;
+			if (uiMultiplier < 0.25f) uiMultiplier = 0.25f;
+			Real queueScale = baseScale * uiMultiplier;
+			queueScale = (queueScale < 0.35f) ? 0.35f : (queueScale > 4.0f) ? 4.0f : queueScale;
+
+			Int iconSize = Int(16 * queueScale);
+			Int iconSpacing = Int(2 * queueScale);
+			if (iconSize < 8) iconSize = 8;
+			if (iconSpacing < 1) iconSpacing = 1;
+			Int maxPerBuilding = 5;
+
+			// For ON_HOVER mode, find the building under the mouse
+			Drawable* hoveredDraw = nullptr;
+			Object* hoveredObj = nullptr;
+			if (m_perBuildingQueueMode == QUEUE_DISPLAY_ON_HOVER)
+			{
+				hoveredDraw = TheGameClient->findDrawableByID(m_mousedOverDrawableID);
+				if (hoveredDraw)
+					hoveredObj = hoveredDraw->getObject();
+			}
+
+			for (Int ovIdx = 0; ovIdx < 2; ++ovIdx)
+			{
+				Int slot = m_overlayPlayerSlots[ovIdx];
+				if (slot < 0 || slot >= MAX_SLOTS) continue;
+				if (!m_playerOverlayExt[slot].isPresent) continue;
+
+				const std::vector<QueueEntry>& q = m_playerOverlayExt[slot].queue;
+				if (q.empty()) continue;
+
+				// Group entries by producer building
+				std::map<Object*, std::vector<const QueueEntry*>> perBuilding;
+				for (const auto& entry : q)
+				{
+					if (entry.producer)
+						perBuilding[entry.producer].push_back(&entry);
+				}
+
+				for (const auto& kv : perBuilding)
+				{
+					const auto& entries = kv.second;
+					if (entries.empty()) continue;
+
+					// Get building world position from the first entry
+					const QueueEntry* first = entries[0];
+					if (!first->producer) continue;
+
+					const Coord3D* worldPos = first->producer->getPosition();
+					if (!worldPos) continue;
+
+					ICoord2D screenPos;
+					if (TheTacticalView->worldToScreen(worldPos, &screenPos) != TRUE)
+						continue;  // building not visible on screen
+
+					// ON_HOVER filter: only show queues for the building under the mouse
+					if (m_perBuildingQueueMode == QUEUE_DISPLAY_ON_HOVER)
+					{
+						if (!hoveredObj || first->producer != hoveredObj)
+							continue;
+					}
+
+					// Offset above building (higher on screen = lower Y)
+					screenPos.y -= Int(40 * baseScale);
+					if (screenPos.y < 0) screenPos.y = 0;
+
+					SizeT count = entries.size();
+					if (count > (SizeT)maxPerBuilding) count = (SizeT)maxPerBuilding;
+					Int totalW = (Int)count * iconSize + ((Int)count - 1) * iconSpacing;
+					Int startX = screenPos.x - totalW / 2;
+
+					for (SizeT i = 0; i < count; ++i)
+					{
+						Int ix = startX + (Int)i * (iconSize + iconSpacing);
+						Int iy = screenPos.y;
+
+						// Dark background
+						TheWindowManager->winFillRect(
+							TheWindowManager->winMakeColor(0, 0, 0, 180), 1,
+							ix, iy, ix + iconSize, iy + iconSize);
+
+						// Unit icon image
+						const Image* img = nullptr;
+						if (entries[i]->tmpl)
+							img = entries[i]->tmpl->getButtonImage();
+						else if (entries[i]->upgradeTmpl)
+							img = entries[i]->upgradeTmpl->getButtonImage();
+
+						if (img)
+						{
+							TheDisplay->drawImage(img, ix, iy,
+								ix + iconSize, iy + iconSize);
+						}
+
+						// Clock cooldown overlay
+						Int pct = (Int)(entries[i]->percentComplete);
+						if (pct >= 0 && pct <= 100)
+						{
+							TheDisplay->drawRemainingRectClock(
+								ix, iy, iconSize, iconSize,
+								pct,
+								GameMakeColor(0, 0, 0, 160));
+						}
+					}
+				}
+			}
+		}
+
+		void InGameUI::drawPerBuildingQueues()
+		{
+			safeDrawPerBuildingQueues(this);
+		}
+
 		// TheSuperHackers @feature 15/07/2026 Standalone overlay draw — always safe, never depends on stats font.
 		void InGameUI::drawOverlayExt()
 		{
@@ -8744,8 +8884,16 @@ void InGameUI::drawPlayerInfoList()
 			// Data gathering above always runs so re-showing is instant; only draw + click handling is gated.
 			if (m_overlayQueuesVisible)
 			{
-				safeDrawUnitQueues(this, Int(10 * baseScale), queueBaseY, queueLineH, queueScale);
-				safeDrawUnitQueueClicks(this);
+				// TheSuperHackers @feature 19/07/2026 Per-building queues (Ctrl+Q cycles modes)
+				if (m_perBuildingQueueMode != QUEUE_DISPLAY_HIDDEN)
+				{
+					safeDrawPerBuildingQueues(this);
+				}
+				else
+				{
+					safeDrawUnitQueues(this, Int(10 * baseScale), queueBaseY, queueLineH, queueScale);
+					safeDrawUnitQueueClicks(this);
+				}
 			}
 			if (m_overlayPowersVisible)
 			{
