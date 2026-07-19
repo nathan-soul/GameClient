@@ -37,6 +37,7 @@
 #include "Common/SpecialPowerType.h"
 #include "Common/Snapshot.h"
 #include "Common/STLTypedefs.h"
+#include "Common/OptionPreferences.h"
 #include "Common/SubsystemInterface.h"
 #include "Common/UnicodeString.h"
 #include "GameClient/DisplayString.h"
@@ -675,6 +676,20 @@ public: // TheSuperHackers: overlay methods must be public for file-scope safe* 
 	Bool isOverlayPowersVisible() const { return m_overlayPowersVisible; }
 	Bool isOverlayQueuesVisible() const { return m_overlayQueuesVisible; }
 
+	// TheSuperHackers @feature 19/07/2026 Reposition panel (F7 toggle).
+		// Offset is persisted to Options.ini when exiting reposition mode.
+		void toggleRepositionMode() { 
+			m_repositionMode = !m_repositionMode; 
+			if (!m_repositionMode) {
+				OptionPreferences optPref;
+				AsciiString prefString;
+				prefString.format("%d", m_overlayOffsetX);
+				optPref["OverlayOffsetX"] = prefString;
+				optPref.write();
+			}
+		}
+	Bool isRepositionMode() const { return m_repositionMode; }
+
 	static void collectQueueEntries(Object* obj, void* userData);
 	static void findPowerModule(Object* obj, void* userData);
 
@@ -684,6 +699,8 @@ public: // TheSuperHackers: overlay methods must be public for file-scope safe* 
 	void drawPowerCooldownsImpl(Int baseX, Int baseY, Int lineH, Real scale);
 	void drawPowerFlashesImpl();
 	void drawUnitQueueClicksImpl();  // click-to-navigate for queue icons
+	void drawRepositionPanelImpl(Real scale);
+	void handleRepositionClicksImpl(Real scale);
 
 protected:
 
@@ -1169,8 +1186,11 @@ protected:
 	// Default true; intentionally NOT reset in reset() so streamer preference survives game/replay switches.
 	Bool m_overlayPowersVisible;    // F8: general power cooldown panels (left/right screen edge)
 	Bool m_overlayQueuesVisible;    // F9: unit queue panels (screen bottom)
-	// Step 2 (planned): hold toggle key + arrow keys moves the overlay -> add m_overlayOffset here
-	// and track hold state in a MSG_RAW_KEY_DOWN handler in CommandXlat.cpp.
+	Int m_overlayOffsetX;           // Horizontal offset in pixels for overlay repositioning
+	Bool m_repositionMode;          // F7 toggle for overlay reposition panel
+	Int m_repositionClickedBtn;     // Which button was clicked (-1 = none), for flash feedback
+	UnsignedInt m_repositionClickFrame; // Frame when button was clicked
+
 	// Future: m_overlayUpgradesVisible for per-faction purchased-upgrade display (e.g. buggy ammo).
 
 	// ----------------------------------------------------------------------------------------------

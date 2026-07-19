@@ -60,6 +60,7 @@
 #include "GameClient/GameClient.h"
 #include "GameClient/GameWindowManager.h"
 #include "GameClient/GameText.h"
+#include "GameClient/Keyboard.h"
 #include "GameClient/ParticleSys.h"
 #include "GameClient/GUICallbacks.h"
 #include "GameClient/Shell.h"
@@ -3938,6 +3939,7 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 	}
 
 #if defined(GENERALS_ONLINE)
+
     case GameMessage::MSG_RAW_KEY_UP:
     {
         int key = msg->getArgument(0)->integer;
@@ -3989,6 +3991,17 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
                 TheInGameUI->messageNoFormat(TheInGameUI->isOverlayQueuesVisible()
                     ? TheGameText->FETCH_OR_SUBSTITUTE("GUI:OverlayQueuesOn", L"Overlay: unit queues ON (F9)")
                     : TheGameText->FETCH_OR_SUBSTITUTE("GUI:OverlayQueuesOff", L"Overlay: unit queues OFF (F9)"));
+            }
+            disp = DESTROY_MESSAGE;
+        }
+        else if (key == KEY_F7)
+        {
+            if (TheInGameUI)
+            {
+                TheInGameUI->toggleRepositionMode();
+                TheInGameUI->messageNoFormat(TheInGameUI->isRepositionMode()
+                    ? TheGameText->FETCH_OR_SUBSTITUTE("GUI:RepositionOn", L"Reposition mode ON (F7)")
+                    : TheGameText->FETCH_OR_SUBSTITUTE("GUI:RepositionOff", L"Reposition mode OFF (F7)"));
             }
             disp = DESTROY_MESSAGE;
         }

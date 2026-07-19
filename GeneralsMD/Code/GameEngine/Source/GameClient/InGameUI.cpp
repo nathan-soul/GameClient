@@ -49,6 +49,7 @@
 #include "Common/BuildAssistant.h"
 #include "Common/Recorder.h"
 #include "Common/SpecialPower.h"
+#include "Common/OptionPreferences.h"
 #include "GameClient/Anim2D.h"
 #include "GameClient/ControlBar.h"
 #include "GameClient/DisplayStringManager.h"
@@ -178,6 +179,22 @@ static void safeGatherOverlayExtData(InGameUI* ui)
 {
 	__try {
 		ui->gatherOverlayExtDataImpl();
+	}
+	__except(EXCEPTION_EXECUTE_HANDLER) {
+	}
+}
+static void safeDrawRepositionPanel(InGameUI* ui, Real scale)
+{
+	__try {
+		ui->drawRepositionPanelImpl(scale);
+	}
+	__except(EXCEPTION_EXECUTE_HANDLER) {
+	}
+}
+static void safeHandleRepositionClicks(InGameUI* ui, Real scale)
+{
+	__try {
+		ui->handleRepositionClicksImpl(scale);
 	}
 	__except(EXCEPTION_EXECUTE_HANDLER) {
 	}
@@ -1386,6 +1403,17 @@ InGameUI::InGameUI()
 		m_overlayQueuesVisible = true;
 		m_scoreBarLeft = 0;
 		m_scoreBarRight = 0;
+		m_overlayOffsetX = 0;
+		// TheSuperHackers @feature 19/07/2026 Load saved overlay offset from Options.ini
+		{
+			OptionPreferences optPref;
+			OptionPreferences::const_iterator it = optPref.find("OverlayOffsetX");
+			if (it != optPref.end())
+				m_overlayOffsetX = atoi(it->second.str());
+		}
+		m_repositionMode = false;
+		m_repositionClickedBtn = -1;
+		m_repositionClickFrame = 0;
 		for (Int s = 0; s < MAX_SLOTS; ++s)
 		{
 			m_playerOverlayExt[s].isPresent = false;
@@ -6882,7 +6910,7 @@ void InGameUI::drawObserverStats(Int & x, Int & y)
 	Int bgW = totalWidth + padX * 2;
 	Int bgH = totalHeight + padY * 2;
 
-	Int baseX = (screenW - bgW) / 2;    // center overlay horizantally
+	Int baseX = (screenW - bgW) / 2 + m_overlayOffsetX;    // center overlay horizontally, with reposition offset
 	Int baseY = screenH - bgH;          // stick to bottom edge
 
 	if (baseX < 0) baseX = 0;
@@ -6949,8 +6977,9 @@ void InGameUI::drawObserverStats(Int & x, Int & y)
 	}
 
 	// Cache score bar edges for queue positioning (P1 left, P2 right)
-	m_scoreBarLeft = baseX;
-	m_scoreBarRight = baseX + bgW;
+	// Subtract overlay offset — queues apply their own m_overlayOffsetX
+	m_scoreBarLeft = baseX - m_overlayOffsetX;
+	m_scoreBarRight = baseX + bgW - m_overlayOffsetX;
 }
 
 void InGameUI::refreshObserverNotificationResources(void)
@@ -8063,6 +8092,9 @@ void InGameUI::drawPlayerInfoList()
 						panelX = m_queuePanelX[1] - gridWidth - 4;  // left of right-HUD
 				}
 
+				// TheSuperHackers @feature 19/07/2026 Overlay repositioning
+				panelX += m_overlayOffsetX;
+
 				// Fallback if reference edges weren't captured
 				if (bottomY <= 0) bottomY = screenH;
 				if (panelX < 0) panelX = 0;
@@ -8142,18 +8174,18 @@ void InGameUI::drawPlayerInfoList()
 				else
 					panelX = screenW - Int(12 * scale) - ringSize;
 
-				Int totalPanelH = m_playerOverlayExt[slot].powerCount * (ringSize + ringSpacing) - ringSpacing;
-				Int panelY = (screenH - totalPanelH) / 2;
-				if (panelY < 0) panelY = 0;
+					Int totalPanelH = m_playerOverlayExt[slot].powerCount * (ringSize + ringSpacing) - ringSpacing;
+					Int panelY = (screenH - totalPanelH) / 2;
+					if (panelY < 0) panelY = 0;
 
-				Int curY = panelY;
-				for (Int pi = 0; pi < m_playerOverlayExt[slot].powerCount; ++pi)
-				{
-					const PlayerPowerInfo& ppi = m_playerOverlayExt[slot].powers[pi];
-					if (!ppi.button) { curY += ringSize + ringSpacing; continue; }
-					if (!ppi.hasModule) { curY += ringSize + ringSpacing; continue; }
+					Int curY = panelY;
+					for (Int pi = 0; pi < m_playerOverlayExt[slot].powerCount; ++pi)
+					{
+						const PlayerPowerInfo& ppi = m_playerOverlayExt[slot].powers[pi];
+						if (!ppi.button) { curY += ringSize + ringSpacing; continue; }
+						if (!ppi.hasModule) { curY += ringSize + ringSpacing; continue; }
 
-					Bool isReady = ppi.hasModule && currentFrame >= ppi.readyFrame;
+						Bool isReady = ppi.hasModule && currentFrame >= ppi.readyFrame;
 					Bool isFlashing = ppi.lastUsedFrame > 0 &&
 						(currentFrame - ppi.lastUsedFrame) < flashWindow;
 
@@ -8262,7 +8294,7 @@ void InGameUI::drawPlayerInfoList()
 				else
 					panelX = screenW - Int(12 * scale) - ringSize;
 
-				Int totalPanelH = m_playerOverlayExt[slot].powerCount * (ringSize + ringSpacing) - ringSpacing;
+					Int totalPanelH = m_playerOverlayExt[slot].powerCount * (ringSize + ringSpacing) - ringSpacing;
 				Int panelY = (screenH - totalPanelH) / 2;
 				if (panelY < 0) panelY = 0;
 
@@ -8355,6 +8387,10 @@ void InGameUI::drawPlayerInfoList()
 					else
 						panelX = m_queuePanelX[1] - gridWidth - 4;
 				}
+
+				// TheSuperHackers @feature 19/07/2026 Overlay repositioning
+				panelX += m_overlayOffsetX;
+
 				if (bottomY <= 0) bottomY = screenH;
 				if (panelX < 0) panelX = 0;
 
@@ -8382,6 +8418,120 @@ void InGameUI::drawPlayerInfoList()
 						}
 						return;
 					}
+				}
+			}
+		}
+
+		// TheSuperHackers @feature 19/07/2026 Reposition panel — F7 toggle, clickable colored buttons.
+		void InGameUI::drawRepositionPanelImpl(Real scale)
+		{
+			if (!TheDisplay || !TheWindowManager) return;
+
+			Int screenW = TheDisplay->getWidth();
+			Int screenH = TheDisplay->getHeight();
+
+			static const Int NUM_BUTTONS = 5;
+			Int btnW = Int(44 * scale);
+			Int btnH = Int(36 * scale);
+			Int spacing = Int(6 * scale);
+			Int totalW = NUM_BUTTONS * btnW + (NUM_BUTTONS - 1) * spacing;
+			Int barX = (screenW - totalW) / 2;
+			Int barY = screenH / 2 - btnH / 2;  // vertically centered
+
+			static const Int colors[NUM_BUTTONS][3] = {
+				{180, 40, 40},   // fast left: dark red
+				{200, 120, 40},  // slow left: orange
+				{40, 160, 40},   // reset: dark green
+				{40, 120, 200},  // slow right: light blue
+				{40, 40, 180}    // fast right: dark blue
+			};
+
+			for (Int i = 0; i < NUM_BUTTONS; ++i)
+			{
+				Int bx = barX + i * (btnW + spacing);
+				Int by = barY;
+
+				// Button background
+				Color bg = TheWindowManager->winMakeColor(colors[i][0], colors[i][1], colors[i][2], 200);
+				TheWindowManager->winFillRect(bg, 1, bx, by, bx + btnW, by + btnH);
+
+				// White flash on click (15 frames ~0.5 sec)
+				if (m_repositionClickedBtn == i && TheGameLogic)
+				{
+					UnsignedInt cf = TheGameLogic->getFrame();
+					if (cf - m_repositionClickFrame < 15)
+					{
+						Real intensity = 1.0f - (Real)(cf - m_repositionClickFrame) / 15.0f;
+						UnsignedInt alpha = (UnsignedInt)(200 * intensity);
+						Color flash = TheWindowManager->winMakeColor(255, 255, 255, alpha);
+						TheWindowManager->winFillRect(flash, 1, bx, by, bx + btnW, by + btnH);
+					}
+					else
+					{
+						m_repositionClickedBtn = -1;  // flash expired
+					}
+				}
+
+				// Border
+				Color border = TheWindowManager->winMakeColor(255, 255, 255, 180);
+				TheWindowManager->winFillRect(border, 1, bx, by, bx + btnW, by + 2);          // top
+				TheWindowManager->winFillRect(border, 1, bx, by + btnH - 2, bx + btnW, by + btnH); // bottom
+				TheWindowManager->winFillRect(border, 1, bx, by, bx + 2, by + btnH);          // left
+				TheWindowManager->winFillRect(border, 1, bx + btnW - 2, by, bx + btnW, by + btnH); // right
+			}
+		}
+
+		void InGameUI::handleRepositionClicksImpl(Real scale)
+		{
+			if (!TheDisplay || !TheMouse) return;
+
+			const MouseIO* mouse = TheMouse->getMouseStatus();
+			if (!mouse) return;
+
+			Int mx = mouse->pos.x;
+			Int my = mouse->pos.y;
+			Int screenW = TheDisplay->getWidth();
+			Int screenH = TheDisplay->getHeight();
+
+			Int btnW = Int(44 * scale);
+			Int btnH = Int(36 * scale);
+			Int spacing = Int(6 * scale);
+			Int totalW = 5 * btnW + 4 * spacing;
+			Int barX = (screenW - totalW) / 2;
+			Int barY = screenH / 2 - btnH / 2;
+
+			// Percentage-based steps (screen-width relative, works at any resolution)
+			Int stepSlow = (Int)(screenW * 0.005f);   // 0.5% screen width
+			Int stepFast = (Int)(screenW * 0.02f);    // 2% screen width
+			if (stepSlow < 1) stepSlow = 1;
+			if (stepFast < 2) stepFast = 2;
+
+			// Hover-based: apply while mouse is over button, debounced every 5 frames
+			static Int lastHoverFrame = -100;
+			Int cf = TheGameLogic ? TheGameLogic->getFrame() : 0;
+			if (cf - lastHoverFrame < 5) return;  // debounce: max once per 5 frames (~6/sec at 30fps)
+
+			for (Int i = 0; i < 5; ++i)
+			{
+				Int bx = barX + i * (btnW + spacing);
+				Int by = barY;
+
+				if (mx >= bx && mx <= bx + btnW && my >= by && my <= by + btnH)
+				{
+					Int delta = 0;
+					switch (i)
+					{
+						case 0: delta = -stepFast; break;  // fast left
+						case 1: delta = -stepSlow; break;  // slow left
+						case 2: delta = -m_overlayOffsetX; break; // reset (delta = negative current offset)
+						case 3: delta = stepSlow; break;   // slow right
+						case 4: delta = stepFast; break;   // fast right
+					}
+					m_overlayOffsetX += delta;
+					m_repositionClickedBtn = i;
+					m_repositionClickFrame = cf;
+					lastHoverFrame = cf;
+					return;
 				}
 			}
 		}
@@ -8484,7 +8634,13 @@ void InGameUI::drawPlayerInfoList()
 				safeDrawPowerCooldowns(this, Int(10 * baseScale), queueBaseY, queueLineH, baseScale);
 				safeDrawPowerFlashes(this);
 			}
-	}
+			// TheSuperHackers @feature 19/07/2026 Reposition panel (F7 toggle).
+			if (m_repositionMode)
+			{
+				safeDrawRepositionPanel(this, baseScale);
+				safeHandleRepositionClicks(this, baseScale);
+			}
+		}
 
 		// TheSuperHackers @feature 15/07/2026 Public wrappers — delegate to SEH-safe static helpers.
 		// These keep the existing public API but protect against crashes in the overlay code.
