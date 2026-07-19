@@ -7750,6 +7750,26 @@ void InGameUI::drawPlayerInfoList()
 			qe.queuedFrame = TheGameLogic ? TheGameLogic->getFrame() : 0;
 			qe.buildTime = unitType->calcTimeToBuild(player);
 
+			// Self-healing: remove stale entries from this producer
+			// A stale entry is one whose buildTime has elapsed — it was cancelled/completed
+			// without our hook firing (MSG_CANCEL_UNIT_CREATE is never processed in replay).
+			UnsignedInt now = TheGameLogic ? TheGameLogic->getFrame() : 0;
+			std::vector<QueueEntry>& q = m_playerOverlayExt[slot].queue;
+			for (Int i = (Int)q.size() - 1; i >= 0; --i)
+			{
+				if (q[i].producer == producer)
+				{
+					if (q[i].buildTime > 0 && now > q[i].queuedFrame + q[i].buildTime + 300)
+					{
+						AsciiString staleUnit;
+						if (q[i].tmpl) staleUnit = q[i].tmpl->getName();
+						logQueueEvent("S", staleUnit.str(), "", producer->getID(),
+							slot, (Int)q.size() - 1, now);
+						q.erase(q.begin() + i);
+					}
+				}
+			}
+
 			m_playerOverlayExt[slot].queue.push_back(qe);
 
 			// DEBUG: log to file
