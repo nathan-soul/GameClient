@@ -669,6 +669,13 @@ public: // TheSuperHackers: overlay methods must be public for file-scope safe* 
 	void drawUnitQueueClicks();  // click-to-navigate for queue icons
 
 	// TheSuperHackers @feature 19/07/2026 Per-building queues (world-space, Ctrl+Q toggle)
+	enum QueueDisplayMode
+	{
+		QUEUE_DISPLAY_ALWAYS,       // always show above every production building
+		QUEUE_DISPLAY_ON_HOVER,     // only show above building under mouse
+		QUEUE_DISPLAY_HIDDEN        // hidden — fallback to flat queues at screen bottom
+	};
+
 	void drawPerBuildingQueues();
 
 	// TheSuperHackers @feature 17/07/2026 Hotkey-toggles for overlay elements.
@@ -1157,14 +1164,6 @@ protected:
 	static const Int MAX_VISIBLE_QUEUE = 5;
 	static const Int MAX_POWERS_PER_PLAYER = 8;
 	enum BuildingType { BUILDING_WAR_FACTORY, BUILDING_BARRACKS, BUILDING_AIRFIELD, BUILDING_COUNT };
-
-	// TheSuperHackers @feature 19/07/2026 Per-building queue display modes (Ctrl+Q cycles)
-	enum QueueDisplayMode
-	{
-		QUEUE_DISPLAY_ALWAYS,       // always show above every production building
-		QUEUE_DISPLAY_ON_HOVER,     // only show above building under mouse
-		QUEUE_DISPLAY_HIDDEN        // hidden — fallback to flat queues at screen bottom
-	};
 
 	struct QueueEntry
 	{
