@@ -7570,11 +7570,21 @@ void InGameUI::drawPlayerInfoList()
 			while (entry)
 			{
 				ProductionType pt = safeGetProductionType(entry);
+				Real pct = safeGetPercentComplete(entry);
+
+				// Skip completed units (100%) that haven't exited the building yet.
+				// Otherwise they persist in the overlay queue every frame in live mode.
+				if (pct >= 100.0f)
+				{
+					entry = safeNextProduction(prod, entry);
+					continue;
+				}
+
 				if (pt == PRODUCTION_UNIT)
 				{
 					InGameUI::QueueEntry qe = {};
 					qe.tmpl = safeGetProductionObject(entry);
-					qe.percentComplete = safeGetPercentComplete(entry);
+					qe.percentComplete = pct;
 					qe.buildingPos = buildingPos;
 					qe.buildingName = name;
 					qe.producer = obj;
@@ -7585,7 +7595,7 @@ void InGameUI::drawPlayerInfoList()
 				{
 					InGameUI::QueueEntry qe = {};
 					qe.upgradeTmpl = safeGetProductionUpgrade(entry);
-					qe.percentComplete = safeGetPercentComplete(entry);
+					qe.percentComplete = pct;
 					qe.buildingPos = buildingPos;
 					qe.buildingName = name;
 					qe.producer = obj;
