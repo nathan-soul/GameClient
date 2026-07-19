@@ -8134,14 +8134,13 @@ void InGameUI::drawPlayerInfoList()
 							ix + iconSize, iy + iconSize);
 					}
 
-					// Clock wedge showing remaining build time
+					// Clock wedge showing build progress
 					Int pct = (Int)(q[ei].percentComplete);
-					Int remainingPct = 100 - pct;
-					if (remainingPct > 0 && remainingPct <= 100)
+					if (pct > 0 && pct <= 100)
 					{
-						TheDisplay->drawRemainingRectClock(
+						TheDisplay->drawRectClock(
 							ix, iy, iconSize, iconSize,
-							remainingPct,
+							pct,
 							GameMakeColor(0, 0, 0, 160));
 					}
 				}
@@ -8203,23 +8202,26 @@ void InGameUI::drawPlayerInfoList()
 							panelX, curY, panelX + ringSize, curY + ringSize);
 					}
 
-					// Cooldown indicator — clock wedge shrinking clockwise
-					UnsignedInt reloadFrames = LOGICFRAMES_PER_SECOND * 60; // fallback 60s
-					const SpecialPowerTemplate* sp = ppi.button->getSpecialPowerTemplate();
-					if (sp && sp->getReloadTime() > 0)
-						reloadFrames = sp->getReloadTime();
-
-					Real progress = 1.0f - ((Real)(ppi.readyFrame - currentFrame) / (Real)reloadFrames);
-					if (progress < 0) progress = 0;
-					if (progress > 1) progress = 1;
-
-					Int remainingPercent = (Int)(100.0f * (1.0f - progress));
-					if (remainingPercent > 0 && remainingPercent <= 100)
+					// Cooldown indicator — clock wedge growing clockwise
+					if (!isReady)
 					{
-						TheDisplay->drawRemainingRectClock(
-							panelX, curY, ringSize, ringSize,
-							remainingPercent,
-							GameMakeColor(0, 0, 0, 140));
+						UnsignedInt reloadFrames = LOGICFRAMES_PER_SECOND * 60; // fallback 60s
+						const SpecialPowerTemplate* sp = ppi.button->getSpecialPowerTemplate();
+						if (sp && sp->getReloadTime() > 0)
+							reloadFrames = sp->getReloadTime();
+
+						Real progress = 1.0f - ((Real)(ppi.readyFrame - currentFrame) / (Real)reloadFrames);
+						if (progress < 0) progress = 0;
+						if (progress > 1) progress = 1;
+
+						Int completedPct = (Int)(100.0f * progress);
+						if (completedPct > 0 && completedPct <= 100)
+						{
+							TheDisplay->drawRectClock(
+								panelX, curY, ringSize, ringSize,
+								completedPct,
+								GameMakeColor(0, 0, 0, 140));
+						}
 					}
 					if (isReady)
 					{
