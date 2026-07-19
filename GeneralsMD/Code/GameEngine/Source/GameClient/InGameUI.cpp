@@ -8134,13 +8134,14 @@ void InGameUI::drawPlayerInfoList()
 							ix + iconSize, iy + iconSize);
 					}
 
-					// Clock wedge showing build progress
+					// Clock wedge: darken remaining build time, shrinks as unit builds
 					Int pct = (Int)(q[ei].percentComplete);
-					if (pct > 0 && pct <= 100)
+					Int remainingPct = 100 - pct;
+					if (remainingPct > 0 && remainingPct <= 100)
 					{
-						TheDisplay->drawRectClock(
+						TheDisplay->drawRemainingRectClock(
 							ix, iy, iconSize, iconSize,
-							pct,
+							remainingPct,
 							GameMakeColor(0, 0, 0, 160));
 					}
 				}
@@ -8214,12 +8215,13 @@ void InGameUI::drawPlayerInfoList()
 						if (progress < 0) progress = 0;
 						if (progress > 1) progress = 1;
 
-						Int completedPct = (Int)(100.0f * progress);
-						if (completedPct > 0 && completedPct <= 100)
+						// Darken the REMAINING portion — wedge shrinks as cooldown progresses
+						Int remainingPct = (Int)(100.0f * (1.0f - progress));
+						if (remainingPct > 0 && remainingPct <= 100)
 						{
-							TheDisplay->drawRectClock(
+							TheDisplay->drawRemainingRectClock(
 								panelX, curY, ringSize, ringSize,
-								completedPct,
+								remainingPct,
 								GameMakeColor(0, 0, 0, 140));
 						}
 					}
