@@ -8747,12 +8747,12 @@ void InGameUI::drawPlayerInfoList()
 					screenPos.y -= Int(40 * baseScale);
 					if (screenPos.y < 0) screenPos.y = 0;
 
-					SizeT count = entries.size();
-					if (count > (SizeT)maxPerBuilding) count = (SizeT)maxPerBuilding;
+					size_t count = entries.size();
+					if (count > (size_t)maxPerBuilding) count = (size_t)maxPerBuilding;
 					Int totalW = (Int)count * iconSize + ((Int)count - 1) * iconSpacing;
 					Int startX = screenPos.x - totalW / 2;
 
-					for (SizeT i = 0; i < count; ++i)
+					for (size_t i = 0; i < count; ++i)
 					{
 						Int ix = startX + (Int)i * (iconSize + iconSpacing);
 						Int iy = screenPos.y;
