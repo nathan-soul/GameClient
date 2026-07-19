@@ -29,6 +29,8 @@
 
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
 
+#include <cstdio>
+
 #define DEFINE_SHADOW_NAMES
 
 #include "Common/ActionManager.h"
@@ -208,6 +210,24 @@ static void safeDrawPerBuildingQueues(InGameUI* ui)
 	}
 }
 #pragma warning(pop)
+
+// ------------------------------------------------------------------------------------------------
+// DEBUG: file-based queue event logging
+// Writes CSV to Z:\cc_queue_debug.log (Z: = project root in Docker/Wine)
+// ------------------------------------------------------------------------------------------------
+static void logQueueEvent(const char* event, const char* unitName, const char* buildingName,
+                          Int slot, Int queueSize, UnsignedInt frame)
+{
+	FILE* f = fopen("Z:\\cc_queue_debug.log", "a");
+	if (f)
+	{
+		fprintf(f, "%u,%s,%s,%s,%d,%d\n",
+			frame, event, unitName ? unitName : "?",
+			buildingName ? buildingName : "?", slot, queueSize);
+		fflush(f);
+		fclose(f);
+	}
+}
 
 // ------------------------------------------------------------------------------------------------
 static const RGBColor IllegalBuildColor = { 1.0, 0.0, 0.0 };
@@ -7732,14 +7752,10 @@ void InGameUI::drawPlayerInfoList()
 
 			m_playerOverlayExt[slot].queue.push_back(qe);
 
-			// DEBUG: log queue event
-			{
-				UnicodeString msg;
-				msg.format(L"Q+ %hs @%hs [slot %d, q=%d]", 
-					unitType->getName().str(), buildingName.str(),
-					slot, (Int)m_playerOverlayExt[slot].queue.size());
-				messageNoFormat(msg);
-			}
+			// DEBUG: log to file
+			logQueueEvent("Q+", unitType->getName().str(), buildingName.str(),
+				slot, (Int)m_playerOverlayExt[slot].queue.size(),
+				TheGameLogic ? TheGameLogic->getFrame() : 0);
 
 			}
 
@@ -7780,23 +7796,14 @@ void InGameUI::drawPlayerInfoList()
 						}
 					}
 
-					// DEBUG
-					{
-						UnicodeString msg;
-						msg.format(L"Q- %hs [slot %d, q=%d]", 
-							unitName.str(), slot, (Int)q.size());
-						messageNoFormat(msg);
-					}
+					// DEBUG: log to file
+					logQueueEvent("Q-", unitName.str(), "", slot, (Int)q.size(), now);
 					return;
 				}
-			}
-			// Not found
-			{
-				UnicodeString msg;
-				msg.format(L"Q-? %hs [slot %d, NOT FOUND]", 
-					unitType->getName().str(), slot);
-				messageNoFormat(msg);
-			}
+				}
+				// Not found
+				logQueueEvent("Q-?", unitType->getName().str(), "", slot, (Int)q.size(),
+				TheGameLogic ? TheGameLogic->getFrame() : 0);
 			}
 
 			// TheSuperHackers @feature 15/07/2026 Called from ProductionUpdate::cancelUnitCreate hook.
@@ -7838,23 +7845,14 @@ void InGameUI::drawPlayerInfoList()
 						}
 					}
 
-					// DEBUG
-					{
-						UnicodeString msg;
-						msg.format(L"X %hs [slot %d, q=%d]", 
-							unitName.str(), slot, (Int)q.size());
-						messageNoFormat(msg);
-					}
+					// DEBUG: log to file
+					logQueueEvent("X", unitName.str(), "", slot, (Int)q.size(), now);
 					return;
 				}
-			}
-			// Not found
-			{
-				UnicodeString msg;
-				msg.format(L"X? %hs [slot %d, NOT FOUND]", 
-					unitType->getName().str(), slot);
-				messageNoFormat(msg);
-			}
+				}
+				// Not found
+				logQueueEvent("X?", unitType->getName().str(), "", slot, (Int)q.size(),
+				TheGameLogic ? TheGameLogic->getFrame() : 0);
 			}
 
 		// TheSuperHackers @feature 17/07/2026 Shadow upgrade queue: called from ProductionUpdate::queueUpgrade hook.
