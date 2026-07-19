@@ -7572,14 +7572,6 @@ void InGameUI::drawPlayerInfoList()
 				ProductionType pt = safeGetProductionType(entry);
 				Real pct = safeGetPercentComplete(entry);
 
-				// Skip completed units (100%) that haven't exited the building yet.
-				// Otherwise they persist in the overlay queue every frame in live mode.
-				if (pct >= 100.0f)
-				{
-					entry = safeNextProduction(prod, entry);
-					continue;
-				}
-
 				if (pt == PRODUCTION_UNIT)
 				{
 					InGameUI::QueueEntry qe = {};
@@ -8731,13 +8723,32 @@ void InGameUI::drawPlayerInfoList()
 						perBuilding[entry.producer].push_back(&entry);
 				}
 
-				for (const auto& kv : perBuilding)
+				for (auto& kv : perBuilding)
 				{
-					const auto& entries = kv.second;
+					auto& entries = kv.second;
 					if (entries.empty()) continue;
 
-					// Get building world position from the first entry
-					const QueueEntry* first = entries[0];
+					// Sort by build order (queuedFrame) so oldest is first.
+					// This is intuitive for the player and robust against sort drift.
+					for (size_t a = 0; a < entries.size(); ++a)
+					{
+						for (size_t b = a + 1; b < entries.size(); ++b)
+						{
+							if (entries[b]->queuedFrame < entries[a]->queuedFrame)
+								std::swap(entries[a], entries[b]);
+						}
+					}
+
+					// Skip completed entries (≥99%) that haven't been removed from
+					// the shadow queue yet. Falls back to first entry if all are done.
+					size_t firstActive = 0;
+					while (firstActive < entries.size() && entries[firstActive]->percentComplete >= 99.0f)
+						firstActive++;
+					if (firstActive >= entries.size())
+						firstActive = 0;  // all done — show first anyway
+
+					// Get building world position from the first active entry
+					const QueueEntry* first = entries[firstActive];
 					if (!first->producer) continue;
 
 					const Coord3D* worldPos = first->producer->getPosition();
@@ -8758,22 +8769,25 @@ void InGameUI::drawPlayerInfoList()
 					screenPos.y -= Int(40 * baseScale);
 					if (screenPos.y < 0) screenPos.y = 0;
 
-					size_t count = entries.size();
-					if (count > (size_t)maxPerBuilding) count = (size_t)maxPerBuilding;
-					Int totalW = (Int)count * iconSize + ((Int)count - 1) * iconSpacing;
+					// Show up to maxPerBuilding entries starting from firstActive
+					size_t showCount = entries.size() - firstActive;
+					if (showCount > (size_t)maxPerBuilding) showCount = (size_t)maxPerBuilding;
+					Int totalW = (Int)showCount * iconSize + ((Int)showCount - 1) * iconSpacing;
 					Int startX = screenPos.x - totalW / 2;
 
-					for (size_t i = 0; i < count; ++i)
+					for (size_t i = 0; i < showCount; ++i)
 					{
 						Int ix = startX + (Int)i * (iconSize + iconSpacing);
 						Int iy = screenPos.y;
 
+						const QueueEntry* qe = entries[firstActive + i];
+
 						// Try drawing the button image (unit or upgrade) — same as flat queues
 						const Image* img = nullptr;
-						if (entries[i]->tmpl)
-							img = entries[i]->tmpl->getButtonImage();
-						else if (entries[i]->upgradeTmpl)
-							img = entries[i]->upgradeTmpl->getButtonImage();
+						if (qe->tmpl)
+							img = qe->tmpl->getButtonImage();
+						else if (qe->upgradeTmpl)
+							img = qe->upgradeTmpl->getButtonImage();
 
 						if (img)
 						{
@@ -8789,8 +8803,10 @@ void InGameUI::drawPlayerInfoList()
 								ix + iconSize, iy + iconSize);
 						}
 
-						// Clock wedge: clearing grows clockwise as unit builds (same as flat queues)
-						Int pct = (Int)(entries[i]->percentComplete);
+						// Clock wedge: only the FIRST entry per building gets its real progress.
+						// Subsequent entries are queued and show 0% (fully dark).
+						Real drawPct = (i == 0) ? qe->percentComplete : 0.0f;
+						Int pct = (Int)drawPct;
 						if (pct >= 0 && pct <= 100)
 						{
 							TheDisplay->drawRemainingRectClock(
