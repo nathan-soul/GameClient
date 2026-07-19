@@ -8310,8 +8310,13 @@ void InGameUI::drawPlayerInfoList()
 
 			Int screenW = TheDisplay->getWidth();
 			Int screenH = TheDisplay->getHeight();
-			Real scale = (Real)screenW / 1920.0f;
-			scale = (scale < 0.7f) ? 0.7f : (scale > 2.0f) ? 2.0f : scale;
+			Real baseScale = (Real)screenW / 1920.0f;
+			baseScale = (baseScale < 0.7f) ? 0.7f : (baseScale > 2.0f) ? 2.0f : baseScale;
+			Int fontSize = TheGlobalData ? TheGlobalData->m_observerStatsFontSize : 8;
+			Real uiMultiplier = 1.0f + (fontSize - 8) * 0.125f;
+			if (uiMultiplier < 0.25f) uiMultiplier = 0.25f;
+			Real scale = baseScale * uiMultiplier;
+			scale = (scale < 0.35f) ? 0.35f : (scale > 4.0f) ? 4.0f : scale;
 			Int iconSize = Int(24 * scale);
 			Int iconSpacing = Int(3 * scale);
 
@@ -8448,15 +8453,24 @@ void InGameUI::drawPlayerInfoList()
 
 			Int screenW = TheDisplay->getWidth();
 			Int screenH = TheDisplay->getHeight();
-			Real scale = (Real)screenW / 1920.0f;
-			scale = (scale < 0.7f) ? 0.7f : (scale > 2.0f) ? 2.0f : scale;
+			Real baseScale = (Real)screenW / 1920.0f;
+			baseScale = (baseScale < 0.7f) ? 0.7f : (baseScale > 2.0f) ? 2.0f : baseScale;
 
-			Int queueBaseY = screenH - Int(80 * scale);
+			// UI scale multiplier from observer stats font size (controlled by Shift+Up/Down)
+			Int fontSize = TheGlobalData ? TheGlobalData->m_observerStatsFontSize : 8;
+			Real uiMultiplier = 1.0f + (fontSize - 8) * 0.125f;
+			if (uiMultiplier < 0.25f) uiMultiplier = 0.25f;
+
+			// Queue scale: combine resolution + UI scale (powers use resolution-only)
+			Real queueScale = baseScale * uiMultiplier;
+			queueScale = (queueScale < 0.35f) ? 0.35f : (queueScale > 4.0f) ? 4.0f : queueScale;
+
+			Int queueBaseY = screenH - Int(80 * baseScale);
 			if (queueBaseY < 0) queueBaseY = 0;
-			Int queueLineH = Int(18 * scale);
+			Int queueLineH = Int(18 * baseScale);
 			if (queueLineH < 1) queueLineH = 1;
-			safeDrawUnitQueues(this, Int(10 * scale), queueBaseY, queueLineH, scale);
-			safeDrawPowerCooldowns(this, Int(10 * scale), queueBaseY, queueLineH, scale);
+			safeDrawUnitQueues(this, Int(10 * baseScale), queueBaseY, queueLineH, queueScale);
+			safeDrawPowerCooldowns(this, Int(10 * baseScale), queueBaseY, queueLineH, baseScale);
 			safeDrawPowerFlashes(this);
 			safeDrawUnitQueueClicks(this);
 		}
