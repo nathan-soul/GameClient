@@ -1409,7 +1409,7 @@ InGameUI::InGameUI()
 		m_queuePanelBottomY[1] = 0;
 		m_overlayPowersVisible = true;
 		m_overlayQueuesVisible = true;
-		m_perBuildingQueueMode = QUEUE_DISPLAY_ON_HOVER;
+		m_perBuildingQueueMode = QUEUE_DISPLAY_ALWAYS;
 		m_scoreBarLeft = 0;
 		m_scoreBarRight = 0;
 		m_overlayOffsetX = 0;
@@ -8884,16 +8884,14 @@ void InGameUI::drawPlayerInfoList()
 			// Data gathering above always runs so re-showing is instant; only draw + click handling is gated.
 			if (m_overlayQueuesVisible)
 			{
-				// TheSuperHackers @feature 19/07/2026 Per-building queues (Ctrl+Q cycles modes)
-				if (m_perBuildingQueueMode != QUEUE_DISPLAY_HIDDEN)
-				{
-					safeDrawPerBuildingQueues(this);
-				}
-				else
-				{
-					safeDrawUnitQueues(this, Int(10 * baseScale), queueBaseY, queueLineH, queueScale);
-					safeDrawUnitQueueClicks(this);
-				}
+				safeDrawUnitQueues(this, Int(10 * baseScale), queueBaseY, queueLineH, queueScale);
+				safeDrawUnitQueueClicks(this);
+			}
+
+			// TheSuperHackers @feature 19/07/2026 Per-building queues (Ctrl+Q cycles modes, independent of F9)
+			if (m_perBuildingQueueMode != QUEUE_DISPLAY_HIDDEN)
+			{
+				safeDrawPerBuildingQueues(this);
 			}
 			if (m_overlayPowersVisible)
 			{
