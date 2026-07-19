@@ -8134,15 +8134,15 @@ void InGameUI::drawPlayerInfoList()
 							ix + iconSize, iy + iconSize);
 					}
 
-					// Green progress bar at bottom of icon
-					if (q[ei].percentComplete > 0.0f)
+					// Clock wedge showing remaining build time
+					Int pct = (Int)(q[ei].percentComplete);
+					Int remainingPct = 100 - pct;
+					if (remainingPct > 0 && remainingPct <= 100)
 					{
-						Int progW = (Int)(iconSize * q[ei].percentComplete / 100.0f);
-						if (progW < 1) progW = 1;
-						TheWindowManager->winFillRect(
-							TheWindowManager->winMakeColor(0, 200, 0, 200), 1,
-							ix, iy + iconSize - 3,
-							ix + progW, iy + iconSize);
+						TheDisplay->drawRemainingRectClock(
+							ix, iy, iconSize, iconSize,
+							remainingPct,
+							GameMakeColor(0, 0, 0, 160));
 					}
 				}
 			}
@@ -8203,25 +8203,25 @@ void InGameUI::drawPlayerInfoList()
 							panelX, curY, panelX + ringSize, curY + ringSize);
 					}
 
-					// Cooldown indicator (orange fill from bottom)
-					if (!isReady && ppi.hasModule)
+					// Cooldown indicator — clock wedge shrinking clockwise
+					UnsignedInt reloadFrames = LOGICFRAMES_PER_SECOND * 60; // fallback 60s
+					const SpecialPowerTemplate* sp = ppi.button->getSpecialPowerTemplate();
+					if (sp && sp->getReloadTime() > 0)
+						reloadFrames = sp->getReloadTime();
+
+					Real progress = 1.0f - ((Real)(ppi.readyFrame - currentFrame) / (Real)reloadFrames);
+					if (progress < 0) progress = 0;
+					if (progress > 1) progress = 1;
+
+					Int remainingPercent = (Int)(100.0f * (1.0f - progress));
+					if (remainingPercent > 0 && remainingPercent <= 100)
 					{
-						// Use actual reload time from the SpecialPowerTemplate
-						UnsignedInt reloadFrames = LOGICFRAMES_PER_SECOND * 60; // fallback 60s
-						const SpecialPowerTemplate* sp = ppi.button->getSpecialPowerTemplate();
-						if (sp && sp->getReloadTime() > 0)
-							reloadFrames = sp->getReloadTime();
-
-						Real progress = 1.0f - ((Real)(ppi.readyFrame - currentFrame) / (Real)reloadFrames);
-						if (progress < 0) progress = 0;
-						if (progress > 1) progress = 1;
-
-						Int progH = (Int)(ringSize * progress);
-						TheWindowManager->winFillRect(
-							TheWindowManager->winMakeColor(255, 200, 0, 120), 1,
-							panelX, curY + ringSize - progH, panelX + ringSize, curY + ringSize);
+						TheDisplay->drawRemainingRectClock(
+							panelX, curY, ringSize, ringSize,
+							remainingPercent,
+							GameMakeColor(0, 0, 0, 140));
 					}
-					else if (isReady)
+					if (isReady)
 					{
 						// Green border = ready
 						TheWindowManager->winFillRect(
