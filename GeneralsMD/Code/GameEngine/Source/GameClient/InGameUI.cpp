@@ -216,14 +216,14 @@ static void safeDrawPerBuildingQueues(InGameUI* ui)
 // Writes CSV to Z:\cc_queue_debug.log (Z: = project root in Docker/Wine)
 // ------------------------------------------------------------------------------------------------
 static void logQueueEvent(const char* event, const char* unitName, const char* buildingName,
-                          Int slot, Int queueSize, UnsignedInt frame)
+                          ObjectID buildingID, Int slot, Int queueSize, UnsignedInt frame)
 {
 	FILE* f = fopen("Z:\\cc_queue_debug.log", "a");
 	if (f)
 	{
-		fprintf(f, "%u,%s,%s,%s,%d,%d\n",
+		fprintf(f, "%u,%s,%s,%s,%d,%d,%d\n",
 			frame, event, unitName ? unitName : "?",
-			buildingName ? buildingName : "?", slot, queueSize);
+			buildingName ? buildingName : "?", (Int)buildingID, slot, queueSize);
 		fflush(f);
 		fclose(f);
 	}
@@ -7754,7 +7754,7 @@ void InGameUI::drawPlayerInfoList()
 
 			// DEBUG: log to file
 			logQueueEvent("Q+", unitType->getName().str(), buildingName.str(),
-				slot, (Int)m_playerOverlayExt[slot].queue.size(),
+				producer->getID(), slot, (Int)m_playerOverlayExt[slot].queue.size(),
 				TheGameLogic ? TheGameLogic->getFrame() : 0);
 
 			}
@@ -7797,12 +7797,12 @@ void InGameUI::drawPlayerInfoList()
 					}
 
 					// DEBUG: log to file
-					logQueueEvent("Q-", unitName.str(), "", slot, (Int)q.size(), now);
+					logQueueEvent("Q-", unitName.str(), "", producer->getID(), slot, (Int)q.size(), now);
 					return;
 				}
 				}
 				// Not found
-				logQueueEvent("Q-?", unitType->getName().str(), "", slot, (Int)q.size(),
+				logQueueEvent("Q-?", unitType->getName().str(), "", INVALID_ID, slot, (Int)q.size(),
 				TheGameLogic ? TheGameLogic->getFrame() : 0);
 			}
 
@@ -7846,12 +7846,12 @@ void InGameUI::drawPlayerInfoList()
 					}
 
 					// DEBUG: log to file
-					logQueueEvent("X", unitName.str(), "", slot, (Int)q.size(), now);
+					logQueueEvent("X", unitName.str(), "", producer->getID(), slot, (Int)q.size(), now);
 					return;
 				}
 				}
 				// Not found
-				logQueueEvent("X?", unitType->getName().str(), "", slot, (Int)q.size(),
+				logQueueEvent("X?", unitType->getName().str(), "", INVALID_ID, slot, (Int)q.size(),
 				TheGameLogic ? TheGameLogic->getFrame() : 0);
 			}
 
