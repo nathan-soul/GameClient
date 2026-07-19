@@ -8243,7 +8243,7 @@ void InGameUI::drawPlayerInfoList()
 					{
 						Real flashIntensity = 0.3f + 0.4f * sin((Real)(currentFrame) * 0.3f);
 						UnsignedInt flashA = (UnsignedInt)(180 * flashIntensity);
-						Color flashColor = TheWindowManager->winMakeColor(0, 255, 0, flashA);
+						Color flashColor = TheWindowManager->winMakeColor(180, 180, 180, flashA);
 						TheWindowManager->winFillRect(flashColor, 1,
 							panelX, curY, panelX + ringSize, curY + ringSize);
 					}
