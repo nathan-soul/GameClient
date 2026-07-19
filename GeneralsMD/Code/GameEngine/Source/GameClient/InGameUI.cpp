@@ -7711,6 +7711,11 @@ void InGameUI::drawPlayerInfoList()
 			qe.buildingPos = buildingPos;
 			qe.buildingName = buildingName;
 			qe.producer = producer;
+
+			// Store frame and build time for observer/replay progress calculation
+			qe.queuedFrame = TheGameLogic ? TheGameLogic->getFrame() : 0;
+			qe.buildTime = unitType->calcTimeToBuild(player);
+
 			m_playerOverlayExt[slot].queue.push_back(qe);
 
 			}
@@ -7820,6 +7825,10 @@ void InGameUI::drawPlayerInfoList()
 			qe.buildingPos = buildingPos;
 			qe.buildingName = buildingName;
 			qe.producer = producer;
+
+			qe.queuedFrame = TheGameLogic ? TheGameLogic->getFrame() : 0;
+			qe.buildTime = upgradeType->calcTimeToBuild(player);
+
 			m_playerOverlayExt[slot].queue.push_back(qe);
 
 			}
@@ -8042,9 +8051,49 @@ void InGameUI::drawPlayerInfoList()
 			}
 		}
 
-		void InGameUI::drawUnitQueuesImpl(Int baseX, Int baseY, Int lineH, Real scale)
+		void InGameUI::refreshQueueProgress()
+	{
+		// Update percentComplete from elapsed frames for observer/replay mode.
+		// Only the FIRST entry per building gets progress; later entries stay at 0.
+		if (!TheGameLogic) return;
+		UnsignedInt currentFrame = TheGameLogic->getFrame();
+
+		for (Int slot = 0; slot < MAX_SLOTS; ++slot)
 		{
-						if (!TheDisplay || !m_isValid1v1) return;
+			if (!m_playerOverlayExt[slot].isPresent) continue;
+			std::vector<QueueEntry>& q = m_playerOverlayExt[slot].queue;
+
+			// Track which producers we've already seen the "active" entry for
+			for (size_t i = 0; i < q.size(); ++i)
+			{
+				// Check if this is the first entry for this producer
+				Bool isFirst = true;
+				for (size_t j = 0; j < i; ++j)
+				{
+					if (q[j].producer == q[i].producer) { isFirst = false; break; }
+				}
+
+				if (isFirst && q[i].buildTime > 0 && q[i].queuedFrame > 0)
+				{
+					UnsignedInt elapsed = currentFrame - q[i].queuedFrame;
+					Real pct = (Real)elapsed / (Real)q[i].buildTime * 100.0f;
+					if (pct < 0.0f) pct = 0.0f;
+					if (pct > 100.0f) pct = 100.0f;
+					q[i].percentComplete = pct;
+				}
+				else
+				{
+					q[i].percentComplete = 0.0f;
+				}
+			}
+		}
+	}
+
+	void InGameUI::drawUnitQueuesImpl(Int baseX, Int baseY, Int lineH, Real scale)
+	{
+					if (!TheDisplay || !m_isValid1v1) return;
+
+					refreshQueueProgress();
 
 						Int screenH = TheDisplay->getHeight();
 			Int iconSize = Int(24 * scale);
@@ -8136,7 +8185,7 @@ void InGameUI::drawPlayerInfoList()
 
 					// Clock wedge: clearing grows clockwise as unit builds
 					Int pct = (Int)(q[ei].percentComplete);
-					if (pct > 0 && pct <= 100)
+					if (pct >= 0 && pct <= 100)
 					{
 						TheDisplay->drawRemainingRectClock(
 							ix, iy, iconSize, iconSize,
@@ -8216,7 +8265,7 @@ void InGameUI::drawPlayerInfoList()
 
 						// Cooldown indicator — clearing wedge grows clockwise, remaining is dark
 						Int pct = (Int)(100.0f * progress);
-						if (pct > 0 && pct <= 100)
+						if (pct >= 0 && pct <= 100)
 						{
 							TheDisplay->drawRemainingRectClock(
 								panelX, curY, ringSize, ringSize,

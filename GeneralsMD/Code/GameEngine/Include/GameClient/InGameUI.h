@@ -694,6 +694,7 @@ public: // TheSuperHackers: overlay methods must be public for file-scope safe* 
 	static void findPowerModule(Object* obj, void* userData);
 
 	// TheSuperHackers @feature 15/07/2026 SEH-safe Impl methods (called via safe* wrappers)
+	void refreshQueueProgress();       // update percentComplete from elapsed frames (observer/replay)
 	void gatherOverlayExtDataImpl();
 	void drawUnitQueuesImpl(Int baseX, Int baseY, Int lineH, Real scale);
 	void drawPowerCooldownsImpl(Int baseX, Int baseY, Int lineH, Real scale);
@@ -1155,6 +1156,8 @@ protected:
 		Coord3D buildingPos;       // world position of producing building (for click-to-navigate)
 		AsciiString buildingName;  // template name of producing building (for debug logging)
 		Object* producer;          // producing building instance (for removal on destroy)
+		UnsignedInt queuedFrame;   // frame when unit was queued (for observer/replay progress calc)
+		UnsignedInt buildTime;     // total frames needed to build this unit
 	};
 
 	struct PlayerPowerInfo
