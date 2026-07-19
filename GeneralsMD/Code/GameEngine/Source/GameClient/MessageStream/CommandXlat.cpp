@@ -3967,6 +3967,31 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 
         disp = DESTROY_MESSAGE;
     }
+        // TheSuperHackers @feature 17/07/2026 Spectator-overlay element toggles.
+        // Toggled on key-UP so a future hold+arrows move-mode (step 2) can tell a tap
+        // (=toggle) apart from a hold (=move overlay with arrow keys).
+        else if (key == KEY_F8)
+        {
+            if (TheInGameUI)
+            {
+                TheInGameUI->toggleOverlayPowers();
+                TheInGameUI->messageNoFormat(TheInGameUI->isOverlayPowersVisible()
+                    ? TheGameText->FETCH_OR_SUBSTITUTE("GUI:OverlayPowersOn", L"Overlay: general powers ON (F8)")
+                    : TheGameText->FETCH_OR_SUBSTITUTE("GUI:OverlayPowersOff", L"Overlay: general powers OFF (F8)"));
+            }
+            disp = DESTROY_MESSAGE;
+        }
+        else if (key == KEY_F9)
+        {
+            if (TheInGameUI)
+            {
+                TheInGameUI->toggleOverlayQueues();
+                TheInGameUI->messageNoFormat(TheInGameUI->isOverlayQueuesVisible()
+                    ? TheGameText->FETCH_OR_SUBSTITUTE("GUI:OverlayQueuesOn", L"Overlay: unit queues ON (F9)")
+                    : TheGameText->FETCH_OR_SUBSTITUTE("GUI:OverlayQueuesOff", L"Overlay: unit queues OFF (F9)"));
+            }
+            disp = DESTROY_MESSAGE;
+        }
 
     break;
     }

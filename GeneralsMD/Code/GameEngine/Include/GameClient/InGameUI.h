@@ -666,6 +666,15 @@ public: // TheSuperHackers: overlay methods must be public for file-scope safe* 
 	void drawPowerCooldowns(Int baseX, Int baseY, Int lineH, Real scale);
 	void drawPowerFlashes();
 	void drawUnitQueueClicks();  // click-to-navigate for queue icons
+
+	// TheSuperHackers @feature 17/07/2026 Hotkey-toggles for overlay elements.
+	// Toggled on key-UP (see CommandXlat.cpp MSG_RAW_KEY_UP) so a future hold+arrows
+	// move-mode (step 2) can distinguish tap (=toggle) from hold (=move with arrows).
+	void toggleOverlayPowers() { m_overlayPowersVisible = !m_overlayPowersVisible; }
+	void toggleOverlayQueues() { m_overlayQueuesVisible = !m_overlayQueuesVisible; }
+	Bool isOverlayPowersVisible() const { return m_overlayPowersVisible; }
+	Bool isOverlayQueuesVisible() const { return m_overlayQueuesVisible; }
+
 	static void collectQueueEntries(Object* obj, void* userData);
 	static void findPowerModule(Object* obj, void* userData);
 
@@ -1155,6 +1164,14 @@ protected:
 	Int m_queuePanelX[2];           // Reference X edges: radar hi.x (P1), hud lo.x (P2) — frame 2
 	Int m_queuePanelBottomY[2];    // Reference bottom Y edges: radar/hud hi.y — frame 2
 	Bool m_isValid1v1;              // Whether we have exactly 2 active non-observer players
+
+	// TheSuperHackers @feature 17/07/2026 Overlay element visibility (hotkey-toggleable).
+	// Default true; intentionally NOT reset in reset() so streamer preference survives game/replay switches.
+	Bool m_overlayPowersVisible;    // F8: general power cooldown panels (left/right screen edge)
+	Bool m_overlayQueuesVisible;    // F9: unit queue panels (screen bottom)
+	// Step 2 (planned): hold toggle key + arrow keys moves the overlay -> add m_overlayOffset here
+	// and track hold state in a MSG_RAW_KEY_DOWN handler in CommandXlat.cpp.
+	// Future: m_overlayUpgradesVisible for per-faction purchased-upgrade display (e.g. buggy ammo).
 
 	// ----------------------------------------------------------------------------------------------
 	// STATIC Protected Data -------------------------------------------------------------------------------

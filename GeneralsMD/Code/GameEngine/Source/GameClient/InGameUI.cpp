@@ -1382,6 +1382,8 @@ InGameUI::InGameUI()
 		m_queuePanelX[1] = 0;
 		m_queuePanelBottomY[0] = 0;
 		m_queuePanelBottomY[1] = 0;
+		m_overlayPowersVisible = true;
+		m_overlayQueuesVisible = true;
 		m_scoreBarLeft = 0;
 		m_scoreBarRight = 0;
 		for (Int s = 0; s < MAX_SLOTS; ++s)
@@ -8469,11 +8471,20 @@ void InGameUI::drawPlayerInfoList()
 			if (queueBaseY < 0) queueBaseY = 0;
 			Int queueLineH = Int(18 * baseScale);
 			if (queueLineH < 1) queueLineH = 1;
-			safeDrawUnitQueues(this, Int(10 * baseScale), queueBaseY, queueLineH, queueScale);
-			safeDrawPowerCooldowns(this, Int(10 * baseScale), queueBaseY, queueLineH, baseScale);
-			safeDrawPowerFlashes(this);
-			safeDrawUnitQueueClicks(this);
-		}
+
+			// TheSuperHackers @feature 17/07/2026 Per-element visibility toggles (F8 powers / F9 queues).
+			// Data gathering above always runs so re-showing is instant; only draw + click handling is gated.
+			if (m_overlayQueuesVisible)
+			{
+				safeDrawUnitQueues(this, Int(10 * baseScale), queueBaseY, queueLineH, queueScale);
+				safeDrawUnitQueueClicks(this);
+			}
+			if (m_overlayPowersVisible)
+			{
+				safeDrawPowerCooldowns(this, Int(10 * baseScale), queueBaseY, queueLineH, baseScale);
+				safeDrawPowerFlashes(this);
+			}
+	}
 
 		// TheSuperHackers @feature 15/07/2026 Public wrappers — delegate to SEH-safe static helpers.
 		// These keep the existing public API but protect against crashes in the overlay code.
