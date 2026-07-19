@@ -218,7 +218,7 @@ static void safeDrawPerBuildingQueues(InGameUI* ui)
 static void logQueueEvent(const char* event, const char* unitName, const char* buildingName,
                           ObjectID buildingID, Int slot, Int queueSize, UnsignedInt frame)
 {
-	FILE* f = fopen("Z:\\cc_queue_debug.log", "a");
+	FILE* f = fopen("cc_queue_debug.log", "a");
 	if (f)
 	{
 		fprintf(f, "%u,%s,%s,%s,%d,%d,%d\n",
