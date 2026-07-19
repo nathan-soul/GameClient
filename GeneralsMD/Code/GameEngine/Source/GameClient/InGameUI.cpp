@@ -8757,12 +8757,7 @@ void InGameUI::drawPlayerInfoList()
 						Int ix = startX + (Int)i * (iconSize + iconSpacing);
 						Int iy = screenPos.y;
 
-						// Dark background
-						TheWindowManager->winFillRect(
-							TheWindowManager->winMakeColor(0, 0, 0, 180), 1,
-							ix, iy, ix + iconSize, iy + iconSize);
-
-						// Unit icon image
+						// Try drawing the button image (unit or upgrade) — same as flat queues
 						const Image* img = nullptr;
 						if (entries[i]->tmpl)
 							img = entries[i]->tmpl->getButtonImage();
@@ -8774,8 +8769,16 @@ void InGameUI::drawPlayerInfoList()
 							TheDisplay->drawImage(img, ix, iy,
 								ix + iconSize, iy + iconSize);
 						}
+						else
+						{
+							// Fallback: gray rectangle placeholder (same as flat queues)
+							TheWindowManager->winFillRect(
+								TheWindowManager->winMakeColor(60, 60, 60, 200), 1,
+								ix, iy,
+								ix + iconSize, iy + iconSize);
+						}
 
-						// Clock cooldown overlay
+						// Clock wedge: clearing grows clockwise as unit builds (same as flat queues)
 						Int pct = (Int)(entries[i]->percentComplete);
 						if (pct >= 0 && pct <= 100)
 						{
