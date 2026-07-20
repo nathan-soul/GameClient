@@ -8862,7 +8862,6 @@ void InGameUI::drawPlayerInfoList()
 					size_t showCount = entries.size();
 					if (showCount > (size_t)maxPerBuilding) showCount = (size_t)maxPerBuilding;
 					Int gridRows = (Int)((showCount + gridCols - 1) / gridCols);
-					Int cellW = iconSize + iconSpacing;
 					Int cellH = iconSize + Int(8 * queueScale);  // extra space for ObjectID label
 					Int totalW = gridCols * iconSize + (gridCols - 1) * iconSpacing;
 					Int totalH = gridRows * cellH;
