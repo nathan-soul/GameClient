@@ -475,7 +475,7 @@ Bool ProductionUpdate::queueCreateUnit( const ThingTemplate *unitType, Productio
 
 	// TheSuperHackers @feature 15/07/2026 Notify observer overlay of queued unit
 	if (TheInGameUI)
-		TheInGameUI->onUnitQueued(getObject()->getControllingPlayer(), unitType, getObject(), production->getPercentComplete());
+		TheInGameUI->onUnitQueued(getObject()->getControllingPlayer(), unitType, getObject(), production->getPercentComplete(), production->getProductionID());
 
 	return TRUE;  // unit queued
 
@@ -500,7 +500,7 @@ void ProductionUpdate::cancelUnitCreate( ProductionID productionID )
 			if (TheInGameUI && production->m_objectToProduce)
 			{
 				Player* p = getObject()->getControllingPlayer();
-				TheInGameUI->onUnitCancelled(p, production->m_objectToProduce, getObject());
+				TheInGameUI->onUnitCancelled(p, production->m_objectToProduce, getObject(), production->m_productionID);
 			}
 
 			// give the player the cost of the object back
@@ -710,7 +710,7 @@ UpdateSleepTime ProductionUpdate::update()
 
 		// TheSuperHackers @feature 15/07/2026 Notify observer overlay of cancelled unit
 		if (TheInGameUI)
-			TheInGameUI->onUnitCancelled(player, production->m_objectToProduce, getObject());
+			TheInGameUI->onUnitCancelled(player, production->m_objectToProduce, getObject(), production->m_productionID);
 
 		// delete the production entry
 		deleteInstance(production);

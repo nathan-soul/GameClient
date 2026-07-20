@@ -631,8 +631,8 @@ public:
   void notifyGeneralPromotion(Player* player, ScienceType science);
   void notifySpecialPowerUsed(Player* player, const SpecialPowerTemplate* powerTemplate);
   void onSpecialPowerTriggered(Player* player, const SpecialPowerTemplate* spTemplate, const Coord3D& location);
-  void onUnitQueued(Player* player, const ThingTemplate* unitType, Object* producer, Real percentComplete);
-  void onUnitCancelled(Player* player, const ThingTemplate* unitType, Object* producer);
+  void onUnitQueued(Player* player, const ThingTemplate* unitType, Object* producer, Real percentComplete, Int productionID);
+  void onUnitCancelled(Player* player, const ThingTemplate* unitType, Object* producer, Int productionID);
   void onUnitCompleted(Player* player, const ThingTemplate* unitType, Object* producer);
   void onUpgradeQueued(Player* player, const UpgradeTemplate* upgradeType, Object* producer, Real percentComplete);
   void onUpgradeCancelled(Player* player, const UpgradeTemplate* upgradeType, Object* producer);
@@ -1176,6 +1176,8 @@ protected:
 		ObjectID producerID;       // cached ObjectID for safe validation (producer may go stale)
 		UnsignedInt queuedFrame;   // frame when unit was queued (for observer/replay progress calc)
 		UnsignedInt buildTime;     // total frames needed to build this unit
+		Int productionID;          // unique production ID from the engine (for precise cancel matching)
+		UnsignedInt sequenceNumber; // global insertion order (for stable display ordering)
 	};
 
 	struct PlayerPowerInfo
@@ -1208,6 +1210,7 @@ protected:
 	Bool m_overlayPowersVisible;    // F8: general power cooldown panels (left/right screen edge)
 	Bool m_overlayQueuesVisible;    // F9: unit queue panels (screen bottom)
 	QueueDisplayMode m_perBuildingQueueMode;  // Ctrl+Q: per-building queue display mode
+	UnsignedInt m_queueSequenceCounter;       // monotonic counter for stable entry ordering
 	Int m_overlayOffsetX;           // Horizontal offset in pixels for overlay repositioning
 	Bool m_repositionMode;          // F7 toggle for overlay reposition panel
 	Int m_repositionClickedBtn;     // Which button was clicked (-1 = none), for flash feedback

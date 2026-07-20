@@ -4011,13 +4011,17 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
             if (TheInGameUI)
             {
                 TheInGameUI->cyclePerBuildingQueueMode();
-                InGameUI::QueueDisplayMode mode = TheInGameUI->getPerBuildingQueueMode();
-                if (mode == InGameUI::QUEUE_DISPLAY_ALWAYS)
-                    TheInGameUI->messageNoFormat(L"Per-building queues: ALWAYS (Ctrl+Q)");
-                else if (mode == InGameUI::QUEUE_DISPLAY_ON_HOVER)
-                    TheInGameUI->messageNoFormat(L"Per-building queues: ON HOVER (Ctrl+Q)");
-                else
-                    TheInGameUI->messageNoFormat(L"Per-building queues: HIDDEN (Ctrl+Q)");
+                // Only show the mode message for observers — active players don't need to see this.
+                if (TheControlBar && TheControlBar->isObserverControlBarOn())
+                {
+                    InGameUI::QueueDisplayMode mode = TheInGameUI->getPerBuildingQueueMode();
+                    if (mode == InGameUI::QUEUE_DISPLAY_ALWAYS)
+                        TheInGameUI->messageNoFormat(L"Per-building queues: ALWAYS (Ctrl+Q)");
+                    else if (mode == InGameUI::QUEUE_DISPLAY_ON_HOVER)
+                        TheInGameUI->messageNoFormat(L"Per-building queues: ON HOVER (Ctrl+Q)");
+                    else
+                        TheInGameUI->messageNoFormat(L"Per-building queues: HIDDEN (Ctrl+Q)");
+                }
             }
             disp = DESTROY_MESSAGE;
         }

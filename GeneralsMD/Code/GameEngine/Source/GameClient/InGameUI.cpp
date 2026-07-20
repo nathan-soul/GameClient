@@ -7708,7 +7708,7 @@ void InGameUI::drawPlayerInfoList()
 
 		// TheSuperHackers @feature 15/07/2026 Shadow queue: called from ProductionUpdate::queueCreateUnit hook.
 		// Builds queue entries from actual game events — works in both live and replay mode.
-		void InGameUI::onUnitQueued(Player* player, const ThingTemplate* unitType, Object* producer, Real percentComplete)
+		void InGameUI::onUnitQueued(Player* player, const ThingTemplate* unitType, Object* producer, Real percentComplete, Int productionID)
 		{
 			if (!player || !unitType || !producer || !ThePlayerList || !TheNameKeyGenerator)
 				return;
@@ -7751,16 +7751,26 @@ void InGameUI::drawPlayerInfoList()
 			qe.queuedFrame = TheGameLogic ? TheGameLogic->getFrame() : 0;
 			qe.buildTime = unitType->calcTimeToBuild(player);
 
-			// Self-healing: remove stale entries from this producer
+			// Self-healing: remove stale entries from this producer.
 			// A stale entry is one whose buildTime has elapsed — it was cancelled/completed
 			// without our hook firing (MSG_CANCEL_UNIT_CREATE is never processed in replay).
+			// CRITICAL: only check the FIRST entry for this producer (the one whose build
+			// has started). Later entries are queued waiting and their original queuedFrame
+			// is ancient — they would all be incorrectly removed.
 			UnsignedInt now = TheGameLogic ? TheGameLogic->getFrame() : 0;
 			std::vector<QueueEntry>& q = m_playerOverlayExt[slot].queue;
 			for (Int i = (Int)q.size() - 1; i >= 0; --i)
 			{
 				if (q[i].producer == producer)
 				{
-					if (q[i].buildTime > 0 && now > q[i].queuedFrame + q[i].buildTime + 300)
+					// Is this the first entry for this producer (build has started)?
+					Bool isFirst = true;
+					for (Int j = 0; j < i; ++j)
+					{
+						if (q[j].producer == producer) { isFirst = false; break; }
+					}
+
+					if (isFirst && q[i].buildTime > 0 && now > q[i].queuedFrame + q[i].buildTime + 300)
 					{
 						AsciiString staleUnit;
 						if (q[i].tmpl) staleUnit = q[i].tmpl->getName();
@@ -7829,7 +7839,7 @@ void InGameUI::drawPlayerInfoList()
 
 			// TheSuperHackers @feature 15/07/2026 Called from ProductionUpdate::cancelUnitCreate hook.
 			// Removes the matching entry from the shadow queue.
-			void InGameUI::onUnitCancelled(Player* player, const ThingTemplate* unitType, Object* producer)
+			void InGameUI::onUnitCancelled(Player* player, const ThingTemplate* unitType, Object* producer, Int productionID)
 			{
 			if (!player || !unitType || !producer || !ThePlayerList || !TheNameKeyGenerator)
 				return;
@@ -7922,11 +7932,17 @@ void InGameUI::drawPlayerInfoList()
 			qe.buildingName = buildingName;
 			qe.producer = producer;
 	qe.producerID = producer->getID();
+			qe.sequenceNumber = ++m_queueSequenceCounter;
 
 			qe.queuedFrame = TheGameLogic ? TheGameLogic->getFrame() : 0;
 			qe.buildTime = upgradeType->calcTimeToBuild(player);
 
 			m_playerOverlayExt[slot].queue.push_back(qe);
+
+			// DEBUG: log upgrade queue event
+			logQueueEvent("U+", upgradeType->getUpgradeName().str(), buildingName.str(),
+				producer->getID(), slot, (Int)m_playerOverlayExt[slot].queue.size(),
+				TheGameLogic ? TheGameLogic->getFrame() : 0);
 
 			}
 
@@ -7953,10 +7969,13 @@ void InGameUI::drawPlayerInfoList()
 			{
 				if (q[i].upgradeTmpl == upgradeType && q[i].producer == producer)
 				{
+					AsciiString upgradeName = upgradeType->getUpgradeName();
+					UnsignedInt now = TheGameLogic ? TheGameLogic->getFrame() : 0;
+					logQueueEvent("U-", upgradeName.str(), "", producer->getID(), slot, (Int)q.size() - 1, now);
+
 					q.erase(q.begin() + i);
 
 					// Reset build timer for the next entry of the same producer
-					UnsignedInt now = TheGameLogic ? TheGameLogic->getFrame() : 0;
 					for (size_t j = i; j < q.size(); ++j)
 					{
 						if (q[j].producer == producer)
@@ -7993,6 +8012,10 @@ void InGameUI::drawPlayerInfoList()
 			{
 				if (q[i].upgradeTmpl == upgradeType && q[i].producer == producer)
 				{
+					AsciiString upgradeName = upgradeType->getUpgradeName();
+					UnsignedInt now = TheGameLogic ? TheGameLogic->getFrame() : 0;
+					logQueueEvent("Ux", upgradeName.str(), "", producer->getID(), slot, (Int)q.size() - 1, now);
+
 					q.erase(q.begin() + i);
 					return;
 				}
@@ -8234,15 +8257,16 @@ void InGameUI::drawPlayerInfoList()
 			std::vector<UnsignedInt> estCompletion(q.size(), 0);
 			for (size_t i = 0; i < q.size(); ++i)
 			{
-				// Find the previous entry for the same producer to chain build times
-				UnsignedInt prevCompletion = currentFrame; // start from now for first entry
+				// Find the CLOSEST previous entry for the same producer (not the first).
+				// Must scan ALL prior entries — the first match may not be the direct
+				// predecessor (e.g. Unit → Upgrade → Unit: the second unit's predecessor
+				// is the upgrade, not the first unit).
+				UnsignedInt prevCompletion = currentFrame;
 				for (size_t j = 0; j < i; ++j)
 				{
 					if (q[j].producer == q[i].producer)
-					{
 						prevCompletion = estCompletion[j];
-						break;
-					}
+					// NO break — continue to find the LAST matching entry (closest)
 				}
 				estCompletion[i] = prevCompletion + q[i].buildTime;
 			}
@@ -8907,9 +8931,9 @@ void InGameUI::drawPlayerInfoList()
 							GameMakeColor(0, 0, 0, 160));
 					}
 
-					// ObjectID label below the icon
+					// Sort index label below the icon (1-based position after ordering)
 					UnicodeString idLabel;
-					idLabel.format(L"%d", (Int)qe->producerID);
+					idLabel.format(L"%d", (Int)(i + 1));
 					DisplayString* ds = TheDisplayStringManager->newDisplayString();
 					if (ds)
 					{
