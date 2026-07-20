@@ -1430,6 +1430,7 @@ InGameUI::InGameUI()
 		m_overlayPowersVisible = true;
 		m_overlayQueuesVisible = true;
 		m_perBuildingQueueMode = QUEUE_DISPLAY_ALWAYS;
+		m_queueSequenceCounter = 0;
 		m_scoreBarLeft = 0;
 		m_scoreBarRight = 0;
 		m_overlayOffsetX = 0;
@@ -7746,6 +7747,8 @@ void InGameUI::drawPlayerInfoList()
 			qe.buildingName = buildingName;
 			qe.producer = producer;
 	qe.producerID = producer->getID();
+			qe.productionID = productionID;
+			qe.sequenceNumber = ++m_queueSequenceCounter;
 
 			// Store frame and build time for observer/replay progress calculation
 			qe.queuedFrame = TheGameLogic ? TheGameLogic->getFrame() : 0;
@@ -7857,10 +7860,12 @@ void InGameUI::drawPlayerInfoList()
 
 			std::vector<QueueEntry>& q = m_playerOverlayExt[slot].queue;
 
-			// Find and remove the first matching entry (same building instance, same unit type)
+			// Find and remove the matching entry by productionID (precise match).
+			// Matching on producer+tmpl is ambiguous when multiple identical units
+			// are queued — productionID uniquely identifies the cancelled slot.
 			for (size_t i = 0; i < q.size(); ++i)
 			{
-				if (q[i].producer == producer && q[i].tmpl == unitType)
+				if (q[i].producer == producer && q[i].productionID == productionID)
 				{
 					AsciiString unitName = unitType->getName();
 					q.erase(q.begin() + i);
@@ -8849,13 +8854,14 @@ void InGameUI::drawPlayerInfoList()
 					auto& entries = kv.second;
 					if (entries.empty()) continue;
 
-					// Sort by build order (queuedFrame) so oldest is first.
-					// This is intuitive for the player.
+					// Sort by sequenceNumber for stable display order.
+					// Unlike queuedFrame (which gets reset by onUnitCompleted),
+					// sequenceNumber never changes after creation.
 					for (size_t a = 0; a < entries.size(); ++a)
 					{
 						for (size_t b = a + 1; b < entries.size(); ++b)
 						{
-							if (entries[b]->queuedFrame < entries[a]->queuedFrame)
+							if (entries[b]->sequenceNumber < entries[a]->sequenceNumber)
 								std::swap(entries[a], entries[b]);
 						}
 					}
