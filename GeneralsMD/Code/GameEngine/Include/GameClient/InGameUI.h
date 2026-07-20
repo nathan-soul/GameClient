@@ -1173,6 +1173,7 @@ protected:
 		Coord3D buildingPos;       // world position of producing building (for click-to-navigate)
 		AsciiString buildingName;  // template name of producing building (for debug logging)
 		Object* producer;          // producing building instance (for removal on destroy)
+		ObjectID producerID;       // cached ObjectID for safe validation (producer may go stale)
 		UnsignedInt queuedFrame;   // frame when unit was queued (for observer/replay progress calc)
 		UnsignedInt buildTime;     // total frames needed to build this unit
 	};

@@ -7745,6 +7745,7 @@ void InGameUI::drawPlayerInfoList()
 			qe.buildingPos = buildingPos;
 			qe.buildingName = buildingName;
 			qe.producer = producer;
+	qe.producerID = producer->getID();
 
 			// Store frame and build time for observer/replay progress calculation
 			qe.queuedFrame = TheGameLogic ? TheGameLogic->getFrame() : 0;
@@ -7920,6 +7921,7 @@ void InGameUI::drawPlayerInfoList()
 			qe.buildingPos = buildingPos;
 			qe.buildingName = buildingName;
 			qe.producer = producer;
+	qe.producerID = producer->getID();
 
 			qe.queuedFrame = TheGameLogic ? TheGameLogic->getFrame() : 0;
 			qe.buildTime = upgradeType->calcTimeToBuild(player);
@@ -8160,8 +8162,7 @@ void InGameUI::drawPlayerInfoList()
 		void InGameUI::refreshQueueProgress()
 	{
 		// Update percentComplete from elapsed frames for observer/replay mode.
-		// Only the FIRST entry per building gets progress; later entries stay at 0.
-		// Then sort by estimated completion time so the next-finishing unit appears first.
+		// First, validate entries: remove any whose producer no longer exists.
 		if (!TheGameLogic) return;
 		UnsignedInt currentFrame = TheGameLogic->getFrame();
 
@@ -8169,6 +8170,42 @@ void InGameUI::drawPlayerInfoList()
 		{
 			if (!m_playerOverlayExt[slot].isPresent) continue;
 			std::vector<QueueEntry>& q = m_playerOverlayExt[slot].queue;
+
+			// Validate: remove entries with dead/zombie producers
+			for (size_t i = 0; i < q.size(); )
+			{
+				Bool producerAlive = false;
+				if (q[i].producerID != INVALID_ID)
+				{
+					Object* found = TheGameLogic->findObjectByID(q[i].producerID);
+					if (found)
+					{
+						// Also fix up the pointer in case it moved
+						q[i].producer = found;
+						producerAlive = true;
+					}
+				}
+				else if (q[i].producer)
+				{
+					// Legacy entry without producerID — trust the pointer for now
+					producerAlive = true;
+				}
+
+				if (!producerAlive)
+				{
+					AsciiString staleUnit;
+					if (q[i].tmpl) staleUnit = q[i].tmpl->getName();
+					logQueueEvent("D", staleUnit.str(), "", q[i].producerID,
+						slot, (Int)q.size() - 1, currentFrame);
+					q.erase(q.begin() + i);
+					// don't increment i
+				}
+				else
+				{
+					++i;
+				}
+			}
+
 			if (q.empty()) continue;
 
 			// Step 1: update percentComplete per building (first entry only)
