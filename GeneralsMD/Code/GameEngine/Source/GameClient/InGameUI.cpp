@@ -8786,11 +8786,12 @@ void InGameUI::drawPlayerInfoList()
 			Real queueScale = baseScale * uiMultiplier;
 			queueScale = (queueScale < 0.35f) ? 0.35f : (queueScale > 4.0f) ? 4.0f : queueScale;
 
-			Int iconSize = Int(16 * queueScale);
+			Int iconSize = Int(12 * queueScale);
 			Int iconSpacing = Int(2 * queueScale);
-			if (iconSize < 8) iconSize = 8;
+			if (iconSize < 6) iconSize = 6;
 			if (iconSpacing < 1) iconSpacing = 1;
-			Int maxPerBuilding = 5;
+			Int maxPerBuilding = 15;
+			Int gridCols = 3;
 
 			// For ON_HOVER mode, find the building under the mouse
 			Drawable* hoveredDraw = nullptr;
@@ -8857,49 +8858,72 @@ void InGameUI::drawPlayerInfoList()
 					screenPos.y -= Int(40 * baseScale);
 					if (screenPos.y < 0) screenPos.y = 0;
 
-					// Show up to maxPerBuilding entries
+					// Show up to maxPerBuilding entries in a 3-column grid
 					size_t showCount = entries.size();
 					if (showCount > (size_t)maxPerBuilding) showCount = (size_t)maxPerBuilding;
-					Int totalW = (Int)showCount * iconSize + ((Int)showCount - 1) * iconSpacing;
+					Int gridRows = (Int)((showCount + gridCols - 1) / gridCols);
+					Int cellW = iconSize + iconSpacing;
+					Int cellH = iconSize + Int(8 * queueScale);  // extra space for ObjectID label
+					Int totalW = gridCols * iconSize + (gridCols - 1) * iconSpacing;
+					Int totalH = gridRows * cellH;
 					Int startX = screenPos.x - totalW / 2;
+					Int startY = screenPos.y - totalH;
 
 					for (size_t i = 0; i < showCount; ++i)
 					{
-						Int ix = startX + (Int)i * (iconSize + iconSpacing);
-						Int iy = screenPos.y;
+					Int col = (Int)i % gridCols;
+					Int row = (Int)i / gridCols;
+					Int ix = startX + col * (iconSize + iconSpacing);
+					Int iy = startY + row * cellH;
 
-						const QueueEntry* qe = entries[i];
+					const QueueEntry* qe = entries[i];
 
-						// Try drawing the button image — same as flat queues
-						const Image* img = nullptr;
-						if (qe->tmpl)
-							img = qe->tmpl->getButtonImage();
-						else if (qe->upgradeTmpl)
-							img = qe->upgradeTmpl->getButtonImage();
+					// Try drawing the button image
+					const Image* img = nullptr;
+					if (qe->tmpl)
+						img = qe->tmpl->getButtonImage();
+					else if (qe->upgradeTmpl)
+						img = qe->upgradeTmpl->getButtonImage();
 
-						if (img)
-						{
-							TheDisplay->drawImage(img, ix, iy,
-								ix + iconSize, iy + iconSize);
-						}
-						else
-						{
-							TheWindowManager->winFillRect(
-								TheWindowManager->winMakeColor(60, 60, 60, 200), 1,
-								ix, iy,
-								ix + iconSize, iy + iconSize);
-						}
+					if (img)
+					{
+						TheDisplay->drawImage(img, ix, iy,
+							ix + iconSize, iy + iconSize);
+					}
+					else
+					{
+						TheWindowManager->winFillRect(
+							TheWindowManager->winMakeColor(60, 60, 60, 200), 1,
+							ix, iy,
+							ix + iconSize, iy + iconSize);
+					}
 
-						// Clock wedge — each entry shows its actual progress.
-						// refreshQueueProgress handles cleanup of ≥100% entries.
-						Int pct = (Int)(qe->percentComplete);
-						if (pct >= 0 && pct <= 100)
-						{
-							TheDisplay->drawRemainingRectClock(
-								ix, iy, iconSize, iconSize,
-								pct,
-								GameMakeColor(0, 0, 0, 160));
-						}
+					// Clock wedge
+					Int pct = (Int)(qe->percentComplete);
+					if (pct >= 0 && pct <= 100)
+					{
+						TheDisplay->drawRemainingRectClock(
+							ix, iy, iconSize, iconSize,
+							pct,
+							GameMakeColor(0, 0, 0, 160));
+					}
+
+					// ObjectID label below the icon
+					UnicodeString idLabel;
+					idLabel.format(L"%d", (Int)qe->producerID);
+					DisplayString* ds = TheDisplayStringManager->newDisplayString();
+					if (ds)
+					{
+					ds->setFont(TheFontLibrary->getFont(
+						m_messageFont, 6, false));
+					ds->setText(idLabel);
+					Int labelX = ix + iconSize / 2 - ds->getWidth() / 2;
+					Int labelY = iy + iconSize + 1;
+					ds->draw(labelX, labelY,
+						GameMakeColor(180, 180, 180, 220),
+						GameMakeColor(0, 0, 0, 220));
+					TheDisplayStringManager->freeDisplayString(ds);
+					}
 					}
 				}
 			}
