@@ -8157,11 +8157,18 @@ void InGameUI::drawPlayerInfoList()
 					}
 					else
 					{
-						// Skirmish: find modules normally
-						p->iterateObjects(findPowerModule, &ppi);
+						// Skirmish: check required science first (same as replay path),
+						// then find modules. Buildings (e.g. CommandCenter) may have all
+						// SpecialPowerModules pre-attached regardless of promotion choices.
+						ScienceType required = sp->getRequiredScience();
+						if (required == SCIENCE_INVALID || p->hasScience(required))
+							p->iterateObjects(findPowerModule, &ppi);
+						// else: ppi.hasModule stays false — power not yet chosen
 					}
 
-					++numPowers;
+					// Only count powers the player actually has (module exists)
+					if (ppi.hasModule)
+						++numPowers;
 				}
 				m_playerOverlayExt[slot].powerCount = numPowers;
 
