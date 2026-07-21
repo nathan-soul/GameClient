@@ -928,15 +928,21 @@ void NGMP_OnlineServicesManager::Init()
 
     std::string strPlugin = NGMP_OnlineServicesManager::Settings.GetAnticheatPlugin();
 	f = fopen("GoOnlineTrace.log", "a");
-	if (f) { fprintf(f, "[TRACE] NGMP::Init() AC plugin name='%s'\n", strPlugin.c_str()); fflush(f); fclose(f); }
+	if (f) { fprintf(f, "[TRACE] NGMP::Init() AC plugin name='%s' (SKIPPED for overlay build)\n", strPlugin.c_str()); fflush(f); fclose(f); }
 	std::string pluginPath = std::format("plugins/{}/{}.dll", strPlugin.c_str(), strPlugin.c_str());
 	f = fopen("GoOnlineTrace.log", "a");
-	if (f) { fprintf(f, "[TRACE] NGMP::Init() loading plugin: %s\n", pluginPath.c_str()); fflush(f); fclose(f); }
+	if (f) { fprintf(f, "[TRACE] NGMP::Init() skipping plugin load: %s\n", pluginPath.c_str()); fflush(f); fclose(f); }
 
+	// TheSuperHackers @fix 21/07/2026: Skip AC plugin loading.
+	// The easyanticheat.dll DllMain hangs in our build environment.
+	// Not needed for overlay testing — AC is only required for
+	// ranked multiplayer matches on the live GO service.
+#if 0
 #if _DEBUG
 	AnticheatPlugInterface::LoadPlugin(pluginPath.c_str());
 #else
 	AnticheatPlugInterface::LoadPlugin(pluginPath.c_str());
+#endif
 #endif
 	f = fopen("GoOnlineTrace.log", "a");
 	if (f) { fprintf(f, "[TRACE] NGMP::Init() plugin loaded (or attempted)\n"); fflush(f); fclose(f); }
