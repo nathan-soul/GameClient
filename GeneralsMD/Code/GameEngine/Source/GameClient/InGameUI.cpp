@@ -8884,7 +8884,7 @@ void InGameUI::drawPlayerInfoList()
 					Real hbHeight, hbWidth;
 					if (first->producer->getHealthBoxDimensions(hbHeight, hbWidth)) {
 						Real buildingScreenWidth = hbWidth / zoom;  // screen-space pixels matching health bar
-						buildingIconSize = Int(buildingScreenWidth * 0.16f); // 16% of health bar width per icon
+						buildingIconSize = Int(buildingScreenWidth * 0.12f); // 12% of health bar width per icon
 					} else {
 						buildingIconSize = Int(16 * queueScale);  // fallback for objects without health box
 					}
