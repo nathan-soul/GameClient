@@ -3977,9 +3977,10 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
             if (TheInGameUI)
             {
                 TheInGameUI->toggleOverlayPowers();
-                TheInGameUI->messageNoFormat(TheInGameUI->isOverlayPowersVisible()
-                    ? TheGameText->FETCH_OR_SUBSTITUTE("GUI:OverlayPowersOn", L"Overlay: general powers ON (F8)")
-                    : TheGameText->FETCH_OR_SUBSTITUTE("GUI:OverlayPowersOff", L"Overlay: general powers OFF (F8)"));
+                if (TheControlBar && TheControlBar->isObserverControlBarOn())
+                    TheInGameUI->messageNoFormat(TheInGameUI->isOverlayPowersVisible()
+                        ? TheGameText->FETCH_OR_SUBSTITUTE("GUI:OverlayPowersOn", L"Overlay: general powers ON (F8)")
+                        : TheGameText->FETCH_OR_SUBSTITUTE("GUI:OverlayPowersOff", L"Overlay: general powers OFF (F8)"));
             }
             disp = DESTROY_MESSAGE;
         }
@@ -3988,9 +3989,10 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
             if (TheInGameUI)
             {
                 TheInGameUI->toggleOverlayQueues();
-                TheInGameUI->messageNoFormat(TheInGameUI->isOverlayQueuesVisible()
-                    ? TheGameText->FETCH_OR_SUBSTITUTE("GUI:OverlayQueuesOn", L"Overlay: unit queues ON (F9)")
-                    : TheGameText->FETCH_OR_SUBSTITUTE("GUI:OverlayQueuesOff", L"Overlay: unit queues OFF (F9)"));
+                if (TheControlBar && TheControlBar->isObserverControlBarOn())
+                    TheInGameUI->messageNoFormat(TheInGameUI->isOverlayQueuesVisible()
+                        ? TheGameText->FETCH_OR_SUBSTITUTE("GUI:OverlayQueuesOn", L"Overlay: unit queues ON (F9)")
+                        : TheGameText->FETCH_OR_SUBSTITUTE("GUI:OverlayQueuesOff", L"Overlay: unit queues OFF (F9)"));
             }
             disp = DESTROY_MESSAGE;
         }
@@ -3999,9 +4001,10 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
             if (TheInGameUI)
             {
                 TheInGameUI->toggleRepositionMode();
-                TheInGameUI->messageNoFormat(TheInGameUI->isRepositionMode()
-                    ? TheGameText->FETCH_OR_SUBSTITUTE("GUI:RepositionOn", L"Reposition mode ON (F7)")
-                    : TheGameText->FETCH_OR_SUBSTITUTE("GUI:RepositionOff", L"Reposition mode OFF (F7)"));
+                if (TheControlBar && TheControlBar->isObserverControlBarOn())
+                    TheInGameUI->messageNoFormat(TheInGameUI->isRepositionMode()
+                        ? TheGameText->FETCH_OR_SUBSTITUTE("GUI:RepositionOn", L"Reposition mode ON (F7)")
+                        : TheGameText->FETCH_OR_SUBSTITUTE("GUI:RepositionOff", L"Reposition mode OFF (F7)"));
             }
             disp = DESTROY_MESSAGE;
         }

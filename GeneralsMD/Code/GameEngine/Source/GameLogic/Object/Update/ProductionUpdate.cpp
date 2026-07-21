@@ -33,10 +33,12 @@
 #include "Common/BitFlagsIO.h"
 #include "Common/BuildAssistant.h"
 #include "Common/CRCDebug.h"
+#include "Common/GlobalData.h"
 #include "Common/GameState.h"
 #include "Common/Player.h"
 #include "Common/Radar.h"
 #include "Common/Recorder.h"
+#include "Common/StatsExporter.h"
 #include "Common/ThingFactory.h"
 #include "Common/ThingTemplate.h"
 #include "Common/Upgrade.h"
@@ -477,6 +479,18 @@ Bool ProductionUpdate::queueCreateUnit( const ThingTemplate *unitType, Productio
 	if (TheInGameUI)
 		TheInGameUI->onUnitQueued(getObject()->getControllingPlayer(), unitType, getObject(), production->getPercentComplete(), production->getProductionID());
 
+	// TheSuperHackers @feature 20/07/2026 Notify StatsExporter for shadow queue tracking
+	if (TheGlobalData && TheGlobalData->m_exportStats)
+	{
+		Object *us = getObject();
+		if (us)
+		{
+			Player *p = us->getControllingPlayer();
+			if (p)
+				StatsExporterRecordUnitQueued(p, unitType, us);
+		}
+	}
+
 	return TRUE;  // unit queued
 
 }
@@ -501,6 +515,18 @@ void ProductionUpdate::cancelUnitCreate( ProductionID productionID )
 			{
 				Player* p = getObject()->getControllingPlayer();
 				TheInGameUI->onUnitCancelled(p, production->m_objectToProduce, getObject(), production->m_productionID);
+			}
+
+			// TheSuperHackers @feature 20/07/2026 Notify StatsExporter for shadow queue tracking
+			if (TheGlobalData && TheGlobalData->m_exportStats && production->m_objectToProduce)
+			{
+				Object *us = getObject();
+				if (us)
+				{
+					Player *p = us->getControllingPlayer();
+					if (p)
+						StatsExporterRecordUnitCancelled(p, production->m_objectToProduce, us);
+				}
 			}
 
 			// give the player the cost of the object back
@@ -712,6 +738,14 @@ UpdateSleepTime ProductionUpdate::update()
 		if (TheInGameUI)
 			TheInGameUI->onUnitCancelled(player, production->m_objectToProduce, getObject(), production->m_productionID);
 
+		// TheSuperHackers @feature 20/07/2026 Notify StatsExporter for shadow queue tracking (null player path)
+		if (TheGlobalData && TheGlobalData->m_exportStats && production->m_objectToProduce)
+		{
+			Object *obj = getObject();
+			if (obj)
+				StatsExporterRecordUnitCancelled(player, production->m_objectToProduce, obj);
+		}
+
 		// delete the production entry
 		deleteInstance(production);
 
@@ -907,6 +941,10 @@ UpdateSleepTime ProductionUpdate::update()
 					// TheSuperHackers @feature 15/07/2026 Notify overlay: unit completed production
 					if (TheInGameUI)
 						TheInGameUI->onUnitCompleted(player, production->m_objectToProduce, us);
+
+					// TheSuperHackers @feature 20/07/2026 Notify StatsExporter for shadow queue tracking
+					if (TheGlobalData && TheGlobalData->m_exportStats && production->m_objectToProduce)
+						StatsExporterRecordUnitCompleted(player, production->m_objectToProduce, us);
 
 					// delete the production entry
 					deleteInstance(production);

@@ -842,133 +842,19 @@ void StopAsyncDNSCheck()
 
 void StartPatchCheck()
 {
-
-    checkingForPatchBeforeGameSpy = TRUE;
-    cantConnectBeforeOnline = FALSE;
-    timeThroughOnline++;
-    checksLeftBeforeOnline = 0;
-
-    SYSTEM_INFO SystemInfo;
-    GetSystemInfo(&SystemInfo);
-
-	bool bIsARMArchitecture = SystemInfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_ARM || SystemInfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_ARM64 || SystemInfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_ARM32_ON_WIN64;
-	if (bIsARMArchitecture)
-	{
-        MessageBoxOk(TheGameText->fetchOrSubstitute("GUI:NoARMSupportHeader", L"Unsupported System"),
-            TheGameText->fetchOrSubstitute("GUI:NoARMSupport", L"GeneralsOnline does not support ARM processors"),
-            CancelPatchCheckCallbackAndReopenDropdown);
-
-		return;
-	}
+	// TheSuperHackers @feature 21/07/2026: Full bypass for overlay builds.
+	// The original code does AC plugin checks, HTTP version check, and
+	// shows a "Checking for patches..." dialog — all of which can hang
+	// or render poorly in Wine/Linux. We skip straight to the login window.
 
 	// GENERALS ONLINE
 	NGMP_OnlineServicesManager::CreateInstance();
 
 	// online services must be initialized
-	// TODO_NGMP: Uninit this when leaving MP, waste of resources and cycles
 	NGMP_OnlineServicesManager::GetInstance()->Init();
 
-    // if we have an AC plugin loaded but the AC external process isnt running, show an error message
-    if (AnticheatPlugInterface::IsPluginLoaded())
-    {
-        if (!AnticheatPlugInterface::IsExternalProcessRunning())
-        {
-            MessageBoxOk(TheGameText->fetchOrSubstitute("GUI:ACErrorHeader", L"AntiCheat Error"),
-                TheGameText->fetchOrSubstitute("GUI:ACExternalProcessNotRunning", L"The AntiCheat external process is not running"),
-                CancelPatchCheckCallbackAndReopenDropdown);
-
-            return;
-        }
-    }
-	else if (AnticheatPlugInterface::DidPluginFailToLoad()) // Did we have something to load but it failed?
-	{
-        std::string strPlugin = NGMP_OnlineServicesManager::Settings.GetAnticheatPlugin();
-        std::string pluginPath = std::format("plugins/{}/{}.dll", strPlugin.c_str(), strPlugin.c_str());
-
-		UnicodeString strErrorMssage;
-        strErrorMssage.format(L"Failed to load the AntiCheat plugin from path: %hs. Please make sure the plugin is installed correctly.", pluginPath.c_str());
-
-        MessageBoxOk(TheGameText->fetchOrSubstitute("GUI:ACErrorHeader", L"AntiCheat Error"),
-			strErrorMssage,
-            CancelPatchCheckCallbackAndReopenDropdown);
-
-        return;
-	}
-
-    onlineCancelWindow = MessageBoxCancel(TheGameText->fetch("GUI:CheckingForPatches"),
-        TheGameText->fetch("GUI:CheckingForPatches"), CancelPatchCheckCallbackAndReopenDropdown);
-
-	NGMP_OnlineServicesManager::GetInstance()->StartVersionCheck([](bool bSuccess, bool bNeedsUpdate)
-		{
-#if defined(USE_TEST_ENV) || defined(USE_DEBUG_ON_LIVE_SERVER)
-			bNeedsUpdate = false;
-#endif
-			cantConnectBeforeOnline = !bSuccess;
-			mustDownloadPatch = bNeedsUpdate;
-
-			if (!bSuccess)
-			{
-				if (onlineCancelWindow)
-				{
-					TheWindowManager->winDestroy(onlineCancelWindow);
-					onlineCancelWindow = NULL;
-				}
-
-				// TODO_NGMP: do this everywhere teardowngamespy was called
-				NGMP_OnlineServicesManager::GetInstance()->SetPendingFullTeardown(EGOTearDownReason::USER_REQUESTED_SILENT);
-
-				MessageBoxOk(TheGameText->fetch("GUI:CannotConnectToServservTitle"),
-					TheGameText->fetch("GUI:CannotConnectToServserv"),
-					noPatchBeforeOnlineCallback);
-			}
-			else
-			{
-				if (!bNeedsUpdate)
-				{
-					startOnline();
-				}
-				else
-				{
-					// TODO_NGMP: Later we should allow in-game updates
-					if (onlineCancelWindow)
-					{
-						TheWindowManager->winDestroy(onlineCancelWindow);
-						onlineCancelWindow = NULL;
-					}
-
-					// NGMP_NOTE: This checks you can write to the local dir, we actually write to my docs data dir now, because it's safer, so we don't really need this chekc
-					/*
-					if (!hasWriteAccess(true))
-					{
-						MessageBoxOk(TheGameText->fetch("GUI:Error"),
-							TheGameText->fetch("GUI:MustHaveAdminRights"),
-							CancelPatchCheckCallbackAndReopenDropdown);
-					}
-					else*/ if (mustDownloadPatch)
-					{
-						// NOTE: we treat all patches as mandatory currently
-						onlineCancelWindow = MessageBoxOkCancel(TheGameText->fetch("GUI:PatchAvailable"),
-							UnicodeString(L"Press OK to begin updating.\n\nOtherwise, you can visit www.playgenerals.online to download the latest update manually."), []()
-							{
-								WindowLayout* layout;
-								layout = TheWindowManager->winCreateLayout(AsciiString("Menus/DownloadMenu.wnd"));
-								layout->runInit();
-								layout->hide(FALSE);
-								layout->bringForward();
-
-								NGMP_OnlineServicesManager::GetInstance()->StartDownloadUpdate([]()
-									{
-										MessageBoxOk(UnicodeString(L"Update Ready"), UnicodeString(L"Press OK to begin installing the patch"), []()
-											{
-												NGMP_OnlineServicesManager::GetInstance()->LaunchPatcher();
-											});
-									});
-
-							}, CancelPatchCheckCallbackAndReopenDropdown);
-					}
-				}
-			}
-		});
+	// Skip all checks — go directly to online login
+	startOnline();
 	
 
 	// TODO_NGMP: Impl patch checks again

@@ -1,0 +1,12 @@
+--- StatsExporter.cpp
++++ StatsExporter.cpp
+@@ -435,7 +435,8 @@
+ 				// TheSuperHackers @feature: count units by template for this player at this snapshot
+ 				pd.unitCounts.clear();
+-				safeIteratePlayerObjects(player, &pd.unitCounts);
++				// safeIteratePlayerObjects(player, &pd.unitCounts);
++				// DEBUG: disabled to test crash
+ 
+ 				++gameIdx;
+ 	}
+ 

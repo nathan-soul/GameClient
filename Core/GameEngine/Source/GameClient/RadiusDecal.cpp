@@ -63,11 +63,20 @@ void RadiusDecalTemplate::createRadiusDecal(const Coord3D& pos, Real radius, con
 	if (m_name.isEmpty() || radius <= 0.0f)
 		return;
 
+	// TheSuperHackers @fix: Headless/replay mode may not have a projected shadow manager.
+	if (TheProjectedShadowManager == nullptr)
+		return;
+
+	// TheSuperHackers @fix: Headless/replay mode may not have a local player.
+	const Player* localPlayer = ThePlayerList ? ThePlayerList->getLocalPlayer() : nullptr;
+	if (localPlayer == nullptr)
+		return;
+
 	// it is now considered nonEmpty, regardless of the state of m_decal, etc
 	result.m_empty = false;
 
-	if (!m_onlyVisibleToOwningPlayer || owningPlayer->getPlayerIndex() == ThePlayerList->getLocalPlayer()->getPlayerIndex()
-									 || ThePlayerList->getLocalPlayer()->isPlayerObserver())
+	if (!m_onlyVisibleToOwningPlayer || owningPlayer->getPlayerIndex() == localPlayer->getPlayerIndex()
+									 || localPlayer->isPlayerObserver())
 	{
 		Shadow::ShadowTypeInfo decalInfo;
 		decalInfo.allowUpdates = FALSE;										// shadow texture will never update
