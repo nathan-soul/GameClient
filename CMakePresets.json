@@ -19,7 +19,8 @@
                 "CMAKE_C_FLAGS": "/std:c17",
                 "CMAKE_CXX_FLAGS": "/std:c++20 /EHsc /Zc:__cplusplus",
                 "CMAKE_C_STANDARD": "17",
-                "RTS_FLAGS": "/W3"
+                "RTS_FLAGS": "/W3",
+                "RTS_DEBUG_MULTI_INSTANCE": "ON"
             }
         },
         {
