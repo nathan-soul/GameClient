@@ -8798,7 +8798,7 @@ void InGameUI::drawPlayerInfoList()
 
 			refreshQueueProgress();
 
-			// Compute icon size using the same scale as flat queues
+			// Compute base scale for offsets
 			Int screenW = TheDisplay->getWidth();
 			Real baseScale = (Real)screenW / 1920.0f;
 			baseScale = (baseScale < 0.7f) ? 0.7f : (baseScale > 2.0f) ? 2.0f : baseScale;
@@ -8808,10 +8808,8 @@ void InGameUI::drawPlayerInfoList()
 			Real queueScale = baseScale * uiMultiplier;
 			queueScale = (queueScale < 0.35f) ? 0.35f : (queueScale > 4.0f) ? 4.0f : queueScale;
 
-			Int iconSize = Int(12 * queueScale);
-			Int iconSpacing = Int(2 * queueScale);
-			if (iconSize < 6) iconSize = 6;
-			if (iconSpacing < 1) iconSpacing = 1;
+			Real zoom = TheTacticalView->getZoom();
+			if (zoom < 0.01f) zoom = 0.01f;
 			Int maxPerBuilding = 15;
 			Int gridCols = 3;
 
@@ -8881,12 +8879,27 @@ void InGameUI::drawPlayerInfoList()
 					screenPos.y -= Int(40 * baseScale);
 					if (screenPos.y < 0) screenPos.y = 0;
 
+					// PER-BUILDING icon size: match health bar width (same computation as Drawable::computeHealthRegion)
+					Int buildingIconSize;
+					Real hbHeight, hbWidth;
+					if (first->producer->getHealthBoxDimensions(hbHeight, hbWidth)) {
+						Real buildingScreenWidth = hbWidth / zoom;  // screen-space pixels matching health bar
+						buildingIconSize = Int(buildingScreenWidth * 0.16f); // 16% of health bar width per icon
+					} else {
+						buildingIconSize = Int(16 * queueScale);  // fallback for objects without health box
+					}
+					if (buildingIconSize < 8) buildingIconSize = 8;
+					if (buildingIconSize > 64) buildingIconSize = 64;
+
+					Int iconSpacing = Int(2 * queueScale);
+					if (iconSpacing < 1) iconSpacing = 1;
+
 					// Show up to maxPerBuilding entries in a 3-column grid
 					size_t showCount = entries.size();
 					if (showCount > (size_t)maxPerBuilding) showCount = (size_t)maxPerBuilding;
 					Int gridRows = (Int)((showCount + gridCols - 1) / gridCols);
-					Int cellH = iconSize + Int(8 * queueScale);  // extra space for ObjectID label
-					Int totalW = gridCols * iconSize + (gridCols - 1) * iconSpacing;
+					Int cellH = buildingIconSize + Int(8 * queueScale);  // extra space for ObjectID label
+					Int totalW = gridCols * buildingIconSize + (gridCols - 1) * iconSpacing;
 					Int totalH = gridRows * cellH;
 					Int startX = screenPos.x - totalW / 2;
 					Int startY = screenPos.y - totalH;
@@ -8895,7 +8908,7 @@ void InGameUI::drawPlayerInfoList()
 					{
 					Int col = (Int)i % gridCols;
 					Int row = (Int)i / gridCols;
-					Int ix = startX + col * (iconSize + iconSpacing);
+					Int ix = startX + col * (buildingIconSize + iconSpacing);
 					Int iy = startY + row * cellH;
 
 					const QueueEntry* qe = entries[i];
@@ -8910,14 +8923,14 @@ void InGameUI::drawPlayerInfoList()
 					if (img)
 					{
 						TheDisplay->drawImage(img, ix, iy,
-							ix + iconSize, iy + iconSize);
+							ix + buildingIconSize, iy + buildingIconSize);
 					}
 					else
 					{
 						TheWindowManager->winFillRect(
 							TheWindowManager->winMakeColor(60, 60, 60, 200), 1,
 							ix, iy,
-							ix + iconSize, iy + iconSize);
+							ix + buildingIconSize, iy + buildingIconSize);
 					}
 
 					// Clock wedge
@@ -8925,7 +8938,7 @@ void InGameUI::drawPlayerInfoList()
 					if (pct >= 0 && pct <= 100)
 					{
 						TheDisplay->drawRemainingRectClock(
-							ix, iy, iconSize, iconSize,
+							ix, iy, buildingIconSize, buildingIconSize,
 							pct,
 							GameMakeColor(0, 0, 0, 160));
 					}
@@ -8939,8 +8952,8 @@ void InGameUI::drawPlayerInfoList()
 					ds->setFont(TheFontLibrary->getFont(
 						m_messageFont, 6, false));
 					ds->setText(idLabel);
-					Int labelX = ix + iconSize / 2 - ds->getWidth() / 2;
-					Int labelY = iy + iconSize + 1;
+					Int labelX = ix + buildingIconSize / 2 - ds->getWidth() / 2;
+					Int labelY = iy + buildingIconSize + 1;
 					ds->draw(labelX, labelY,
 						GameMakeColor(180, 180, 180, 220),
 						GameMakeColor(0, 0, 0, 220));
