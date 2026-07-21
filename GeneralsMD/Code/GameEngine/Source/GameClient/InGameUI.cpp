@@ -8061,20 +8061,14 @@ void InGameUI::drawPlayerInfoList()
 
 			UnsignedInt currentFrame = TheGameLogic ? TheGameLogic->getFrame() : 0;
 			UnsignedInt flashWindow = (UnsignedInt)(LOGICFRAMES_PER_SECOND * 3); // 3 seconds
-			Bool isReplay = (TheRecorder && TheRecorder->isPlaybackMode());
 
 			// Resolve the two 1v1 player slots
 			resolveOverlayPlayers();
 
-			// Clear all overlay ext slots first (only in live mode — replay uses shadow queue)
-			if (!isReplay)
-			{
-				for (Int slot = 0; slot < MAX_SLOTS; ++slot)
-				{
-					m_playerOverlayExt[slot].isPresent = false;
-					m_playerOverlayExt[slot].queue.clear();
-				}
-			}
+			// Queue is maintained entirely by hooks (onUnitQueued etc.) for ALL modes.
+			// No per-frame clearing — hooks add/remove entries incrementally.
+			// Only clear at game start (frame 2 in drawOverlayExt).
+			// isPresent flags are set per-slot in the loop below.
 
 			if (!m_isValid1v1)
 				return;
@@ -8099,17 +8093,9 @@ void InGameUI::drawPlayerInfoList()
 				}
 
 				// ---- Unit queues ----
-				// In replay mode, the linked list is not restored — use the shadow queue
-				// built by the onUnitQueued hook in ProductionUpdate::queueCreateUnit.
-				if (!isReplay)
-				{
-					m_playerOverlayExt[slot].queue.clear();
-					p->iterateObjects(collectQueueEntries, this);
-				}
-				else
-				{
-					// Replay mode: queue is built by onUnitQueued hook — don't clear it
-					}
+				// Both live and replay mode use the hook-based shadow queue.
+				// Do NOT use collectQueueEntries — it falls back to building icons
+				// when SEH wrappers fail on live-mode linked lists.
 
 														// ---- General power cooldowns ----
 				const PlayerTemplate* pt = p->getPlayerTemplate();
