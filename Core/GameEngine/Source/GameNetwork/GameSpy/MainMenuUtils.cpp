@@ -186,6 +186,10 @@ static Bool hasWriteAccess(bool bFileAccessOnly = false)
 
 static void startOnline()
 {
+	// TheSuperHackers @trace 21/07/2026
+	FILE* f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] startOnline() called\n"); fflush(f); fclose(f); }
+
 	checkingForPatchBeforeGameSpy = FALSE;
 
 	DEBUG_ASSERTCRASH(checksLeftBeforeOnline==0, ("starting online with pending callbacks"));
@@ -197,6 +201,8 @@ static void startOnline()
 
 	if (cantConnectBeforeOnline)
 	{
+		f = fopen("GoOnlineTrace.log", "a");
+		if (f) { fprintf(f, "[TRACE] startOnline: cantConnectBeforeOnline, aborting\n"); fflush(f); fclose(f); }
 		MessageBoxOk(TheGameText->fetch("GUI:CannotConnectToServservTitle"),
 			TheGameText->fetch("GUI:CannotConnectToServserv"),
 			noPatchBeforeOnlineCallback);
@@ -204,6 +210,8 @@ static void startOnline()
 	}
 	if (!queuedDownloads.empty())
 	{
+		f = fopen("GoOnlineTrace.log", "a");
+		if (f) { fprintf(f, "[TRACE] startOnline: queuedDownloads not empty (%d), showing patch dialog\n", (int)queuedDownloads.size()); fflush(f); fclose(f); }
 		if (!hasWriteAccess())
 		{
 			MessageBoxOk(TheGameText->fetch("GUI:Error"),
@@ -225,6 +233,8 @@ static void startOnline()
 		return;
 	}
 
+	f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] startOnline: signalling SHELL_SCRIPT_HOOK_MAIN_MENU_ONLINE_SELECTED\n"); fflush(f); fclose(f); }
 	TheScriptEngine->signalUIInteract(TheShellHookNames[SHELL_SCRIPT_HOOK_MAIN_MENU_ONLINE_SELECTED]);
 
 #if !defined(GENERALS_ONLINE)
@@ -252,6 +262,8 @@ static void startOnline()
 		TheShell->push( "Menus/GameSpyLoginQuick.wnd" );
 #endif // ALLOW_NON_PROFILED_LOGIN
 #else
+	f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] startOnline: pushing GameSpyLoginProfile.wnd\n"); fflush(f); fclose(f); }
 	TheShell->push(AsciiString("Menus/GameSpyLoginProfile.wnd"));
 #endif
 }
@@ -842,19 +854,159 @@ void StopAsyncDNSCheck()
 
 void StartPatchCheck()
 {
-	// TheSuperHackers @feature 21/07/2026: Full bypass for overlay builds.
-	// The original code does AC plugin checks, HTTP version check, and
-	// shows a "Checking for patches..." dialog — all of which can hang
-	// or render poorly in Wine/Linux. We skip straight to the login window.
+	// TheSuperHackers @trace 21/07/2026: Trace logging for online flow debugging
+	FILE* f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] StartPatchCheck() called\n"); fflush(f); fclose(f); }
+
+    checkingForPatchBeforeGameSpy = TRUE;
+    cantConnectBeforeOnline = FALSE;
+    timeThroughOnline++;
+    checksLeftBeforeOnline = 0;
+
+    SYSTEM_INFO SystemInfo;
+    GetSystemInfo(&SystemInfo);
+
+	bool bIsARMArchitecture = SystemInfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_ARM || SystemInfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_ARM64 || SystemInfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_ARM32_ON_WIN64;
+	if (bIsARMArchitecture)
+	{
+		f = fopen("GoOnlineTrace.log", "a");
+		if (f) { fprintf(f, "[TRACE] StartPatchCheck: ARM detected, aborting\n"); fflush(f); fclose(f); }
+        MessageBoxOk(TheGameText->fetchOrSubstitute("GUI:NoARMSupportHeader", L"Unsupported System"),
+            TheGameText->fetchOrSubstitute("GUI:NoARMSupport", L"GeneralsOnline does not support ARM processors"),
+            CancelPatchCheckCallbackAndReopenDropdown);
+
+		return;
+	}
 
 	// GENERALS ONLINE
+	f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] StartPatchCheck: Creating NGMP instance\n"); fflush(f); fclose(f); }
 	NGMP_OnlineServicesManager::CreateInstance();
 
 	// online services must be initialized
+	// TODO_NGMP: Uninit this when leaving MP, waste of resources and cycles
+	f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] StartPatchCheck: Calling NGMP::Init()\n"); fflush(f); fclose(f); }
 	NGMP_OnlineServicesManager::GetInstance()->Init();
 
-	// Skip all checks — go directly to online login
-	startOnline();
+    // if we have an AC plugin loaded but the AC external process isnt running, show an error message
+	f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] StartPatchCheck: AC plugin check (IsLoaded=%d, IsRunning=%d, DidFail=%d)\n",
+		AnticheatPlugInterface::IsPluginLoaded() ? 1 : 0,
+		AnticheatPlugInterface::IsPluginLoaded() ? AnticheatPlugInterface::IsExternalProcessRunning() ? 1 : 0 : 0,
+		AnticheatPlugInterface::DidPluginFailToLoad() ? 1 : 0); fflush(f); fclose(f); }
+    if (AnticheatPlugInterface::IsPluginLoaded())
+    {
+        if (!AnticheatPlugInterface::IsExternalProcessRunning())
+        {
+			f = fopen("GoOnlineTrace.log", "a");
+			if (f) { fprintf(f, "[TRACE] StartPatchCheck: AC process not running, aborting\n"); fflush(f); fclose(f); }
+            MessageBoxOk(TheGameText->fetchOrSubstitute("GUI:ACErrorHeader", L"AntiCheat Error"),
+                TheGameText->fetchOrSubstitute("GUI:ACExternalProcessNotRunning", L"The AntiCheat external process is not running"),
+                CancelPatchCheckCallbackAndReopenDropdown);
+
+            return;
+        }
+    }
+	else if (AnticheatPlugInterface::DidPluginFailToLoad()) // Did we have something to load but it failed?
+	{
+		f = fopen("GoOnlineTrace.log", "a");
+		if (f) { fprintf(f, "[TRACE] StartPatchCheck: AC plugin failed to load, aborting\n"); fflush(f); fclose(f); }
+        std::string strPlugin = NGMP_OnlineServicesManager::Settings.GetAnticheatPlugin();
+        std::string pluginPath = std::format("plugins/{}/{}.dll", strPlugin.c_str(), strPlugin.c_str());
+
+		UnicodeString strErrorMssage;
+        strErrorMssage.format(L"Failed to load the AntiCheat plugin from path: %hs. Please make sure the plugin is installed correctly.", pluginPath.c_str());
+
+        MessageBoxOk(TheGameText->fetchOrSubstitute("GUI:ACErrorHeader", L"AntiCheat Error"),
+			strErrorMssage,
+            CancelPatchCheckCallbackAndReopenDropdown);
+
+        return;
+	}
+
+	f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] StartPatchCheck: Showing 'Checking for patches...' dialog\n"); fflush(f); fclose(f); }
+    onlineCancelWindow = MessageBoxCancel(TheGameText->fetch("GUI:CheckingForPatches"),
+        TheGameText->fetch("GUI:CheckingForPatches"), CancelPatchCheckCallbackAndReopenDropdown);
+
+	f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] StartPatchCheck: Calling StartVersionCheck...\n"); fflush(f); fclose(f); }
+	NGMP_OnlineServicesManager::GetInstance()->StartVersionCheck([](bool bSuccess, bool bNeedsUpdate)
+		{
+			FILE* f2 = fopen("GoOnlineTrace.log", "a");
+			if (f2) { fprintf(f2, "[TRACE] StartVersionCheck callback: success=%d, needsUpdate=%d\n", bSuccess ? 1 : 0, bNeedsUpdate ? 1 : 0); fflush(f2); fclose(f2); }
+#if defined(USE_TEST_ENV) || defined(USE_DEBUG_ON_LIVE_SERVER)
+			bNeedsUpdate = false;
+#endif
+			cantConnectBeforeOnline = !bSuccess;
+			mustDownloadPatch = bNeedsUpdate;
+
+			if (!bSuccess)
+			{
+				if (onlineCancelWindow)
+				{
+					TheWindowManager->winDestroy(onlineCancelWindow);
+					onlineCancelWindow = NULL;
+				}
+
+				// TODO_NGMP: do this everywhere teardowngamespy was called
+				NGMP_OnlineServicesManager::GetInstance()->SetPendingFullTeardown(EGOTearDownReason::USER_REQUESTED_SILENT);
+
+				MessageBoxOk(TheGameText->fetch("GUI:CannotConnectToServservTitle"),
+					TheGameText->fetch("GUI:CannotConnectToServserv"),
+					noPatchBeforeOnlineCallback);
+			}
+			else
+			{
+				if (!bNeedsUpdate)
+				{
+					f2 = fopen("GoOnlineTrace.log", "a");
+					if (f2) { fprintf(f2, "[TRACE] StartVersionCheck callback: calling startOnline()\n"); fflush(f2); fclose(f2); }
+					startOnline();
+				}
+				else
+				{
+					// TODO_NGMP: Later we should allow in-game updates
+					if (onlineCancelWindow)
+					{
+						TheWindowManager->winDestroy(onlineCancelWindow);
+						onlineCancelWindow = NULL;
+					}
+
+					// NGMP_NOTE: This checks you can write to the local dir, we actually write to my docs data dir now, because it's safer, so we don't really need this chekc
+					/*
+					if (!hasWriteAccess(true))
+					{
+						MessageBoxOk(TheGameText->fetch("GUI:Error"),
+							TheGameText->fetch("GUI:MustHaveAdminRights"),
+							CancelPatchCheckCallbackAndReopenDropdown);
+					}
+					else*/ if (mustDownloadPatch)
+					{
+						// NOTE: we treat all patches as mandatory currently
+						onlineCancelWindow = MessageBoxOkCancel(TheGameText->fetch("GUI:PatchAvailable"),
+							UnicodeString(L"Press OK to begin updating.\n\nOtherwise, you can visit www.playgenerals.online to download the latest update manually."), []()
+							{
+								WindowLayout* layout;
+								layout = TheWindowManager->winCreateLayout(AsciiString("Menus/DownloadMenu.wnd"));
+								layout->runInit();
+								layout->hide(FALSE);
+								layout->bringForward();
+
+								NGMP_OnlineServicesManager::GetInstance()->StartDownloadUpdate([]()
+									{
+										MessageBoxOk(UnicodeString(L"Update Ready"), UnicodeString(L"Press OK to begin installing the patch"), []()
+											{
+												NGMP_OnlineServicesManager::GetInstance()->LaunchPatcher();
+											});
+									});
+
+							}, CancelPatchCheckCallbackAndReopenDropdown);
+					}
+				}
+			}
+		});
 	
 
 	// TODO_NGMP: Impl patch checks again

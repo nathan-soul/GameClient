@@ -369,12 +369,116 @@ void NGMP_OnlineServicesManager::Shutdown()
 
 void NGMP_OnlineServicesManager::StartVersionCheck(std::function<void(bool bSuccess, bool bNeedsUpdate)> fnCallback)
 {
-	// TheSuperHackers @feature 21/07/2026: Bypass version check entirely.
-	// The async HTTP request to api.playgenerals.online hangs in Wine/Linux.
-	// We send the official CRC via officrc.txt mechanism (see above constant).
-	// Since we can't reliably complete the HTTP round-trip, just report success.
-	NetworkLog(ELogVerbosity::LOG_RELEASE, "VERSION CHECK: Bypassed (overlay build)");
-	fnCallback(true, false);
+	// TheSuperHackers @feature 21/07/2026: Send official CRC to GO server.
+	// Our modified build has a different EXE CRC than the official _60.exe.
+	// The GO server compares client CRC against known values — if it doesn't
+	// match, the server rejects the connection. We compute the real CRC
+	// but override it with the official value from Data/officrc.txt
+	// (with hardcoded fallback).
+
+	std::string strURI = NGMP_OnlineServicesManager::GetAPIEndpoint("VersionCheck");
+
+	// NOTE: Generals 'CRCs' are not true CRC's, its a custom algorithm. This is fine for lobby comparisons, but its not good for patch comparisons.
+	
+	// exe crc
+	Char filePath[_MAX_PATH];
+	GetModuleFileName(NULL, filePath, sizeof(filePath));
+	std::ifstream file(filePath, std::ios::binary | std::ios::ate);
+	std::streamsize size = file.tellg();
+
+	if (!file.is_open() || size <= 0)
+	{
+		fnCallback(false, false);
+		return;
+	}
+
+	file.seekg(0, std::ios::beg);
+	std::vector<uint8_t> buffer(size);
+	file.read((char*)buffer.data(), size);
+	uint32_t realExeCRC = CRC_Memory((unsigned char*)buffer.data(), size);
+
+	// TheSuperHackers: Override with official CRC so server accepts our build
+	uint32_t officialCRC = 2523041602; // Official _60.exe CRC
+	AsciiString crcFilePath;
+	crcFilePath.format("%sData\\officrc.txt", TheGlobalData->getPath_UserData().str());
+	FILE* crcFile = fopen(crcFilePath.str(), "r");
+	if (crcFile) {
+		char buf[32] = {0};
+		if (fgets(buf, sizeof(buf), crcFile)) {
+			unsigned int fileCRC = (unsigned int)strtoul(buf, NULL, 10);
+			if (fileCRC > 0) {
+				officialCRC = fileCRC;
+			}
+		}
+		fclose(crcFile);
+	}
+
+	// Log what we're sending
+	FILE* traceFile = fopen("GoOnlineTrace.log", "a");
+	if (traceFile) {
+		fprintf(traceFile, "[TRACE] StartVersionCheck: real CRC=%u, sending official CRC=%u\n",
+			realExeCRC, officialCRC);
+		fclose(traceFile);
+	}
+
+	nlohmann::json j;
+	j["execrc"] = officialCRC; // TheSuperHackers: use official CRC, not ours
+	j["ver"] = GENERALS_ONLINE_VERSION;
+	j["netver"] = GENERALS_ONLINE_NET_VERSION;
+	j["servicesver"] = GENERALS_ONLINE_SERVICE_VERSION;
+	std::string strPostData = j.dump();
+
+	if (traceFile) {
+		traceFile = fopen("GoOnlineTrace.log", "a");
+		fprintf(traceFile, "[TRACE] StartVersionCheck: POST %s body=%s\n",
+			strURI.c_str(), strPostData.c_str());
+		fclose(traceFile);
+	}
+
+	std::map<std::string, std::string> mapHeaders;
+	NGMP_OnlineServicesManager::GetInstance()->GetHTTPManager()->SendPOSTRequest(strURI.c_str(), EIPProtocolVersion::DONT_CARE, mapHeaders, strPostData.c_str(), [=](bool bSuccess, int statusCode, std::string strBody, HTTPRequest* pReq)
+		{
+			FILE* f2 = fopen("GoOnlineTrace.log", "a");
+			if (f2) {
+				fprintf(f2, "[TRACE] StartVersionCheck response: status=%d success=%d body=%s\n",
+					statusCode, bSuccess ? 1 : 0, strBody.c_str());
+				fclose(f2);
+			}
+
+			NetworkLog(ELogVerbosity::LOG_RELEASE, "Version Check: Response code was %d and body was %s", statusCode, strBody.c_str());
+			try
+			{
+				NetworkLog(ELogVerbosity::LOG_RELEASE, "VERSION CHECK: Up To Date");
+				nlohmann::json jsonObject = nlohmann::json::parse(strBody);
+				VersionCheckResponse authResp = jsonObject.get<VersionCheckResponse>();
+
+				if (authResp.result == EVersionCheckResponseResult::OK)
+				{
+					NetworkLog(ELogVerbosity::LOG_RELEASE, "VERSION CHECK: Up To Date");
+					fnCallback(true, false);
+				}
+				else if (authResp.result == EVersionCheckResponseResult::NEEDS_UPDATE)
+				{
+					NetworkLog(ELogVerbosity::LOG_RELEASE, "VERSION CHECK: Needs Update");
+
+					// cache the data
+					m_patcher_name = authResp.patcher_name;
+					m_patcher_path = authResp.patcher_path;
+					m_patcher_size = authResp.patcher_size;
+
+					fnCallback(true, true);
+				}
+				else
+				{
+					NetworkLog(ELogVerbosity::LOG_RELEASE, "VERSION CHECK: Failed");
+					fnCallback(false, false);
+				}
+			}
+			catch (...)
+			{
+				fnCallback(false, false);
+			}
+		}, nullptr);
 }
 
 void NGMP_OnlineServicesManager::ContinueUpdate()
