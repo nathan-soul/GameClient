@@ -892,33 +892,62 @@ void NGMP_OnlineServicesManager::OnLogin(ELoginResult loginResult, const char* s
 
 void NGMP_OnlineServicesManager::Init()
 {
+	FILE* f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] NGMP::Init() START\n"); fflush(f); fclose(f); }
+
 	g_MainThreadID = std::this_thread::get_id();
 
 	// initialize child classes, these need the platform handle
+	f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] NGMP::Init() creating AuthInterface\n"); fflush(f); fclose(f); }
 	m_pAuthInterface = new NGMP_OnlineServices_AuthInterface();
+	f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] NGMP::Init() creating LobbyInterface\n"); fflush(f); fclose(f); }
 	m_pLobbyInterface = new NGMP_OnlineServices_LobbyInterface();
+	f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] NGMP::Init() creating RoomsInterface\n"); fflush(f); fclose(f); }
 	m_pRoomInterface = new NGMP_OnlineServices_RoomsInterface();
+	f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] NGMP::Init() creating StatsInterface\n"); fflush(f); fclose(f); }
 	m_pStatsInterface = new NGMP_OnlineServices_StatsInterface();
+	f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] NGMP::Init() creating MatchmakingInterface\n"); fflush(f); fclose(f); }
 	m_pMatchmakingInterface = new NGMP_OnlineServices_MatchmakingInterface();
+	f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] NGMP::Init() creating SocialInterface\n"); fflush(f); fclose(f); }
 	m_pSocialInterface = new NGMP_OnlineServices_SocialInterface();
 
+	f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] NGMP::Init() creating HTTPManager\n"); fflush(f); fclose(f); }
 	m_pHTTPManager = new HTTPManager();
+	f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] NGMP::Init() calling HTTPManager::Initialize()\n"); fflush(f); fclose(f); }
 	m_pHTTPManager->Initialize();
+	f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] NGMP::Init() HTTPManager initialized\n"); fflush(f); fclose(f); }
 
     std::string strPlugin = NGMP_OnlineServicesManager::Settings.GetAnticheatPlugin();
+	f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] NGMP::Init() AC plugin name='%s'\n", strPlugin.c_str()); fflush(f); fclose(f); }
 	std::string pluginPath = std::format("plugins/{}/{}.dll", strPlugin.c_str(), strPlugin.c_str());
+	f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] NGMP::Init() loading plugin: %s\n", pluginPath.c_str()); fflush(f); fclose(f); }
 
 #if _DEBUG
 	AnticheatPlugInterface::LoadPlugin(pluginPath.c_str());
 #else
 	AnticheatPlugInterface::LoadPlugin(pluginPath.c_str());
 #endif
+	f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] NGMP::Init() plugin loaded (or attempted)\n"); fflush(f); fclose(f); }
 
 	// TODO_NGMP: Better location
 	// TODO_NGMP: Get all of this from the service
 	int moneyVal = 100000;
 	int maxMoneyVal = 1000000;
 
+	f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] NGMP::Init() setting money values\n"); fflush(f); fclose(f); }
 	while (moneyVal <= maxMoneyVal)
 	{
 		
@@ -928,6 +957,9 @@ void NGMP_OnlineServicesManager::Init()
 
 		moneyVal += 50000;
 	}
+
+	f = fopen("GoOnlineTrace.log", "a");
+	if (f) { fprintf(f, "[TRACE] NGMP::Init() DONE\n"); fflush(f); fclose(f); }
 
 #if 0
 	std::map<AsciiString, RGBColor> mapColors;
