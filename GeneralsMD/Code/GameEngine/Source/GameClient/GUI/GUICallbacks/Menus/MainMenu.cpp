@@ -1701,7 +1701,7 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				// Create a panel for the dialog
 				WinInstanceData panelInstData;
 				panelInstData.init();
-				panelInstData.m_style = GWS_CHILD | GWS_MOUSE_TRACK;
+				panelInstData.m_style = GWS_MOUSE_TRACK;
 				liveObserverDialogPanel = TheWindowManager->winCreate(parentMainMenu,
 					WIN_STATUS_ENABLED,
 					100, 150, 300, 120,
