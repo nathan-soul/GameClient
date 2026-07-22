@@ -760,9 +760,43 @@ bool LiveStreamer::connectToRelay()
 	}
 	liveStreamLog("LiveStreamer::connectToRelay: curl_multi_init=%p (success)\n", (void*)multi);
 
-	// Configure the WebSocket connection
-	liveStreamLog("LiveStreamer::connectToRelay: curl_easy_setopt CURLOPT_URL=%.200s\n", m_relayUrl.str());
-	curl_easy_setopt(easy, CURLOPT_URL, m_relayUrl.str());
+	// Ensure the URL always ends with /register — the relay server only
+	// accepts WebSocket connections on that path.  If the user supplied a
+	// bare host:port (e.g. "ws://192.168.2.108:8765") we append "/register".
+	{
+		AsciiString effectiveUrl = m_relayUrl;
+		const char* urlStr = m_relayUrl.str();
+		Int schemeEnd = findSubstring(m_relayUrl, "://");
+		if (schemeEnd != -1)
+		{
+			Int pathStart = findSubstring(m_relayUrl, "/", schemeEnd + 3);
+			AsciiString pathPart;
+			if (pathStart != -1)
+			{
+				pathPart = AsciiString(urlStr + pathStart);
+			}
+
+			if (pathPart != "/register")
+			{
+				// Rebuild: scheme://host[:port]/register
+				effectiveUrl.clear();
+				effectiveUrl.concat(AsciiString(urlStr, pathStart != -1 ? pathStart : (Int)strlen(urlStr)));
+				effectiveUrl.concat("/register");
+				liveStreamLog("LiveStreamer::connectToRelay: URL had no /register path, rewritten to %.200s\n",
+					effectiveUrl.str());
+			}
+		}
+		else
+		{
+			// No :// found — malformed but try appending anyway
+			effectiveUrl.concat("/register");
+			liveStreamLog("LiveStreamer::connectToRelay: no scheme found, appended /register: %.200s\n",
+				effectiveUrl.str());
+		}
+
+		liveStreamLog("LiveStreamer::connectToRelay: curl_easy_setopt CURLOPT_URL=%.200s\n", effectiveUrl.str());
+		curl_easy_setopt(easy, CURLOPT_URL, effectiveUrl.str());
+	}
 	liveStreamLog("LiveStreamer::connectToRelay: curl_easy_setopt CURLOPT_CONNECT_ONLY=2L\n");
 	curl_easy_setopt(easy, CURLOPT_CONNECT_ONLY, 2L); // 2 = use WebSocket protocol
 	curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 0L);
