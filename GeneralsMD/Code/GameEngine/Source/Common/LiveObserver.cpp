@@ -299,7 +299,7 @@ void LiveObserver::close()
 	}
 
 	liveObserverLog("LiveObserver::close: shutting down (connected=%d, metadataReceived=%d, lastFrame=%u)\n",
-		m_connected, m_metadataReceived, m_lastProcessedFrame);
+		m_connected.load(), m_metadataReceived.load(), m_lastProcessedFrame);
 	m_shouldRun = FALSE;
 	m_connected = FALSE;
 
@@ -348,7 +348,7 @@ Bool LiveObserver::receiveGameMetadata()
 	}
 
 	liveObserverLog("LiveObserver::receiveGameMetadata: timeout after %d ms (connected=%d, metadataReceived=%d)\n",
-		elapsed, m_connected, m_metadataReceived);
+		elapsed, m_connected.load(), m_metadataReceived.load());
 	DEBUG_LOG(("LiveObserver::receiveGameMetadata() - timeout or disconnect"));
 	return FALSE;
 }
@@ -572,6 +572,7 @@ void LiveObserver::networkThreadFunc()
 	curl_global_init(CURL_GLOBAL_DEFAULT);
 
 	while (m_shouldRun)
+	{
 		if (!m_connected)
 		{
 			liveObserverLog("LiveObserver: not connected, attempting reconnect (attempt %d)\n", m_reconnectAttempts + 1);
@@ -795,7 +796,7 @@ bool LiveObserver::wsSend(const void* data, size_t len)
 	if (!m_curlEasy || !m_connected)
 	{
 		liveObserverLog("LiveObserver::wsSend: skipped (curlEasy=%p, connected=%d)\n",
-			m_curlEasy, m_connected);
+			m_curlEasy, m_connected.load());
 		return false;
 	}
 
