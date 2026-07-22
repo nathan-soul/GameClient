@@ -639,6 +639,11 @@ void LiveObserver::networkThreadFunc()
 					// JSON frame message — extract and decode commands
 					parseFrameMessage(incoming);
 				}
+				else if (findSubstring(incoming, "\"type\":\"catchup_bulk\"") != -1)
+				{
+					liveObserverLog("LiveObserver: incoming message is catchup_bulk\n");
+					parseBulkCatchup(incoming);
+				}
 				else
 				{
 					liveObserverLog("LiveObserver: incoming message is metadata or other\n");
@@ -1103,6 +1108,80 @@ void LiveObserver::parseMetadataMessage(const AsciiString& json)
 	{
 		liveObserverLog("LiveObserver::parseMetadataMessage: unknown message type '%.50s'\n", msgType.str());
 	}
+}
+
+// ============================================================================
+// parseBulkCatchup — process a catchup_bulk message containing many frames
+// ============================================================================
+
+void LiveObserver::parseBulkCatchup(const AsciiString& json)
+{
+	// Format: {"type":"catchup_bulk","frames":[{...},{...},...],"frame_count":N,...}
+	Int framesStart = findSubstring(json, "\"frames\":[");
+	if (framesStart == -1)
+	{
+		liveObserverLog("parseBulkCatchup: no 'frames' array found\n");
+		return;
+	}
+
+	// Point past "frames":[ to the first frame object
+	Int pos = framesStart + 10;
+	Int jsonLen = (Int)json.getLength();
+	const char* data = json.str();
+
+	Int parsedCount = 0;
+	UnsignedInt maxFrame = 0;
+
+	while (pos < jsonLen)
+	{
+		// Find next frame object: {"type":"frame"...
+		Int frameStart = findSubstring(json, "{\"type\":\"frame\"", pos);
+		if (frameStart == -1) break;
+
+		// Find the matching closing brace for this frame object
+		Int frameEnd = -1;
+		Int braceCount = 0;
+		for (Int i = frameStart; i < jsonLen; ++i)
+		{
+			if (data[i] == '{') braceCount++;
+			else if (data[i] == '}')
+			{
+				braceCount--;
+				if (braceCount == 0) { frameEnd = i + 1; break; }
+			}
+		}
+		if (frameEnd == -1) break;
+
+		// Extract this single frame's JSON
+		AsciiString frameJson(data + frameStart, frameEnd - frameStart);
+
+		// Parse the frame using the existing per-frame parser
+		parseFrameMessage(frameJson);
+		parsedCount++;
+
+		// Update max frame tracking from the last deserialized frame
+		{
+			std::lock_guard<std::mutex> lock(m_pendingMutex);
+			if (!m_pendingFrames.empty())
+			{
+				UnsignedInt lastFrame = m_pendingFrames.back().frameNumber;
+				if (lastFrame > maxFrame) maxFrame = lastFrame;
+			}
+		}
+
+		pos = frameEnd;
+	}
+
+	// Update streamer frame tracking
+	if (maxFrame > m_streamerFrame)
+		m_streamerFrame = maxFrame;
+	if (maxFrame > m_lastReceivedFrame)
+		m_lastReceivedFrame = maxFrame;
+
+	m_metadataReceived = TRUE;
+
+	liveObserverLog("parseBulkCatchup: parsed %d frames, maxFrame=%u, total pending=%d\n",
+		parsedCount, maxFrame, (int)m_pendingFrames.size());
 }
 // ============================================================================
 // deserializeFrame — convert binary payload to LiveFrameData and buffer it

@@ -127,6 +127,9 @@ private:
 	/// Parse an incoming JSON frame message from the relay.
 	void parseFrameMessage(const AsciiString& json);
 
+	/// Parse an incoming catchup_bulk message (array of frames) from the relay.
+	void parseBulkCatchup(const AsciiString& json);
+
 	/// Parse an incoming JSON metadata message from the relay.
 	void parseMetadataMessage(const AsciiString& json);
 
