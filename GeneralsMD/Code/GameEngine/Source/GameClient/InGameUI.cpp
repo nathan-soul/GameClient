@@ -9089,7 +9089,7 @@ void InGameUI::drawPlayerInfoList()
 			DisplayString* streamStatus = TheDisplayStringManager->newDisplayString();
 			if (streamStatus)
 			{
-				streamStatus->setFont(TheFontLibrary->getFont("ArialFont", Int(14 * baseScale)));
+				streamStatus->setFont(TheFontLibrary->getFont("ArialFont", Int(14 * baseScale), false));
 				UnicodeString statusText;
 				if (TheLiveStreamer->isStreaming())
 				{
@@ -9101,7 +9101,7 @@ void InGameUI::drawPlayerInfoList()
 				}
 				streamStatus->setText(statusText);
 				Int statusW = streamStatus->getWidth();
-				Int statusH = streamStatus->getHeight();
+				// getHeight() doesn't exist on DisplayString; use getSize() if needed
 				Int statusX = (TheDisplay->getWidth() - statusW) / 2;
 				Int statusY = Int(10 * baseScale);
 				streamStatus->draw(statusX, statusY, 0xFF00FF00, 0);
@@ -9115,7 +9115,7 @@ void InGameUI::drawPlayerInfoList()
 			DisplayString* observerStatus = TheDisplayStringManager->newDisplayString();
 			if (observerStatus)
 			{
-				observerStatus->setFont(TheFontLibrary->getFont("ArialFont", Int(14 * baseScale)));
+				observerStatus->setFont(TheFontLibrary->getFont("ArialFont", Int(14 * baseScale), false));
 
 				UnicodeString statusText;
 				Int bufferDelay = TheLiveObserver->getBufferDelay();
