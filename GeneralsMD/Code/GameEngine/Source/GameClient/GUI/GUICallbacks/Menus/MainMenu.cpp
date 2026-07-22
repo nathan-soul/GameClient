@@ -1716,6 +1716,7 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 					WIN_STATUS_ENABLED,
 					10, 10, 280, 20,
 					&labelInstData, nullptr, nullptr, TRUE);
+				(void)label; // referenced via dialog panel
 
 				// Text entry for game ID
 				EntryData entryData;
