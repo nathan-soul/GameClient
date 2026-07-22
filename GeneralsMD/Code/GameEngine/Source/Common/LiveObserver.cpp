@@ -43,6 +43,41 @@ extern GameLogic* TheGameLogic;
 extern CommandList* TheCommandList;
 
 // ============================================================================
+// base64Decode — decode base64 string to binary data
+// ============================================================================
+
+static int base64CharToVal(char c)
+{
+	if (c >= 'A' && c <= 'Z') return c - 'A';
+	if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+	if (c >= '0' && c <= '9') return c - '0' + 52;
+	if (c == '+') return 62;
+	if (c == '/') return 63;
+	return -1;
+}
+
+static void base64Decode(const char* encoded, size_t len, std::vector<char>& out)
+{
+	out.clear();
+	int val = 0, bits = -8;
+	for (size_t i = 0; i < len; i++)
+	{
+		char c = encoded[i];
+		if (c == '=' || c == ' ' || c == '\n' || c == '\r')
+			continue;
+		int v = base64CharToVal(c);
+		if (v < 0) continue;
+		val = (val << 6) + v;
+		bits += 6;
+		if (bits >= 0)
+		{
+			out.push_back((char)((val >> bits) & 0xff));
+			bits -= 8;
+		}
+	}
+}
+
+// ============================================================================
 // Singleton
 // ============================================================================
 
@@ -68,6 +103,7 @@ LiveObserver::LiveObserver()
 	, m_curlEasy(nullptr)
 	, m_curlMulti(nullptr)
 	, m_reconnectAttempts(0)
+	, m_isReconnecting(false)
 {
 }
 
@@ -439,7 +475,7 @@ void LiveObserver::networkThreadFunc()
 				{
 					AsciiString json;
 					json.format(
-						"{\"type\":\"reconnect\",\"gameId\":\"%s\",\"lastFrame\":%u}",
+						"{\"type\":\"reconnect\",\"game_id\":\"%s\",\"last_frame\":%u}",
 						m_gameId.str(), m_lastProcessedFrame);
 					sendJsonMessage(json);
 				}
@@ -461,36 +497,19 @@ void LiveObserver::networkThreadFunc()
 		std::vector<char> recvBuffer;
 		if (wsRecv(recvBuffer) && !recvBuffer.empty())
 		{
-			// Check if it's a binary frame or a JSON message
-			if (recvBuffer.size() >= 8)
-			{
-				// Try to parse as binary frame: [4-byte frame][4-byte payload][payload...]
-				UnsignedInt frameNum = 0;
-				memcpy(&frameNum, recvBuffer.data(), sizeof(frameNum));
-				UnsignedInt payloadSize = 0;
-				memcpy(&payloadSize, recvBuffer.data() + 4, sizeof(payloadSize));
+			// All messages are now JSON text frames
+			AsciiString incoming(recvBuffer.data(), (Int)recvBuffer.size());
 
-				if (payloadSize > 0 && payloadSize + 8 <= (UnsignedInt)recvBuffer.size())
+			if (incoming.find("\"type\"") != -1)
+			{
+				if (incoming.find("\"type\":\"frame\"") != -1)
 				{
-					// Valid binary frame
-					parseFrameMessage(recvBuffer);
+					// JSON frame message — extract and decode commands
+					parseFrameMessage(incoming);
 				}
 				else
 				{
-					// Might be JSON — try to parse
-					AsciiString incoming(recvBuffer.data(), (Int)recvBuffer.size());
-					if (incoming.find("\"type\"") != -1)
-					{
-						parseMetadataMessage(incoming);
-					}
-				}
-			}
-			else
-			{
-				// Small message — likely JSON
-				AsciiString incoming(recvBuffer.data(), (Int)recvBuffer.size());
-				if (incoming.find("\"type\"") != -1)
-				{
+					// Metadata or other JSON message
 					parseMetadataMessage(incoming);
 				}
 			}
@@ -541,7 +560,10 @@ bool LiveObserver::connectToRelay()
 
 	// Configure the WebSocket connection
 	AsciiString url;
-	url.format("%s/observer/%s", m_relayUrl.str(), m_gameId.str());
+	if (m_isReconnecting)
+		url.format("%s/watch-reconnect/%s", m_relayUrl.str(), m_gameId.str());
+	else
+		url.format("%s/watch/%s", m_relayUrl.str(), m_gameId.str());
 	curl_easy_setopt(easy, CURLOPT_URL, url.str());
 	curl_easy_setopt(easy, CURLOPT_CONNECT_ONLY, 2L); // 2 = use WebSocket protocol
 	curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 0L);
@@ -605,7 +627,10 @@ bool LiveObserver::reconnectToRelay()
 
 	DEBUG_LOG(("LiveObserver::reconnectToRelay() - attempt %d", m_reconnectAttempts + 1));
 
-	return connectToRelay();
+	m_isReconnecting = true;
+	bool result = connectToRelay();
+	m_isReconnecting = false;
+	return result;
 }
 
 // ============================================================================
@@ -670,41 +695,71 @@ bool LiveObserver::wsRecv(std::vector<char>& outBuffer)
 
 bool LiveObserver::sendJsonMessage(const AsciiString& jsonMsg)
 {
-	return wsSend(jsonMsg.str(), strlen(jsonMsg.str()));
+	if (!m_curlEasy || !m_connected)
+		return false;
+	size_t sent = 0;
+	CURLcode res = curl_ws_send((CURL*)m_curlEasy, jsonMsg.str(), strlen(jsonMsg.str()), &sent, 0, CURLWS_TEXT);
+	if (res == CURLE_OK)
+		return true;
+	if (res == CURLE_AGAIN)
+		return true;
+	DEBUG_LOG(("LiveObserver::sendJsonMessage() - error: %s", curl_easy_strerror(res)));
+	m_connected = FALSE;
+	return false;
 }
 
 // ============================================================================
-// parseFrameMessage — process a binary frame from the relay
+// parseFrameMessage — process a JSON frame message from the relay
 // ============================================================================
 
-void LiveObserver::parseFrameMessage(const std::vector<char>& data)
+void LiveObserver::parseFrameMessage(const AsciiString& json)
 {
-	if (data.size() < 8)
+	// Extract frame number
+	Int framePos = json.find("\"frame\":");
+	if (framePos == -1)
 		return;
 
-	UnsignedInt frameNum = 0;
-	memcpy(&frameNum, data.data(), sizeof(frameNum));
-
-	UnsignedInt payloadSize = 0;
-	memcpy(&payloadSize, data.data() + 4, sizeof(payloadSize));
-
-	if (payloadSize == 0 || (UnsignedInt)data.size() < 8 + payloadSize)
+	Int start = framePos + 8;
+	Int end = json.find(",", start);
+	if (end == -1)
+		end = json.find("}", start);
+	if (end == -1)
 		return;
 
-	const char* payload = data.data() + 8;
+	AsciiString frameStr(json.str() + start, end - start);
+	UnsignedInt frameNum = (UnsignedInt)atoi(frameStr.str());
+
+	// Extract base64-encoded commands
+	Int cmdPos = json.find("\"commands\":\"");
+	if (cmdPos == -1)
+		return;
+
+	start = cmdPos + 12;
+	end = json.find("\"", start);
+	if (end == -1)
+		return;
+
+	AsciiString b64Commands(json.str() + start, end - start);
+
+	// Base64 decode
+	std::vector<char> decodedCommands;
+	base64Decode(b64Commands.str(), b64Commands.getLength(), decodedCommands);
+
+	if (decodedCommands.empty())
+		return;
 
 	// Update streamer frame tracking
 	if (frameNum > m_streamerFrame)
 		m_streamerFrame = frameNum;
 
 	// Deserialize the payload and add to pending frames
-	deserializeFrame(frameNum, payload, (Int)payloadSize);
+	deserializeFrame(frameNum, decodedCommands.data(), (Int)decodedCommands.size());
 
 	// Update last received frame
 	if (frameNum > m_lastReceivedFrame)
 		m_lastReceivedFrame = frameNum;
 
-	DEBUG_LOG(("LiveObserver::parseFrameMessage() - frame %u, payload %u bytes", frameNum, payloadSize));
+	DEBUG_LOG(("LiveObserver::parseFrameMessage() - frame %u, decoded %d bytes", frameNum, (Int)decodedCommands.size()));
 }
 
 // ============================================================================
@@ -730,10 +785,10 @@ void LiveObserver::parseMetadataMessage(const AsciiString& json)
 	if (msgType == "metadata")
 	{
 		// Extract streamer frame
-		Int framePos = json.find("\"currentFrame\":");
+		Int framePos = json.find("\"current_frame\":");
 		if (framePos != -1)
 		{
-			start = framePos + 15;
+			start = framePos + 16;
 			end = json.find(",", start);
 			if (end == -1)
 				end = json.find("}", start);
@@ -760,10 +815,10 @@ void LiveObserver::parseMetadataMessage(const AsciiString& json)
 		}
 
 		// Extract map name
-		Int mapPos = json.find("\"mapName\":\"");
+		Int mapPos = json.find("\"map_name\":\"");
 		if (mapPos != -1)
 		{
-			start = mapPos + 11;
+			start = mapPos + 12;
 			end = json.find("\"", start);
 			if (end != -1)
 			{
@@ -773,10 +828,10 @@ void LiveObserver::parseMetadataMessage(const AsciiString& json)
 		}
 
 		// Extract exeCRC and iniCRC
-		Int exeCRCPos = json.find("\"exeCRC\":");
+		Int exeCRCPos = json.find("\"exe_crc\":");
 		if (exeCRCPos != -1)
 		{
-			start = exeCRCPos + 9;
+			start = exeCRCPos + 10;
 			end = json.find(",", start);
 			if (end == -1)
 				end = json.find("}", start);

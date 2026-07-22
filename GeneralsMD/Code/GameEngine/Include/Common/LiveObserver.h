@@ -124,8 +124,8 @@ private:
 	/// Send a JSON message over WebSocket.
 	bool sendJsonMessage(const AsciiString& jsonMsg);
 
-	/// Parse an incoming binary frame message from the relay.
-	void parseFrameMessage(const std::vector<char>& data);
+	/// Parse an incoming JSON frame message from the relay.
+	void parseFrameMessage(const AsciiString& json);
 
 	/// Parse an incoming JSON metadata message from the relay.
 	void parseMetadataMessage(const AsciiString& json);
@@ -162,6 +162,7 @@ private:
 
 	/// Reconnection state
 	Int m_reconnectAttempts;
+	bool m_isReconnecting;
 	static const Int MAX_RECONNECT_ATTEMPTS = 10;
 	static const Int RECONNECT_DELAY_MS = 2000;
 };

@@ -40,6 +40,45 @@
 extern GameLogic* TheGameLogic;
 extern CommandList* TheCommandList;
 
+// ============================================================================
+// base64Encode — encode binary data to base64 string
+// ============================================================================
+
+static void base64Encode(const char* data, size_t len, AsciiString& out)
+{
+	static const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	out.clear();
+	unsigned char input[3];
+	unsigned char output[4];
+	int inputIdx = 0;
+
+	for (size_t i = 0; i < len; i++)
+	{
+		input[inputIdx++] = (unsigned char)data[i];
+		if (inputIdx == 3)
+		{
+			output[0] = (input[0] & 0xfc) >> 2;
+			output[1] = ((input[0] & 0x03) << 4) | ((input[1] & 0xf0) >> 4);
+			output[2] = ((input[1] & 0x0f) << 2) | ((input[2] & 0xc0) >> 6);
+			output[3] = input[2] & 0x3f;
+			char buf[5] = { table[output[0]], table[output[1]], table[output[2]], table[output[3]], 0 };
+			out.concat(buf);
+			inputIdx = 0;
+		}
+	}
+	if (inputIdx > 0)
+	{
+		for (int j = inputIdx; j < 3; j++)
+			input[j] = 0;
+		output[0] = (input[0] & 0xfc) >> 2;
+		output[1] = ((input[0] & 0x03) << 4) | ((input[1] & 0xf0) >> 4);
+		output[2] = ((input[1] & 0x0f) << 2) | ((input[2] & 0xc0) >> 6);
+		char buf[5] = { table[output[0]], table[output[1]], '=', '=', 0 };
+		if (inputIdx >= 2) buf[2] = table[output[2]];
+		out.concat(buf);
+	}
+}
+
 /**
  * The singleton live streamer instance.
  */
@@ -159,8 +198,8 @@ void LiveStreamer::registerForGame(
 	// Build JSON registration message
 	AsciiString json;
 	json.format(
-		"{\"type\":\"register\",\"gameHash\":\"%s\",\"playerName\":\"%s\","
-		"\"mapName\":\"%s\",\"gameMode\":\"%s\",\"canStream\":%s}",
+		"{\"type\":\"register\",\"game_hash\":\"%s\",\"player_name\":\"%s\","
+		"\"map_name\":\"%s\",\"gameMode\":\"%s\",\"can_stream\":%s}",
 		gameHash.str(),
 		playerName.str(),
 		mapName.str(),
@@ -273,9 +312,9 @@ void LiveStreamer::sendMetadata()
 
 	AsciiString json;
 	json.format(
-		"{\"type\":\"metadata\",\"gameHash\":\"%s\",\"gameId\":\"%s\","
-		"\"mapName\":\"%s\",\"players\":%s,"
-		"\"exeCRC\":%u,\"iniCRC\":%u,\"currentFrame\":%u}",
+		"{\"type\":\"metadata\",\"game_hash\":\"%s\",\"game_id\":\"%s\","
+		"\"map_name\":\"%s\",\"players\":%s,"
+		"\"exe_crc\":%u,\"ini_crc\":%u,\"current_frame\":%u}",
 		m_gameHash.str(),
 		m_gameId.str(),
 		mapName.str(),
@@ -318,30 +357,21 @@ void LiveStreamer::streamFrame(UnsignedInt frame, GameMessage* cmdList, Int curr
 	if (frameBuffer.empty())
 		return;
 
-	// Wrap in a WebSocket message with frame header
-	// Format: [4-byte frame number][4-byte payload size][payload]
-	std::vector<char> wsMessage;
-	wsMessage.reserve(8 + frameBuffer.size());
+	// Base64-encode the binary commands
+	AsciiString b64Commands;
+	base64Encode(frameBuffer.data(), frameBuffer.size(), b64Commands);
 
-	UnsignedInt frameNum = frame;
-	UnsignedInt payloadSize = (UnsignedInt)frameBuffer.size();
+	// Build a JSON frame message
+	AsciiString jsonFrame;
+	jsonFrame.format(
+		"{\"type\":\"frame\",\"frame\":%u,\"fps\":%d,\"commands\":\"%s\"}",
+		frame, currentFps, b64Commands.str());
 
-	wsMessage.push_back((char)((frameNum >> 0) & 0xFF));
-	wsMessage.push_back((char)((frameNum >> 8) & 0xFF));
-	wsMessage.push_back((char)((frameNum >> 16) & 0xFF));
-	wsMessage.push_back((char)((frameNum >> 24) & 0xFF));
-
-	wsMessage.push_back((char)((payloadSize >> 0) & 0xFF));
-	wsMessage.push_back((char)((payloadSize >> 8) & 0xFF));
-	wsMessage.push_back((char)((payloadSize >> 16) & 0xFF));
-	wsMessage.push_back((char)((payloadSize >> 24) & 0xFF));
-
-	wsMessage.insert(wsMessage.end(), frameBuffer.begin(), frameBuffer.end());
-
-	// Queue for the network thread
+	// Queue as text message
 	QueuedMessage msg;
-	msg.isBinary = TRUE;
-	msg.data = wsMessage;
+	msg.isBinary = FALSE;
+	const char* jsonStr = jsonFrame.str();
+	msg.data.assign(jsonStr, jsonStr + strlen(jsonStr));
 
 	std::lock_guard<std::mutex> lock(m_sendMutex);
 	m_outgoingQueue.push(msg);
@@ -550,7 +580,7 @@ void LiveStreamer::networkThreadFunc()
 						role = AsciiString(incoming.str() + start, end - start);
 				}
 
-				Int idPos = incoming.find("\"gameId\":\"");
+				Int idPos = incoming.find("\"game_id\":\"");
 				if (idPos != -1)
 				{
 					Int start = idPos + 10;
@@ -713,7 +743,17 @@ bool LiveStreamer::wsRecv(std::vector<char>& outBuffer)
 
 bool LiveStreamer::sendJsonMessage(const AsciiString& jsonMsg)
 {
-	return wsSend(jsonMsg.str(), strlen(jsonMsg.str()));
+	if (!m_curlEasy || !m_connected)
+		return false;
+	size_t sent = 0;
+	CURLcode res = curl_ws_send((CURL*)m_curlEasy, jsonMsg.str(), strlen(jsonMsg.str()), &sent, 0, CURLWS_TEXT);
+	if (res == CURLE_OK)
+		return true;
+	if (res == CURLE_AGAIN)
+		return true;
+	DEBUG_LOG(("LiveStreamer::sendJsonMessage() - error: %s", curl_easy_strerror(res)));
+	m_connected = FALSE;
+	return false;
 }
 
 // ============================================================================
