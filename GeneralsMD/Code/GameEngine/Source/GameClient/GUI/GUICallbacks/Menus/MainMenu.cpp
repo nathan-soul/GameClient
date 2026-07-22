@@ -156,6 +156,9 @@ static GameWindow *buttonLiveObserverCancel = nullptr;
 static GameWindow *liveObserverGameIdEntry = nullptr;
 static GameWindow *liveObserverDialogPanel = nullptr;
 static Bool showLiveObserverDialog = FALSE;
+
+// Forward declaration
+static void hideLiveObserverDialog(void);
 #endif
 
 // window pointers --------------------------------------------------------------------------------
