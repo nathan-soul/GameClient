@@ -1061,6 +1061,18 @@ void GameEngine::update()
 						return;
 					}
 					TheLiveObserver->feedCommandsToCommandList();
+
+					// Log frame processing progress every ~60 frames (~2s at 30fps)
+					static UnsignedInt lastLoggedFrame = 0;
+					UnsignedInt currentFrame = TheGameLogic->getFrame();
+					if (currentFrame - lastLoggedFrame >= 60 || lastLoggedFrame == 0)
+					{
+						Int bufferDelay = TheLiveObserver->getBufferDelay();
+						liveObserverLog("LIVE frame=%u delay=%d connected=%d\\n",
+							currentFrame, bufferDelay,
+							TheLiveObserver->isConnected() ? 1 : 0);
+						lastLoggedFrame = currentFrame;
+					}
 				}
 			}
 #endif
