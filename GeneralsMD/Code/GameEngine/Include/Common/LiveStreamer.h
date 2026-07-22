@@ -138,3 +138,10 @@ private:
 
 extern LiveStreamer* TheLiveStreamer;
 LiveStreamer* createLiveStreamer();
+
+/// Log a message to live_streamer_debug.log (opens file on first call).
+void liveStreamLog(const char* fmt, ...);
+
+/// Write initial config header to live_streamer_debug.log.
+/// Should be called at game start, BEFORE any streaming decision is made.
+void liveStreamerInitLog();

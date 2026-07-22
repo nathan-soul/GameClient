@@ -170,4 +170,11 @@ private:
 extern LiveObserver* TheLiveObserver;
 LiveObserver* createLiveObserver();
 
+/// Log a message to live_observer_debug.log (opens file on first call).
+void liveObserverLog(const char* fmt, ...);
+
+/// Write initial config header to live_observer_debug.log.
+/// Called at game start when -livewatch is specified.
+void liveObserverInitLog(const char* watchUrl);
+
 #endif // GENERALS_ONLINE

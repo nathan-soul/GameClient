@@ -42,9 +42,9 @@ extern GameLogic* TheGameLogic;
 extern CommandList* TheCommandList;
 
 // ============================================================================
-// liveDebugLog — write diagnostic messages to live_streamer_debug.log
+// liveStreamLog — write diagnostic messages to live_streamer_debug.log
 // ============================================================================
-static void liveDebugLog(const char* fmt, ...) {
+void liveStreamLog(const char* fmt, ...) {
     static FILE* logFile = NULL;
     if (!logFile) {
         logFile = fopen("live_streamer_debug.log", "w");
@@ -55,6 +55,22 @@ static void liveDebugLog(const char* fmt, ...) {
         vfprintf(logFile, fmt, args);
         va_end(args);
         fflush(logFile);
+    }
+}
+
+// ============================================================================
+// liveStreamerInitLog — write initial config header to live_streamer_debug.log
+// Called at game start BEFORE the streaming decision, so the log is ALWAYS
+// created even if LiveStreamEnabled is false.
+// ============================================================================
+void liveStreamerInitLog() {
+    liveStreamLog("=== Live Stream Init ===\n");
+    if (TheGlobalData) {
+        liveStreamLog("LiveStreamEnabled: %s\n", TheGlobalData->m_liveStreamEnabled ? "true" : "false");
+        liveStreamLog("LiveStreamRelayUrl: %s\n", TheGlobalData->m_liveStreamRelayUrl.str());
+        liveStreamLog("LiveStreamCanStream: %s\n", TheGlobalData->m_liveStreamCanStream ? "true" : "false");
+    } else {
+        liveStreamLog("TheGlobalData is NULL — cannot read config\n");
     }
 }
 
@@ -190,7 +206,7 @@ void LiveStreamer::init(const AsciiString& relayUrl)
 	m_isBackup = FALSE;
 
 	DEBUG_LOG(("LiveStreamer::init() - connecting to %s", relayUrl.str()));
-	liveDebugLog("init() - relay=%s\n", relayUrl.str());
+	liveStreamLog("init() - relay=%s\n", relayUrl.str());
 
 	// Start the background network thread
 	m_networkThread = std::thread(&LiveStreamer::networkThreadFunc, this);
@@ -216,7 +232,7 @@ void LiveStreamer::close()
 
 	m_connected = FALSE;
 	DEBUG_LOG(("LiveStreamer::close() - shut down"));
-	liveDebugLog("close() - shutting down\n");
+	liveStreamLog("close() - shutting down\n");
 }
 
 // ============================================================================
@@ -254,7 +270,7 @@ void LiveStreamer::registerForGame(
 	m_outgoingQueue.push(msg);
 
 	DEBUG_LOG(("LiveStreamer::registerForGame() - hash=%s player=%s", gameHash.str(), playerName.str()));
-	liveDebugLog("registerForGame() - hash=%s player=%s can_stream=%s\n",
+	liveStreamLog("registerForGame() - hash=%s player=%s can_stream=%s\n",
 		gameHash.str(), playerName.str(), canStream ? "true" : "false");
 }
 
@@ -271,21 +287,21 @@ void LiveStreamer::onRoleAssigned(const AsciiString& role, const AsciiString& ga
 		m_isStreaming = TRUE;
 		m_isBackup = FALSE;
 		DEBUG_LOG(("LiveStreamer::onRoleAssigned() - STREAMER for game %s", gameId.str()));
-		liveDebugLog("onRoleAssigned() - STREAMER for game %s\n", gameId.str());
+		liveStreamLog("onRoleAssigned() - STREAMER for game %s\n", gameId.str());
 	}
 	else if (role == "backup")
 	{
 		m_isStreaming = FALSE;
 		m_isBackup = TRUE;
 		DEBUG_LOG(("LiveStreamer::onRoleAssigned() - BACKUP for game %s", gameId.str()));
-		liveDebugLog("onRoleAssigned() - BACKUP for game %s\n", gameId.str());
+		liveStreamLog("onRoleAssigned() - BACKUP for game %s\n", gameId.str());
 	}
 	else
 	{
 		m_isStreaming = FALSE;
 		m_isBackup = FALSE;
 		DEBUG_LOG(("LiveStreamer::onRoleAssigned() - OBSERVER for game %s", gameId.str()));
-		liveDebugLog("onRoleAssigned() - OBSERVER for game %s\n", gameId.str());
+		liveStreamLog("onRoleAssigned() - OBSERVER for game %s\n", gameId.str());
 	}
 }
 
@@ -298,7 +314,7 @@ void LiveStreamer::onTakeover()
 	m_isStreaming = TRUE;
 	m_isBackup = FALSE;
 	DEBUG_LOG(("LiveStreamer::onTakeover() - now STREAMER for game %s", m_gameId.str()));
-	liveDebugLog("onTakeover() - now STREAMER for game %s\n", m_gameId.str());
+	liveStreamLog("onTakeover() - now STREAMER for game %s\n", m_gameId.str());
 }
 
 // ============================================================================
@@ -376,7 +392,7 @@ void LiveStreamer::sendMetadata()
 	m_outgoingQueue.push(msg);
 
 	DEBUG_LOG(("LiveStreamer::sendMetadata() - sent metadata for frame %u", currentFrame));
-	liveDebugLog("sendMetadata() - map=%s, frame=%u\n", mapName.str(), currentFrame);
+	liveStreamLog("sendMetadata() - map=%s, frame=%u\n", mapName.str(), currentFrame);
 }
 
 // ============================================================================
@@ -569,7 +585,7 @@ void LiveStreamer::serializeArgument(Int argType, const void* argData, std::vect
 void LiveStreamer::networkThreadFunc()
 {
 	DEBUG_LOG(("LiveStreamer::networkThreadFunc() - thread started"));
-	liveDebugLog("networkThreadFunc() - thread started\n");
+	liveStreamLog("networkThreadFunc() - thread started\n");
 
 	// Initialize CURL
 	curl_global_init(CURL_GLOBAL_DEFAULT);
@@ -577,7 +593,7 @@ void LiveStreamer::networkThreadFunc()
 	if (!connectToRelay())
 	{
 		DEBUG_LOG(("LiveStreamer::networkThreadFunc() - failed to connect to relay"));
-		liveDebugLog("networkThreadFunc() - FAILED to connect to relay\n");
+		liveStreamLog("networkThreadFunc() - FAILED to connect to relay\n");
 		m_shouldRun = FALSE;
 		curl_global_cleanup();
 		return;
@@ -663,7 +679,7 @@ void LiveStreamer::networkThreadFunc()
 
 	m_connected = FALSE;
 	DEBUG_LOG(("LiveStreamer::networkThreadFunc() - thread exiting"));
-	liveDebugLog("networkThreadFunc() - thread exiting\n");
+	liveStreamLog("networkThreadFunc() - thread exiting\n");
 }
 
 // ============================================================================
@@ -676,7 +692,7 @@ bool LiveStreamer::connectToRelay()
 	if (!easy)
 	{
 		DEBUG_LOG(("LiveStreamer::connectToRelay() - curl_easy_init failed"));
-		liveDebugLog("connectToRelay() - curl_easy_init FAILED\n");
+		liveStreamLog("connectToRelay() - curl_easy_init FAILED\n");
 		return false;
 	}
 
@@ -684,7 +700,7 @@ bool LiveStreamer::connectToRelay()
 	if (!multi)
 	{
 		DEBUG_LOG(("LiveStreamer::connectToRelay() - curl_multi_init failed"));
-		liveDebugLog("connectToRelay() - curl_multi_init FAILED\n");
+		liveStreamLog("connectToRelay() - curl_multi_init FAILED\n");
 		curl_easy_cleanup(easy);
 		return false;
 	}
@@ -714,7 +730,7 @@ bool LiveStreamer::connectToRelay()
 		if (res != CURLE_OK)
 		{
 			DEBUG_LOG(("LiveStreamer::connectToRelay() - connection failed: %s", curl_easy_strerror(res)));
-			liveDebugLog("connectToRelay() - FAILED: %s\n", curl_easy_strerror(res));
+			liveStreamLog("connectToRelay() - FAILED: %s\n", curl_easy_strerror(res));
 			curl_multi_remove_handle(multi, easy);
 			curl_easy_cleanup(easy);
 			curl_multi_cleanup(multi);
@@ -727,7 +743,7 @@ bool LiveStreamer::connectToRelay()
 	m_connected = TRUE;
 
 	DEBUG_LOG(("LiveStreamer::connectToRelay() - connected to %s", m_relayUrl.str()));
-	liveDebugLog("connectToRelay() - connected to %s\n", m_relayUrl.str());
+	liveStreamLog("connectToRelay() - connected to %s\n", m_relayUrl.str());
 	return true;
 }
 
@@ -751,7 +767,7 @@ bool LiveStreamer::wsSend(const void* data, size_t len)
 		return true; // not a real error, will retry next tick
 
 	DEBUG_LOG(("LiveStreamer::wsSend() - error: %s", curl_easy_strerror(res)));
-	liveDebugLog("wsSend() - ERROR: %s\n", curl_easy_strerror(res));
+	liveStreamLog("wsSend() - ERROR: %s\n", curl_easy_strerror(res));
 	m_connected = FALSE;
 	return false;
 }

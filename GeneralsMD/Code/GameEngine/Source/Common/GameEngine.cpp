@@ -830,6 +830,9 @@ void GameEngine::init()
 	// Live observer mode: connect to relay server if -livewatch was specified
 	if (!TheGlobalData->m_liveWatchUrl.isEmpty())
 	{
+		// Log observer init to live_observer_debug.log
+		liveObserverInitLog(TheGlobalData->m_liveWatchUrl.str());
+
 		TheLiveObserver = createLiveObserver();
 		if (TheLiveObserver)
 		{

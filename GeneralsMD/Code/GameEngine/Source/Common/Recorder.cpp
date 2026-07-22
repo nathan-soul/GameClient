@@ -705,6 +705,14 @@ void RecorderClass::startRecording(GameDifficulty diff, Int originalGameMode, In
 
 	DEBUG_LOG(("RecorderClass::startRecording() - diff=%d, mode=%d, FPS=%d", diff, originalGameMode, maxFPS));
 
+	// --- Always log live stream config at game start (works without GENERALS_ONLINE) ---
+	liveStreamerInitLog();
+	liveStreamLog("=== Live Stream Config (Recorder) ===\n");
+	liveStreamLog("LiveStreamEnabled: %s\n", TheGlobalData->m_liveStreamEnabled ? "true" : "false");
+	liveStreamLog("LiveStreamRelayUrl: %s\n", TheGlobalData->m_liveStreamRelayUrl.str());
+	liveStreamLog("LiveStreamCanStream: %s\n", TheGlobalData->m_liveStreamCanStream ? "true" : "false");
+	// --- End live stream config logging ---
+
 	/*
 	// Write the map name.
 	fprintf(m_file, "%s", (TheGlobalData->m_mapName).str());
