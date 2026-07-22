@@ -448,15 +448,15 @@ void LiveObserver::feedCommandsToCommandList()
 	std::lock_guard<std::mutex> lock(m_pendingMutex);
 	liveObserverLog("LiveObserver::feedCommandsToCommandList: %d pending frames\n", (int)m_pendingFrames.size());
 
-	// Find and consume all frames that should be executed on or before the current frame
-	// We iterate in order since frames are inserted sorted
+	// Process ALL pending frames regardless of frame number.
+	// When joining mid-game, the buffer may contain frames far ahead of the
+	// game logic's current frame (e.g., currentFrame=0, first buffered frame=115).
+	// We still need to feed these commands so the game world evolves.
 	auto it = m_pendingFrames.begin();
 	while (it != m_pendingFrames.end())
 	{
-		if (it->frameNumber <= currentFrame)
-		{
-			// Deserialize the binary commands and append to TheCommandList
-			if (!it->serializedCommands.empty() && TheCommandList)
+		// Deserialize the binary commands and append to TheCommandList
+		if (!it->serializedCommands.empty() && TheCommandList)
 			{
 				const char* data = it->serializedCommands.data();
 				Int dataSize = (Int)it->serializedCommands.size();
@@ -549,13 +549,8 @@ void LiveObserver::feedCommandsToCommandList()
 				}
 			}
 
-			m_lastProcessedFrame = it->frameNumber;
-			it = m_pendingFrames.erase(it);
-		}
-		else
-		{
-			break; // Frames are sorted, no need to check further
-		}
+		m_lastProcessedFrame = it->frameNumber;
+		it = m_pendingFrames.erase(it);
 	}
 }
 
@@ -624,7 +619,6 @@ void LiveObserver::networkThreadFunc()
 
 		// --- Receive incoming messages ---
 		std::vector<char> recvBuffer;
-		liveObserverLog("LiveObserver: wsRecv called, buffer state: size=%d\n", (int)recvBuffer.size());
 		if (wsRecv(recvBuffer) && !recvBuffer.empty())
 		{
 			// Real data received — connection is verified, reset reconnect counter
@@ -883,13 +877,11 @@ bool LiveObserver::wsRecv(std::vector<char>& outBuffer)
 		return false;
 	}
 
-	liveObserverLog("LiveObserver::wsRecv called, buffer state: size=%d\n", (int)outBuffer.size());
 	char buf[4096];
 	size_t nread = 0;
 	const struct curl_ws_frame* meta = nullptr;
 
 	CURLcode res = curl_ws_recv((CURL*)m_curlEasy, buf, sizeof(buf), &nread, &meta);
-	liveObserverLog("LiveObserver::wsRecv: curl_ws_recv returned %d, nread=%d\n", (int)res, (int)nread);
 
 	if (res == CURLE_OK && nread > 0)
 	{
@@ -901,7 +893,6 @@ bool LiveObserver::wsRecv(std::vector<char>& outBuffer)
 
 	if (res == CURLE_AGAIN)
 	{
-		liveObserverLog("LiveObserver::wsRecv: CURLE_AGAIN (no data available)\n");
 		return false; // no data available
 	}
 
