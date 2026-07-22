@@ -670,7 +670,7 @@ void LiveStreamer::networkThreadFunc()
 				}
 				else
 				{
-					sendJsonMessage(AsciiString(msg.data.data()));
+					sendJsonMessage(AsciiString(msg.data.data(), (Int)msg.data.size()));
 				}
 				m_outgoingQueue.pop();
 			}
