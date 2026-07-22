@@ -43,6 +43,20 @@ extern GameLogic* TheGameLogic;
 extern CommandList* TheCommandList;
 
 // ============================================================================
+// findSubstring — helper: find pattern in AsciiString, return index or -1
+// AsciiString::find(char) only accepts a single character. For substring
+// searches we use strstr on the raw buffer and convert to an Int offset.
+// ============================================================================
+static Int findSubstring(const AsciiString& str, const char* pattern, Int startPos = 0)
+{
+	const char* haystack = str.str() + startPos;
+	const char* result = strstr(haystack, pattern);
+	if (!result)
+		return -1;
+	return (Int)(result - str.str());
+}
+
+// ============================================================================
 // base64Decode — decode base64 string to binary data
 // ============================================================================
 
@@ -500,9 +514,9 @@ void LiveObserver::networkThreadFunc()
 			// All messages are now JSON text frames
 			AsciiString incoming(recvBuffer.data(), (Int)recvBuffer.size());
 
-			if (incoming.find("\"type\"") != -1)
+			if (findSubstring(incoming, "\"type\"") != -1)
 			{
-				if (incoming.find("\"type\":\"frame\"") != -1)
+				if (findSubstring(incoming, "\"type\":\"frame\"") != -1)
 				{
 					// JSON frame message — extract and decode commands
 					parseFrameMessage(incoming);
@@ -715,14 +729,14 @@ bool LiveObserver::sendJsonMessage(const AsciiString& jsonMsg)
 void LiveObserver::parseFrameMessage(const AsciiString& json)
 {
 	// Extract frame number
-	Int framePos = json.find("\"frame\":");
+	Int framePos = findSubstring(json, "\"frame\":");
 	if (framePos == -1)
 		return;
 
 	Int start = framePos + 8;
-	Int end = json.find(",", start);
+	Int end = findSubstring(json, ",", start);
 	if (end == -1)
-		end = json.find("}", start);
+		end = findSubstring(json, "}", start);
 	if (end == -1)
 		return;
 
@@ -730,12 +744,12 @@ void LiveObserver::parseFrameMessage(const AsciiString& json)
 	UnsignedInt frameNum = (UnsignedInt)atoi(frameStr.str());
 
 	// Extract base64-encoded commands
-	Int cmdPos = json.find("\"commands\":\"");
+	Int cmdPos = findSubstring(json, "\"commands\":\"");
 	if (cmdPos == -1)
 		return;
 
 	start = cmdPos + 12;
-	end = json.find("\"", start);
+	end = findSubstring(json, "\"", start);
 	if (end == -1)
 		return;
 
@@ -772,26 +786,26 @@ void LiveObserver::parseMetadataMessage(const AsciiString& json)
 	DEBUG_LOG(("LiveObserver::parseMetadataMessage() - %s", json.str()));
 
 	// Check message type
-	Int typePos = json.find("\"type\":\"");
+	Int typePos = findSubstring(json, "\"type\":\"");
 	if (typePos == -1)
 		return;
 
 	AsciiString msgType;
 	Int start = typePos + 8;
-	Int end = json.find("\"", start);
+	Int end = findSubstring(json, "\"", start);
 	if (end != -1)
 		msgType = AsciiString(json.str() + start, end - start);
 
 	if (msgType == "metadata")
 	{
 		// Extract streamer frame
-		Int framePos = json.find("\"current_frame\":");
+		Int framePos = findSubstring(json, "\"current_frame\":");
 		if (framePos != -1)
 		{
 			start = framePos + 16;
-			end = json.find(",", start);
+			end = findSubstring(json, ",", start);
 			if (end == -1)
-				end = json.find("}", start);
+				end = findSubstring(json, "}", start);
 			if (end != -1)
 			{
 				AsciiString frameStr(json.str() + start, end - start);
@@ -800,13 +814,13 @@ void LiveObserver::parseMetadataMessage(const AsciiString& json)
 		}
 
 		// Extract FPS
-		Int fpsPos = json.find("\"fps\":");
+		Int fpsPos = findSubstring(json, "\"fps\":");
 		if (fpsPos != -1)
 		{
 			start = fpsPos + 6;
-			end = json.find(",", start);
+			end = findSubstring(json, ",", start);
 			if (end == -1)
-				end = json.find("}", start);
+				end = findSubstring(json, "}", start);
 			if (end != -1)
 			{
 				AsciiString fpsStr(json.str() + start, end - start);
@@ -815,11 +829,11 @@ void LiveObserver::parseMetadataMessage(const AsciiString& json)
 		}
 
 		// Extract map name
-		Int mapPos = json.find("\"map_name\":\"");
+		Int mapPos = findSubstring(json, "\"map_name\":\"");
 		if (mapPos != -1)
 		{
 			start = mapPos + 12;
-			end = json.find("\"", start);
+			end = findSubstring(json, "\"", start);
 			if (end != -1)
 			{
 				AsciiString mapName(json.str() + start, end - start);
@@ -828,13 +842,13 @@ void LiveObserver::parseMetadataMessage(const AsciiString& json)
 		}
 
 		// Extract exeCRC and iniCRC
-		Int exeCRCPos = json.find("\"exe_crc\":");
+		Int exeCRCPos = findSubstring(json, "\"exe_crc\":");
 		if (exeCRCPos != -1)
 		{
 			start = exeCRCPos + 10;
-			end = json.find(",", start);
+			end = findSubstring(json, ",", start);
 			if (end == -1)
-				end = json.find("}", start);
+				end = findSubstring(json, "}", start);
 			if (end != -1)
 			{
 				AsciiString crcStr(json.str() + start, end - start);
