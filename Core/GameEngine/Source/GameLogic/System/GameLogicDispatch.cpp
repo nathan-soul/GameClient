@@ -43,6 +43,7 @@
 #include "Common/MessageStream.h"
 #include "Common/MultiplayerSettings.h"
 #include "Common/Recorder.h"
+#include "Common/LiveObserver.h"
 #include "Common/BuildAssistant.h"
 #include "Common/SpecialPower.h"
 #include "Common/ThingTemplate.h"
@@ -2057,6 +2058,12 @@ void GameLogic::logicMessageDispatcher(GameMessage* msg, void* userData)
 	//---------------------------------------------------------------------------------------------
 	case GameMessage::MSG_LOGIC_CRC:
 	{
+		if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
+		{
+			liveObserverLog("GameLogicDispatch: skipping MSG_LOGIC_CRC in LIVE_OBSERVER mode\n");
+			break;
+		}
+
 		if (TheNetwork)
 		{
 			Int slotIndex = -1;

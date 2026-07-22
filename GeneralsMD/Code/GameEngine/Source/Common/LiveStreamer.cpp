@@ -27,8 +27,10 @@
 #include "GameLogic/GameLogic.h"
 #include "Common/AsciiString.h"
 #include "Common/CRCDebug.h"
+#include "Common/Recorder.h"
 
 #include "GameNetwork/GameMessageParser.h"
+#include "GameNetwork/GameInfo.h"
 
 #include "GameNetwork/GeneralsOnline/Vendor/libcurl/curl.h"
 #include "GameNetwork/GeneralsOnline/Vendor/libcurl/multi.h"
@@ -418,15 +420,32 @@ void LiveStreamer::sendMetadata()
 	UnsignedInt iniCRC = TheGlobalData ? TheGlobalData->m_iniCRC : 0;
 	UnsignedInt currentFrame = TheGameLogic ? TheGameLogic->getFrame() : 0;
 
+	// Get the full game options string so observers can reconstruct the game state.
+	// This includes player slots, teams, map, seed — everything needed to call
+	// ParseAsciiStringToGameInfo() on the observer side.
+	// During live play, the active game info is in TheGameInfo (set by network layer).
+	// TheRecorder->getGameInfo() is only populated during replay playback.
+	AsciiString gameOptions;
+	if (TheGameInfo)
+	{
+		gameOptions = GameInfoToAsciiString(TheGameInfo);
+	}
+	else if (TheRecorder)
+	{
+		gameOptions = GameInfoToAsciiString(TheRecorder->getGameInfo());
+	}
+
 	AsciiString json;
 	json.format(
 		"{\"type\":\"metadata\",\"game_hash\":\"%s\",\"game_id\":\"%s\","
 		"\"map_name\":\"%s\",\"players\":%s,"
+		"\"game_options\":\"%s\","
 		"\"exe_crc\":%u,\"ini_crc\":%u,\"current_frame\":%u}",
 		jsonEscape(m_gameHash).str(),
 		jsonEscape(m_gameId).str(),
 		jsonEscape(mapName).str(),
 		playersJson.str(),
+		jsonEscape(gameOptions).str(),
 		exeCRC,
 		iniCRC,
 		currentFrame);
@@ -468,18 +487,27 @@ void LiveStreamer::streamFrame(UnsignedInt frame, GameMessage* cmdList, Int curr
 	std::vector<char> frameBuffer;
 	serializeFrame(frame, cmdList, frameBuffer);
 
-	if (frameBuffer.empty())
-		return;
-
-	// Base64-encode the binary commands
-	AsciiString b64Commands;
-	base64Encode(frameBuffer.data(), frameBuffer.size(), b64Commands);
-
-	// Build a JSON frame message
+	// Build a JSON frame message — always send, even if empty.
+	// Empty frames are essential for lockstep simulation: the observer needs
+	// every frame number so waitForFrame() doesn't stall.
 	AsciiString jsonFrame;
-	jsonFrame.format(
-		"{\"type\":\"frame\",\"frame\":%u,\"fps\":%d,\"commands\":\"%s\"}",
-		frame, currentFps, b64Commands.str());
+	if (frameBuffer.empty())
+	{
+		// Placeholder for a frame with no commands
+		jsonFrame.format(
+			"{\"type\":\"frame\",\"frame\":%u,\"fps\":%d,\"commands\":\"\"}",
+			frame, currentFps);
+	}
+	else
+	{
+		// Base64-encode the binary commands
+		AsciiString b64Commands;
+		base64Encode(frameBuffer.data(), frameBuffer.size(), b64Commands);
+
+		jsonFrame.format(
+			"{\"type\":\"frame\",\"frame\":%u,\"fps\":%d,\"commands\":\"%s\"}",
+			frame, currentFps, b64Commands.str());
+	}
 
 	// Queue as text message
 	QueuedMessage msg;

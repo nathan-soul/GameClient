@@ -369,18 +369,38 @@ Bool LiveObserver::receiveGameMetadata()
 
 Bool LiveObserver::waitForFrame(UnsignedInt targetFrame)
 {
-	liveObserverLog("LiveObserver::waitForFrame: target frame %u\n", targetFrame);
+	//liveObserverLog("LiveObserver::waitForFrame: target frame %u\n", targetFrame);
 
-	// Check if we already have the frame buffered
+	// Check if we already have the EXACT frame buffered
 	{
 		std::lock_guard<std::mutex> lock(m_pendingMutex);
-		liveObserverLog("LiveObserver::waitForFrame: %d pending frames in buffer\n", (int)m_pendingFrames.size());
+		//liveObserverLog("LiveObserver::waitForFrame: %d pending frames in buffer\n", (int)m_pendingFrames.size());
 		for (const LiveFrameData& fd : m_pendingFrames)
 		{
-			if (fd.frameNumber >= targetFrame)
+			if (fd.frameNumber == targetFrame)
 			{
-				liveObserverLog("LiveObserver::waitForFrame: frame %u already buffered\n", targetFrame);
+				//liveObserverLog("LiveObserver::waitForFrame: frame %u already buffered\n", targetFrame);
 				return TRUE;
+			}
+		}
+		// Log what frames ARE available (first and last)
+		if (!m_pendingFrames.empty())
+		{
+			liveObserverLog("LiveObserver::waitForFrame: buffer has frames %u-%u, need %u\n",
+				m_pendingFrames.front().frameNumber,
+				m_pendingFrames.back().frameNumber,
+				targetFrame);
+
+			// If the buffer already has frames past our target, this frame
+			// is definitively missed — return FALSE immediately so the
+			// caller can insert a placeholder.  Waiting 5 seconds for a
+			// frame that will never arrive is what causes the game to
+			// crawl at ~2 fps instead of running at full speed.
+			if (m_pendingFrames.back().frameNumber > targetFrame)
+			{
+				liveObserverLog("LiveObserver::waitForFrame: frame %u is in the past (buffer ends at %u), returning false for placeholder\n",
+					targetFrame, m_pendingFrames.back().frameNumber);
+				return FALSE;
 			}
 		}
 	}
@@ -396,7 +416,7 @@ Bool LiveObserver::waitForFrame(UnsignedInt targetFrame)
 	const Int timeoutMs = 5000;
 	const Int pollIntervalMs = 10;
 	Int elapsed = 0;
-	liveObserverLog("LiveObserver::waitForFrame: waiting for frame %u, timeout=%d ms...\n", targetFrame, timeoutMs);
+	//liveObserverLog("LiveObserver::waitForFrame: waiting for frame %u, timeout=%d ms...\n", targetFrame, timeoutMs);
 
 	while (elapsed < timeoutMs && m_connected)
 	{
@@ -406,11 +426,18 @@ Bool LiveObserver::waitForFrame(UnsignedInt targetFrame)
 		std::lock_guard<std::mutex> lock(m_pendingMutex);
 		for (const LiveFrameData& fd : m_pendingFrames)
 		{
-			if (fd.frameNumber >= targetFrame)
+			if (fd.frameNumber == targetFrame)
 			{
-				liveObserverLog("LiveObserver::waitForFrame: frame %u received after %d ms\n", targetFrame, elapsed);
+				//liveObserverLog("LiveObserver::waitForFrame: frame %u received after %d ms\n", targetFrame, elapsed);
 				return TRUE;
 			}
+		}
+		// Log what's available if we've been waiting a while
+		if (!m_pendingFrames.empty() && (elapsed % 500) < pollIntervalMs)
+		{
+			//liveObserverLog("LiveObserver::waitForFrame: still waiting (elapsed=%d ms), buffer has %u-%u, need %u\n",
+			//	elapsed, m_pendingFrames.front().frameNumber,
+			//	m_pendingFrames.back().frameNumber, targetFrame);
 		}
 	}
 
@@ -437,121 +464,153 @@ Bool LiveObserver::waitForFrame(UnsignedInt targetFrame)
 }
 
 // ============================================================================
-// feedCommandsToCommandList — append commands for the current frame
+// feedCommandsToCommandList — feed ONE specific frame's commands
 // ============================================================================
 
-void LiveObserver::feedCommandsToCommandList()
+void LiveObserver::feedCommandsToCommandList(UnsignedInt targetFrame)
 {
-	UnsignedInt currentFrame = TheGameLogic ? TheGameLogic->getFrame() : 0;
-	liveObserverLog("LiveObserver::feedCommandsToCommandList: currentFrame=%u\n", currentFrame);
+	//liveObserverLog("LiveObserver::feedCommandsToCommandList: targetFrame=%u, currentFrame=%u\n",
+	//	targetFrame, TheGameLogic ? TheGameLogic->getFrame() : 0);
 
 	std::lock_guard<std::mutex> lock(m_pendingMutex);
-	liveObserverLog("LiveObserver::feedCommandsToCommandList: %d pending frames\n", (int)m_pendingFrames.size());
+	//liveObserverLog("LiveObserver::feedCommandsToCommandList: %d pending frames\n", (int)m_pendingFrames.size());
 
-	// Process ALL pending frames regardless of frame number.
-	// When joining mid-game, the buffer may contain frames far ahead of the
-	// game logic's current frame (e.g., currentFrame=0, first buffered frame=115).
-	// We still need to feed these commands so the game world evolves.
+	// Find the frame matching targetFrame exactly
 	auto it = m_pendingFrames.begin();
-	while (it != m_pendingFrames.end())
+	while (it != m_pendingFrames.end() && it->frameNumber < targetFrame)
+		++it;
+
+	if (it == m_pendingFrames.end() || it->frameNumber != targetFrame)
 	{
-		// Deserialize the binary commands and append to TheCommandList
-		if (!it->serializedCommands.empty() && TheCommandList)
+		liveObserverLog("LiveObserver::feedCommandsToCommandList: frame %u not found in buffer\n", targetFrame);
+		return;
+	}
+
+	// Deserialize the binary commands for this ONE frame and append to TheCommandList
+	if (!it->serializedCommands.empty() && TheCommandList)
+	{
+		const char* data = it->serializedCommands.data();
+		Int dataSize = (Int)it->serializedCommands.size();
+		Int pos = 0;
+
+		// Binary format (same as Recorder::writeToFile / LiveStreamer::serializeFrame):
+		// [4-byte frame][4-byte type][4-byte playerIndex][1-byte numTypes][type entries...][arguments...]
+		while (pos + 13 <= dataSize)
+		{
+			// Read frame number (4 bytes)
+			UnsignedInt frameNum;
+			memcpy(&frameNum, data + pos, sizeof(frameNum));
+			pos += sizeof(frameNum);
+
+			// Read message type (4 bytes)
+			GameMessage::Type msgType;
+			memcpy(&msgType, data + pos, sizeof(msgType));
+			pos += sizeof(msgType);
+
+			// Read player index (4 bytes)
+			Int playerIndex;
+			memcpy(&playerIndex, data + pos, sizeof(playerIndex));
+			pos += sizeof(playerIndex);
+
+			// Read number of argument type entries (1 byte)
+			if (pos >= dataSize)
+				break;
+			UnsignedByte numTypes = (UnsignedByte)data[pos];
+			pos += sizeof(numTypes);
+
+			if (pos + numTypes * 2 > dataSize)
+				break;
+
+			GameMessageParser* parser = newInstance(GameMessageParser)();
+			Int totalArgs = 0;
+			for (UnsignedByte i = 0; i < numTypes; ++i)
 			{
-				const char* data = it->serializedCommands.data();
-				Int dataSize = (Int)it->serializedCommands.size();
-				Int pos = 0;
+				UnsignedByte argType = (UnsignedByte)data[pos];
+				pos += 1;
+				UnsignedByte argc = (UnsignedByte)data[pos];
+				pos += 1;
+				parser->addArgType((GameMessageArgumentDataType)argType, argc);
+				totalArgs += argc;
+			}
 
-				// Binary format (same as Recorder::writeToFile / LiveStreamer::serializeFrame):
-				// [4-byte frame][4-byte type][4-byte playerIndex][1-byte numTypes][type entries...][arguments...]
-				while (pos + 13 <= dataSize) // minimum: 4 frame + 4 type + 4 player + 1 numTypes = 13
+			GameMessage* msg = newInstance(GameMessage)(msgType);
+			msg->friend_setPlayerIndex(playerIndex);
+
+			GameMessageParserArgumentType* parserArgType = parser->getFirstArgumentType();
+			GameMessageArgumentDataType lastType = ARGUMENTDATATYPE_UNKNOWN;
+			Int argsLeft = 0;
+			if (parserArgType != nullptr)
+			{
+				lastType = parserArgType->getType();
+				argsLeft = parserArgType->getArgCount();
+			}
+			for (Int j = 0; j < totalArgs; ++j)
+			{
+				if (pos >= dataSize)
+					break;
+				readArgumentFromBuffer(lastType, msg, data, dataSize, pos);
+
+				--argsLeft;
+				if (argsLeft == 0)
 				{
-					// Read frame number (4 bytes)
-					UnsignedInt frameNum;
-					memcpy(&frameNum, data + pos, sizeof(frameNum));
-					pos += sizeof(frameNum);
-
-					// Read message type (4 bytes)
-					GameMessage::Type msgType;
-					memcpy(&msgType, data + pos, sizeof(msgType));
-					pos += sizeof(msgType);
-
-					// Read player index (4 bytes)
-					Int playerIndex;
-					memcpy(&playerIndex, data + pos, sizeof(playerIndex));
-					pos += sizeof(playerIndex);
-
-					// Read number of argument type entries (1 byte)
-					if (pos >= dataSize)
-						break;
-					UnsignedByte numTypes = (UnsignedByte)data[pos];
-					pos += sizeof(numTypes);
-
-					// Read argument type info entries: each is [1-byte type][1-byte argCount]
-					if (pos + numTypes * 2 > dataSize)
-						break;
-
-					GameMessageParser* parser = newInstance(GameMessageParser)();
-					Int totalArgs = 0;
-					for (UnsignedByte i = 0; i < numTypes; ++i)
-					{
-						UnsignedByte argType = (UnsignedByte)data[pos];
-						pos += 1;
-						UnsignedByte argc = (UnsignedByte)data[pos];
-						pos += 1;
-						parser->addArgType((GameMessageArgumentDataType)argType, argc);
-						totalArgs += argc;
-					}
-
-					// Create the GameMessage using the correct API
-					GameMessage* msg = newInstance(GameMessage)(msgType);
-					msg->friend_setPlayerIndex(playerIndex);
-
-					// Read arguments using parser's linked-list type info (same as Recorder::appendNextCommand)
-					GameMessageParserArgumentType* parserArgType = parser->getFirstArgumentType();
-					GameMessageArgumentDataType lastType = ARGUMENTDATATYPE_UNKNOWN;
-					Int argsLeft = 0;
+					if (parserArgType != nullptr)
+						parserArgType = parserArgType->getNext();
 					if (parserArgType != nullptr)
 					{
-						lastType = parserArgType->getType();
 						argsLeft = parserArgType->getArgCount();
-					}
-					for (Int j = 0; j < totalArgs; ++j)
-					{
-						if (pos >= dataSize)
-							break;
-						readArgumentFromBuffer(lastType, msg, data, dataSize, pos);
-
-						--argsLeft;
-						if (argsLeft == 0)
-						{
-							if (parserArgType != nullptr)
-								parserArgType = parserArgType->getNext();
-							if (parserArgType != nullptr)
-							{
-								argsLeft = parserArgType->getArgCount();
-								lastType = parserArgType->getType();
-							}
-						}
-					}
-
-					deleteInstance(parser);
-
-					// Append to command list (skip CRC messages, as Recorder does)
-					if (msgType != GameMessage::MSG_BEGIN_NETWORK_MESSAGES)
-					{
-						TheCommandList->appendMessage(msg);
-					}
-					else
-					{
-						deleteInstance(msg);
+						lastType = parserArgType->getType();
 					}
 				}
 			}
 
-		m_lastProcessedFrame = it->frameNumber;
-		it = m_pendingFrames.erase(it);
+			deleteInstance(parser);
+
+			if (msgType != GameMessage::MSG_BEGIN_NETWORK_MESSAGES)
+				TheCommandList->appendMessage(msg);
+			else
+				deleteInstance(msg);
+		}
 	}
+
+	m_lastProcessedFrame = it->frameNumber;
+	m_pendingFrames.erase(it);
+
+	//liveObserverLog("LiveObserver::feedCommandsToCommandList: processed frame %u, %d frames remaining\n",
+	//	targetFrame, (int)m_pendingFrames.size());
+}
+
+// ============================================================================
+// insertPlaceholderFrame — create an empty frame to fill a gap
+// ============================================================================
+
+void LiveObserver::insertPlaceholderFrame(UnsignedInt frameNum)
+{
+	//liveObserverLog("LiveObserver::insertPlaceholderFrame: frame %u\n", frameNum);
+
+	LiveFrameData fd;
+	fd.frameNumber = frameNum;
+	// serializedCommands stays empty — no commands for this frame
+
+	std::lock_guard<std::mutex> lock(m_pendingMutex);
+
+	// Insert in sorted order
+	auto it = m_pendingFrames.begin();
+	while (it != m_pendingFrames.end() && it->frameNumber < frameNum)
+		++it;
+
+	if (it != m_pendingFrames.end() && it->frameNumber == frameNum)
+	{
+		//liveObserverLog("LiveObserver::insertPlaceholderFrame: frame %u already exists, skipping\n", frameNum);
+		return;
+	}
+
+	m_pendingFrames.insert(it, fd);
+	//liveObserverLog("LiveObserver::insertPlaceholderFrame: inserted placeholder for frame %u, %d pending\n",
+	//	frameNum, (int)m_pendingFrames.size());
+
+	// Update tracking
+	if (frameNum > m_lastReceivedFrame)
+		m_lastReceivedFrame = frameNum;
 }
 
 // ============================================================================
@@ -617,37 +676,52 @@ void LiveObserver::networkThreadFunc()
 			}
 		}
 
-		// --- Receive incoming messages ---
-		std::vector<char> recvBuffer;
-		if (wsRecv(recvBuffer) && !recvBuffer.empty())
+		// --- Drain ALL available incoming messages first, then process them ---
+		// Parsing (especially catchup_bulk) can block for seconds. If we parse
+		// before draining, the WebSocket receive buffer fills up and frames are lost.
+		std::vector<AsciiString> incomingQueue;
+
+		// Drain loop: read as long as data is available (non-blocking via CURLE_AGAIN)
 		{
-			// Real data received — connection is verified, reset reconnect counter
-			if (m_reconnectAttempts > 0)
+			std::vector<char> recvBuffer;
+			while (wsRecv(recvBuffer) && !recvBuffer.empty())
 			{
-				liveObserverLog("LiveObserver: data received after reconnect, resetting reconnect attempts\n");
-				m_reconnectAttempts = 0;
+				if (m_reconnectAttempts > 0)
+				{
+					liveObserverLog("LiveObserver: data received after reconnect, resetting reconnect attempts\n");
+					m_reconnectAttempts = 0;
+				}
+				//liveObserverLog("LiveObserver: received %d bytes from relay\n", (int)recvBuffer.size());
+				AsciiString incoming(recvBuffer.data(), (Int)recvBuffer.size());
+				incomingQueue.push_back(incoming);
+				recvBuffer.clear();
 			}
-			liveObserverLog("LiveObserver: received %d bytes from relay\n", (int)recvBuffer.size());
-			// All messages are now JSON text frames
-			AsciiString incoming(recvBuffer.data(), (Int)recvBuffer.size());
+		}
+
+		// Process all queued messages
+		for (size_t i = 0; i < incomingQueue.size(); ++i)
+		{
+			const AsciiString& incoming = incomingQueue[i];
 
 			if (findSubstring(incoming, "\"type\"") != -1)
 			{
-				if (findSubstring(incoming, "\"type\":\"frame\"") != -1)
-				{
-					liveObserverLog("LiveObserver: incoming message is a frame\n");
-					// JSON frame message — extract and decode commands
-					parseFrameMessage(incoming);
-				}
-				else if (findSubstring(incoming, "\"type\":\"catchup_bulk\"") != -1)
+				// Check catchup_bulk BEFORE frame — catchup_bulk contains
+				// frame objects inside its frames array, so a substring
+				// search for "type":"frame" would match the nested ones.
+				if (findSubstring(incoming, "\"type\":\"catchup_bulk\"") != -1)
 				{
 					liveObserverLog("LiveObserver: incoming message is catchup_bulk\n");
 					parseBulkCatchup(incoming);
 				}
+				else if (findSubstring(incoming, "\"type\":\"frame\"") != -1)
+				{
+					// Per-frame logging — uncomment to debug frame flow
+					//liveObserverLog("LiveObserver: incoming message is a frame\n");
+					parseFrameMessage(incoming);
+				}
 				else
 				{
 					liveObserverLog("LiveObserver: incoming message is metadata or other\n");
-					// Metadata or other JSON message
 					parseMetadataMessage(incoming);
 				}
 			}
@@ -882,17 +956,24 @@ bool LiveObserver::wsRecv(std::vector<char>& outBuffer)
 		return false;
 	}
 
-	char buf[4096];
+	// Use a large buffer for catchup_bulk messages (can be several MB).
+	// Stack allocation of 256KB handles typical games; for longer games the
+	// relay sends chunked catchup.
+	static const size_t kRecvBufSize = 262144; // 256 KB
+	static char* s_recvBuf = nullptr;
+	if (!s_recvBuf)
+		s_recvBuf = new char[kRecvBufSize];
+
 	size_t nread = 0;
 	const struct curl_ws_frame* meta = nullptr;
 
-	CURLcode res = curl_ws_recv((CURL*)m_curlEasy, buf, sizeof(buf), &nread, &meta);
+	CURLcode res = curl_ws_recv((CURL*)m_curlEasy, s_recvBuf, kRecvBufSize, &nread, &meta);
 
 	if (res == CURLE_OK && nread > 0)
 	{
-		liveObserverLog("LiveObserver::wsRecv: received %d bytes, first 100 chars: %.100s\n",
-			(int)nread, buf);
-		outBuffer.assign(buf, buf + nread);
+		//liveObserverLog("LiveObserver::wsRecv: received %d bytes, first 100 chars: %.100s\n",
+		//	(int)nread, s_recvBuf);
+		outBuffer.assign(s_recvBuf, s_recvBuf + nread);
 		return true;
 	}
 
@@ -947,7 +1028,8 @@ bool LiveObserver::sendJsonMessage(const AsciiString& jsonMsg)
 
 void LiveObserver::parseFrameMessage(const AsciiString& json)
 {
-	liveObserverLog("LiveObserver::parseFrameMessage: processing frame JSON (len=%d)\n", (int)json.getLength());
+	// Per-frame logging — uncomment to debug individual frames
+	//liveObserverLog("LiveObserver::parseFrameMessage: processing frame JSON (len=%d)\n", (int)json.getLength());
 
 	// Extract frame number
 	Int framePos = findSubstring(json, "\"frame\":");
@@ -978,34 +1060,42 @@ void LiveObserver::parseFrameMessage(const AsciiString& json)
 		return;
 
 	AsciiString b64Commands(json.str() + start, end - start);
-	liveObserverLog("LiveObserver::parseFrameMessage: frame=%u, b64_commands_len=%d\n", frameNum, (int)b64Commands.getLength());
+	// Per-frame logging — uncomment to debug individual frames
+	//liveObserverLog("LiveObserver::parseFrameMessage: frame=%u, b64_commands_len=%d\n", frameNum, (int)b64Commands.getLength());
 
-	// Base64 decode
+	// Base64 decode (may be empty for frames with no commands)
 	std::vector<char> decodedCommands;
 	base64Decode(b64Commands.str(), b64Commands.getLength(), decodedCommands);
 
-	if (decodedCommands.empty())
-	{
-		liveObserverLog("LiveObserver::parseFrameMessage: base64 decode returned empty, returning\n");
-		return;
-	}
-
-	liveObserverLog("LiveObserver::parseFrameMessage: decoded %d bytes for frame %u\n",
-		(int)decodedCommands.size(), frameNum);
-	// Update streamer frame tracking
+	// Update streamer frame tracking regardless of whether we have commands.
+	// Empty frames still advance the game simulation.
 	if (frameNum > m_streamerFrame)
 		m_streamerFrame = frameNum;
 
-	// Deserialize the payload and add to pending frames
-	deserializeFrame(frameNum, decodedCommands.data(), (Int)decodedCommands.size());
+	if (decodedCommands.empty())
+	{
+		// Push an empty frame to m_pendingFrames so waitForFrame() finds it.
+		// The game engine needs every frame number for lockstep simulation.
+		// Per-frame logging — uncomment to debug individual frames
+		//liveObserverLog("LiveObserver::parseFrameMessage: empty frame %u, buffering placeholder\n", frameNum);
+		deserializeFrame(frameNum, nullptr, 0);
+	}
+	else
+	{
+		// Per-frame logging — uncomment to debug individual frames
+		//liveObserverLog("LiveObserver::parseFrameMessage: decoded %d bytes for frame %u\n",
+		//	(int)decodedCommands.size(), frameNum);
+		deserializeFrame(frameNum, decodedCommands.data(), (Int)decodedCommands.size());
+	}
 
 	// Update last received frame
 	if (frameNum > m_lastReceivedFrame)
 		m_lastReceivedFrame = frameNum;
 
-	DEBUG_LOG(("LiveObserver::parseFrameMessage() - frame %u, decoded %d bytes", frameNum, (Int)decodedCommands.size()));
-	liveObserverLog("parseFrameMessage() - frame=%u, decoded_bytes=%d\n",
-		frameNum, (Int)decodedCommands.size());
+	// Per-frame logging — uncomment to debug individual frames
+	//DEBUG_LOG(("LiveObserver::parseFrameMessage() - frame %u, decoded %d bytes", frameNum, (Int)decodedCommands.size()));
+	//liveObserverLog("parseFrameMessage() - frame=%u, decoded_bytes=%d\n",
+	//	frameNum, (Int)decodedCommands.size());
 }
 
 // ============================================================================
@@ -1076,6 +1166,20 @@ void LiveObserver::parseMetadataMessage(const AsciiString& json)
 			{
 				AsciiString mapName(json.str() + start, end - start);
 				m_replayGameInfo.setMap(mapName);
+			}
+		}
+
+		// Extract game options string (S=... format)
+		// This contains the full player slot setup needed by ParseAsciiStringToGameInfo()
+		Int optPos = findSubstring(json, "\"game_options\":\"");
+		if (optPos != -1)
+		{
+			start = optPos + 16;
+			end = findSubstring(json, "\"", start);
+			if (end != -1)
+			{
+				m_gameOptionsStr.set(json.str() + start, end - start);
+				liveObserverLog("parseMetadataMessage() - game_options=%.200s\n", m_gameOptionsStr.str());
 			}
 		}
 
@@ -1189,13 +1293,17 @@ void LiveObserver::parseBulkCatchup(const AsciiString& json)
 
 void LiveObserver::deserializeFrame(UnsignedInt frameNum, const char* payload, Int payloadSize)
 {
-	liveObserverLog("LiveObserver::deserializeFrame: frame=%u, payload_size=%d\n", frameNum, payloadSize);
+	// Per-frame logging — uncomment to debug individual frames
+	//liveObserverLog("LiveObserver::deserializeFrame: frame=%u, payload_size=%d\n", frameNum, payloadSize);
 	LiveFrameData fd;
 	fd.frameNumber = frameNum;
-	fd.serializedCommands.assign(payload, payload + payloadSize);
+	if (payload && payloadSize > 0)
+		fd.serializedCommands.assign(payload, payload + payloadSize);
+	// else: empty frame — serializedCommands stays empty, which is correct
 
 	std::lock_guard<std::mutex> lock(m_pendingMutex);
-	liveObserverLog("LiveObserver::deserializeFrame: %d frames pending before insert\n", (int)m_pendingFrames.size());
+	// Per-frame logging — uncomment to debug individual frames
+	//liveObserverLog("LiveObserver::deserializeFrame: %d frames pending before insert\n", (int)m_pendingFrames.size());
 
 	// Insert in sorted order by frame number
 	auto it = m_pendingFrames.begin();
@@ -1205,22 +1313,20 @@ void LiveObserver::deserializeFrame(UnsignedInt frameNum, const char* payload, I
 	// If a frame with this number already exists, replace it
 	if (it != m_pendingFrames.end() && it->frameNumber == frameNum)
 	{
-		liveObserverLog("LiveObserver::deserializeFrame: replacing existing frame %u\n", frameNum);
+		// Per-frame logging — uncomment to debug individual frames
+		//liveObserverLog("LiveObserver::deserializeFrame: replacing existing frame %u\n", frameNum);
 		*it = fd;
 	}
 	else
 	{
 		m_pendingFrames.insert(it, fd);
-		liveObserverLog("LiveObserver::deserializeFrame: inserted frame %u, now %d pending\n",
-			frameNum, (int)m_pendingFrames.size());
+		// Per-frame logging — uncomment to debug individual frames
+		//liveObserverLog("LiveObserver::deserializeFrame: inserted frame %u, now %d pending\n",
+		//	frameNum, (int)m_pendingFrames.size());
 	}
 
-	// Limit buffer size to prevent memory issues (keep at most 300 frames = 5 seconds at 60fps)
-	while (m_pendingFrames.size() > 300)
-	{
-		liveObserverLog("LiveObserver::deserializeFrame: dropping oldest frame (buffer full)\n");
-		m_pendingFrames.pop_front();
-	}
+	// No buffer limit — we need ALL frames from catchup_bulk.
+	// Even 100k frames × ~22 bytes = ~2.2 MB, which is fine.
 }
 
 #endif // GENERALS_ONLINE

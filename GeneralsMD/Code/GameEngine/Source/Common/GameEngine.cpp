@@ -846,6 +846,43 @@ void GameEngine::init()
 				// to feed frames from TheLiveObserver instead of normal input.
 				TheRecorder->setMode(RECORDERMODETYPE_LIVE_OBSERVER);
 
+				// Populate Recorder's game info from relay metadata so
+				// tryStartNewGame uses the normal isPlaybackMode() code path.
+				// Mirror doLiveObserverGameStart() — ParseAsciiStringToGameInfo
+				// fills in player slots, teams, colors, factions, start positions.
+				GameInfo* recGameInfo = TheRecorder->getGameInfo();
+				if (recGameInfo)
+				{
+					recGameInfo->reset();
+					recGameInfo->enterGame();
+					if (ParseAsciiStringToGameInfo(recGameInfo, TheLiveObserver->getGameOptions()))
+					{
+						// Clamp player templates to valid range (observer may have
+						// vanilla templates while streamer has modded ones).
+						Int maxTemplate = ThePlayerTemplateStore ? ThePlayerTemplateStore->getPlayerTemplateCount() - 1 : 11;
+						for (Int i = 0; i < MAX_SLOTS; ++i)
+						{
+							GameSlot* slot = recGameInfo->getSlot(i);
+							if (slot && slot->isOccupied())
+							{
+								Int tmpl = slot->getPlayerTemplate();
+								if (tmpl < 0 || tmpl > maxTemplate)
+								{
+									liveObserverLog("GameEngine::init: slot %d template %d out of range (max %d), clamping to 0\n",
+										i, tmpl, maxTemplate);
+									slot->setPlayerTemplate(0);
+								}
+							}
+						}
+						recGameInfo->startGame(0);
+						liveObserverLog("GameEngine::init: populated Recorder game info\n");
+					}
+					else
+					{
+						liveObserverLog("GameEngine::init: ParseAsciiStringToGameInfo FAILED!\n");
+					}
+				}
+
 				// Set the pending map file so MSG_NEW_GAME loads the correct map.
 				// Pattern from Recorder::playbackFile (Recorder.cpp:1303).
 				AsciiString mapName = TheLiveObserver->getGameInfo()->getMap();
@@ -1051,26 +1088,67 @@ void GameEngine::update()
 #if defined(GENERALS_ONLINE)
 			if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
 			{
+				// Log first frame entry (only once)
+				static Bool s_loggedFirstUpdate = FALSE;
+				if (!s_loggedFirstUpdate)
+				{
+					s_loggedFirstUpdate = TRUE;
+					liveObserverLog("GameEngine::update: first logic tick in LIVE_OBSERVER mode — frame=%d\n",
+						TheGameLogic ? TheGameLogic->getFrame() : -1);
+				}
+
 				if (TheLiveObserver && TheLiveObserver->isConnected())
 				{
 					UnsignedInt nextFrame = TheGameLogic->getFrame() + 1;
 					if (!TheLiveObserver->waitForFrame(nextFrame))
 					{
-						// No frame available yet — buffer underrun.  Skip this
-						// logic tick to avoid running ahead of the stream.
-						return;
+						// Frame not available. If we have ANY future frames buffered,
+						// insert a placeholder so we can advance past the gap.
+						// Gaps occur when frames have no commands (empty frames may
+						// not have been sent by older streamer builds).
+						Int bufferDelay = TheLiveObserver->getBufferDelay();
+						if (bufferDelay > 0)
+						{
+							liveObserverLog("LIVE: gap at frame %u, inserting placeholder (delay=%d)\\n",
+								nextFrame, bufferDelay);
+							TheLiveObserver->insertPlaceholderFrame(nextFrame);
+						}
+						else
+						{
+							// No frame available and no future data — genuine buffer underrun.
+							// Skip this logic tick to avoid running ahead of the stream.
+							return;
+						}
 					}
-					TheLiveObserver->feedCommandsToCommandList();
+					TheLiveObserver->feedCommandsToCommandList(nextFrame);
+
+					// Auto-enable fast-forward during catch-up to process buffered
+					// frames at maximum speed.  Disable once we're within 30 frames
+					// (1 second at 30fps) of the live edge.
+					// Only enable after the game has stabilized (120+ frames = 4s at 30fps)
+					// to avoid crashing during initial game setup.
+					Int bufferDelay = TheLiveObserver->getBufferDelay();
+					if (bufferDelay > 30 && TheGameLogic->getFrame() > 120)
+					{
+						if (!TheGlobalData->m_TiVOFastMode)
+							liveObserverLog("LIVE: enabling fast-forward (delay=%d frames)\\n", bufferDelay);
+						TheWritableGlobalData->m_TiVOFastMode = TRUE;
+					}
+					else if (TheGlobalData->m_TiVOFastMode && bufferDelay <= 30)
+					{
+						liveObserverLog("LIVE: caught up, disabling fast-forward (delay=%d)\\n", bufferDelay);
+						TheWritableGlobalData->m_TiVOFastMode = FALSE;
+					}
 
 					// Log frame processing progress every ~60 frames (~2s at 30fps)
 					static UnsignedInt lastLoggedFrame = 0;
 					UnsignedInt currentFrame = TheGameLogic->getFrame();
 					if (currentFrame - lastLoggedFrame >= 60 || lastLoggedFrame == 0)
 					{
-						Int bufferDelay = TheLiveObserver->getBufferDelay();
-						liveObserverLog("LIVE frame=%u delay=%d connected=%d\\n",
+						liveObserverLog("LIVE frame=%u delay=%d connected=%d fastfwd=%d\\n",
 							currentFrame, bufferDelay,
-							TheLiveObserver->isConnected() ? 1 : 0);
+							TheLiveObserver->isConnected() ? 1 : 0,
+							TheGlobalData->m_TiVOFastMode ? 1 : 0);
 						lastLoggedFrame = currentFrame;
 					}
 				}

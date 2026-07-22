@@ -80,6 +80,8 @@
 #include "Common/LiveObserver.h"
 #include "Common/Recorder.h"
 #include "Common/MessageStream.h"
+#include "Common/PlayerTemplate.h"
+#include "GameNetwork/GameInfo.h"
 #include "GameClient/ClientInstance.h"
 #include "GameClient/GadgetTextEntry.h"
 #include "GameLogic/GameLogic.h"
@@ -1109,6 +1111,56 @@ static void doLiveObserverGameStart(const AsciiString& fullWatchUrl)
 
 	liveObserverLog("doLiveObserverGameStart: metadata received! Setting recorder mode...\\n");
 	TheRecorder->setMode(RECORDERMODETYPE_LIVE_OBSERVER);
+
+	// Populate TheRecorder->m_gameInfo from the relay metadata.
+	// This mirrors what Recorder::playbackFile() / readReplayHeader() does:
+	// ParseAsciiStringToGameInfo fills in player slots, teams, colors, factions,
+	// starting positions, map, seed, CRC — everything tryStartNewGame() needs.
+	AsciiString gameOptions = TheLiveObserver->getGameOptions();
+	liveObserverLog("doLiveObserverGameStart: game_options=%.200s\\n", gameOptions.str());
+	if (!gameOptions.isEmpty())
+	{
+		GameInfo* gi = TheRecorder->getGameInfo();
+		gi->reset();
+		gi->enterGame();
+		if (ParseAsciiStringToGameInfo(gi, gameOptions))
+		{
+			// Clamp player templates to valid range.
+			// Streamer may have modded templates; observer may have vanilla.
+			// Out-of-range templates cause nullptr dereference in placeNetworkBuildingsForPlayer().
+			Int maxTemplate = ThePlayerTemplateStore ? ThePlayerTemplateStore->getPlayerTemplateCount() - 1 : 11;
+			for (Int i = 0; i < MAX_SLOTS; ++i)
+			{
+				GameSlot* slot = gi->getSlot(i);
+				if (slot && slot->isOccupied())
+				{
+					Int tmpl = slot->getPlayerTemplate();
+					if (tmpl < 0 || tmpl > maxTemplate)
+					{
+						liveObserverLog("doLiveObserverGameStart: slot %d template %d out of range (max %d), clamping to 0\\n",
+							i, tmpl, maxTemplate);
+						slot->setPlayerTemplate(0);
+					}
+				}
+			}
+
+			gi->startGame(0);
+			liveObserverLog("doLiveObserverGameStart: ParseAsciiStringToGameInfo succeeded, slots populated!\\n");
+
+			// Initialize the deterministic RNG — required for random faction/color assignment
+			Int seed = gi->getSeed();
+			liveObserverLog("doLiveObserverGameStart: InitRandom(seed=%d)\\n", seed);
+			InitRandom(seed);
+		}
+		else
+		{
+			liveObserverLog("doLiveObserverGameStart: ParseAsciiStringToGameInfo FAILED!\\n");
+		}
+	}
+	else
+	{
+		liveObserverLog("doLiveObserverGameStart: WARNING — no game_options in metadata!\\n");
+	}
 
 	// Set up the game from observer metadata (same pattern as Recorder::playbackFile)
 	// Critical: TheWritableGlobalData->m_pendingFile tells the game engine which map to load.

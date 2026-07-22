@@ -79,12 +79,21 @@ public:
 	/// Valid only after receiveGameMetadata() returns true.
 	ReplayGameInfo* getGameInfo() { return &m_replayGameInfo; }
 
+	/// Returns the game options string (S=... format) received from the relay.
+	/// This can be fed to ParseAsciiStringToGameInfo() to populate player slots.
+	const AsciiString& getGameOptions() const { return m_gameOptionsStr; }
+
 	/// Block until at least one frame >= targetFrame is available, or timeout.
 	/// Returns true if a frame is available, false on timeout/disconnect.
 	Bool waitForFrame(UnsignedInt targetFrame);
 
-	/// Append all buffered commands for the current frame to TheCommandList.
-	void feedCommandsToCommandList();
+	/// Feed the commands for a specific frame to TheCommandList.
+	/// Only processes the single frame matching targetFrame if it exists.
+	void feedCommandsToCommandList(UnsignedInt targetFrame);
+
+	/// Insert a placeholder empty frame so the game can advance past gaps.
+	/// Used when waitForFrame times out but future frames are already buffered.
+	void insertPlaceholderFrame(UnsignedInt frameNum);
 
 	/// Returns how many frames behind the streamer the observer currently is.
 	/// Negative means ahead (shouldn't happen).
@@ -162,6 +171,10 @@ private:
 
 	/// Reconstructed game info from metadata.
 	ReplayGameInfo m_replayGameInfo;
+
+	/// Game options string (S=... format) from relay metadata.
+	/// Used by ParseAsciiStringToGameInfo() to populate player slots.
+	AsciiString m_gameOptionsStr;
 
 	/// Reconnection state
 	Int m_reconnectAttempts;

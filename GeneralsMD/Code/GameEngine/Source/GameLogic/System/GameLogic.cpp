@@ -38,6 +38,7 @@
 #include "Common/GameEngine.h"
 #include "Common/GameLOD.h"
 #include "Common/GameState.h"
+#include "Common/LiveObserver.h"
 #include "Common/GameUtility.h"
 #include "Common/INI.h"
 #include "Common/LatchRestore.h"
@@ -629,6 +630,8 @@ static Object* placeObjectAtPosition(Int slotNum, AsciiString objectTemplateName
 static void placeNetworkBuildingsForPlayer(Int slotNum, const GameSlot* pSlot, Player* pPlayer, const PlayerTemplate* pTemplate)
 {
 	Int startPos = pSlot->getStartPos();
+	liveObserverLog("LIVE_OBSERVER: placeNetworkBuildingsForPlayer slot=%d, template=%ls, startPos=%d\n",
+		slotNum, pTemplate ? pTemplate->getDisplayName().str() : L"(null)", startPos);
 	AsciiString waypointName;
 	waypointName.format("Player_%d_Start", startPos + 1); // start pos waypoints are 1-based
 
@@ -821,6 +824,11 @@ static void populateRandomSideAndColor(GameInfo* game)
 		// TheSuperHackers @logic-client-separation helmutbuhler 11/04/2025
 		// TheChallengeGenerals belongs to client, we shouldn't depend on that here.
 		Bool disallowLockedGenerals = TRUE;
+		if (!TheChallengeGenerals)
+		{
+			liveObserverLog("LIVE_OBSERVER: guard FIX1_TheChallengeGenerals triggered — skipping\n");
+			continue;
+		}
 		const GeneralPersona* general = TheChallengeGenerals->getGeneralByTemplateName(ptTest->getName());
 		Bool startsLocked = general ? !general->isStartingEnabled() : FALSE;
 		if (disallowLockedGenerals && startsLocked)
@@ -1247,6 +1255,8 @@ void GameLogic::startNewGame(Bool loadingSaveGame)
 
 void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 {
+	liveObserverLog("LIVE_OBSERVER: tryStartNewGame() enter — loadingSaveGame=%d, gameMode=%d, playback=%d\n",
+		loadingSaveGame, m_gameMode, (TheRecorder && TheRecorder->isPlaybackMode()) ? 1 : 0);
 
 	#ifdef DUMP_PERF_STATS
 	__int64 startTime64;
@@ -1342,6 +1352,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 
 	// Fill in the game color and Factions before we do the Load Screen
 	GameInfo* game = NULL;
+
 	TheGameInfo = NULL;
 	Int localSlot = 0;
 	if (TheNetwork)
@@ -1600,7 +1611,19 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 			d.setInt(TheKey_multiplayerStartIndex, slot->getStartPos());
 			//			d.setBool(TheKey_multiplayerIsLocal, slot->isLocalPlayer());
 			//			d.setBool(TheKey_multiplayerIsLocal, slot->getIP() == game->getLocalIP());
-			d.setBool(TheKey_multiplayerIsLocal, slot->isHuman() && (slot->getName().compare(game->getSlot(game->getLocalSlotNum())->getName().str()) == 0));
+			Bool isLocalPlayer = false;
+		{
+			GameSlot* localSlotPtr = game->getSlot(game->getLocalSlotNum());
+			if (localSlotPtr)
+			{
+				isLocalPlayer = slot->isHuman() && (slot->getName().compare(localSlotPtr->getName().str()) == 0);
+			}
+			else
+			{
+				liveObserverLog("LIVE_OBSERVER: guard FIX2_getLocalSlotNum triggered — skipping\n");
+			}
+		}
+		d.setBool(TheKey_multiplayerIsLocal, isLocalPlayer);
 
 			/*
 						if (slot->getIP() == game->getLocalIP())
@@ -1848,7 +1871,14 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 	ThePartitionManager->init();
 	ThePartitionManager->refreshShroudForLocalPlayer();// Can't do this until after init, and doesn't seem right to do in init
 
-	TheGhostObjectManager->setLocalPlayerIndex(localPlayer->getPlayerIndex());
+	if (localPlayer)
+	{
+		TheGhostObjectManager->setLocalPlayerIndex(localPlayer->getPlayerIndex());
+	}
+	else
+	{
+		liveObserverLog("LIVE_OBSERVER: guard FIX3_localPlayerNULL triggered — skipping setLocalPlayerIndex\n");
+	}
 	TheGhostObjectManager->reset();
 
 	// update the loadscreen
@@ -1923,8 +1953,15 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 	updateLoadProgress(LOAD_PROGRESS_POST_PATHFINDER_NEW_MAP);
 
 	// reveal the map for the permanent observer
-	ThePartitionManager->revealMapForPlayerPermanently(observerPlayer->getPlayerIndex());
-	DEBUG_LOG(("Reveal shroud for %ls whose index is %d", observerPlayer->getPlayerDisplayName().str(), observerPlayer->getPlayerIndex()));
+	if (observerPlayer)
+	{
+		ThePartitionManager->revealMapForPlayerPermanently(observerPlayer->getPlayerIndex());
+		DEBUG_LOG(("Reveal shroud for %ls whose index is %d", observerPlayer->getPlayerDisplayName().str(), observerPlayer->getPlayerIndex()));
+	}
+	else
+	{
+		liveObserverLog("LIVE_OBSERVER: guard FIX4_observerPlayerNULL triggered — skipping revealMapForPlayerPermanently\n");
+	}
 
 	if (game)
 	{
@@ -1938,6 +1975,12 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 			AsciiString playerName;
 			playerName.format("player%d", i);
 			Player* player = ThePlayerList->findPlayerWithNameKey(TheNameKeyGenerator->nameToKey(playerName));
+
+			if (!player)
+			{
+				liveObserverLog("LIVE_OBSERVER: guard FIX5_playerNULL_loop1 triggered — skipping player %d\n", i);
+				continue;
+			}
 
 			if (slot->getPlayerTemplate() == PLAYERTEMPLATE_OBSERVER)
 			{
@@ -2116,6 +2159,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 
 	progressCount = LOAD_PROGRESS_LOOP_INITIAL_NETWORK_BUILDINGS;
 	// place initial network buildings/units
+	liveObserverLog("LIVE_OBSERVER: placing initial buildings — game=%p, loadingSaveGame=%d\n", game, loadingSaveGame);
 	if (game && !loadingSaveGame)
 	{
 		for (int i = 0; i < MAX_SLOTS; ++i)
@@ -2125,9 +2169,18 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 			if (!slot || !slot->isOccupied())
 				continue;
 
+			liveObserverLog("LIVE_OBSERVER: slot %d occupied — template=%d, startPos=%d\n",
+				i, slot->getPlayerTemplate(), slot->getStartPos());
+
 			AsciiString playerName;
 			playerName.format("player%d", i);
 			Player* player = ThePlayerList->findPlayerWithNameKey(TheNameKeyGenerator->nameToKey(playerName));
+
+			if (!player)
+			{
+				liveObserverLog("LIVE_OBSERVER: guard FIX6_playerNULL_loop2 triggered — skipping player %d\n", i);
+				continue;
+			}
 
 			if (slot->getPlayerTemplate() == PLAYERTEMPLATE_OBSERVER)
 			{
@@ -2150,6 +2203,11 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 			{
 				const PlayerTemplate* pt = NULL;
 				pt = ThePlayerTemplateStore->getNthPlayerTemplate(slot->getPlayerTemplate());
+				if (!pt) {
+					liveObserverLog("LIVE_OBSERVER: slot %d has invalid playerTemplate %d, skipping building placement\n",
+						i, slot->getPlayerTemplate());
+					continue;
+				}
 
 				// Prevent from loading the disabled Generals, in case your game peer hacked their GUI.
 				// The game will start, but the cheater will be instantly defeated because he has no troops.
@@ -2158,11 +2216,19 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 
 				// TheSuperHackers @logic-client-separation helmutbuhler 11/04/2025
 				// TheChallengeGenerals belongs to client, we shouldn't depend on that here.
+				liveObserverLog("LIVE_OBSERVER: tryStartNewGame() — about to check TheChallengeGenerals (ptr=%p)\n", TheChallengeGenerals);
 				Bool disallowLockedGenerals = TRUE;
-				const GeneralPersona* general = TheChallengeGenerals->getGeneralByTemplateName(pt->getName());
-				Bool startsLocked = general ? !general->isStartingEnabled() : FALSE;
-				if (disallowLockedGenerals && startsLocked)
-					continue;
+				if (TheChallengeGenerals)
+				{
+					const GeneralPersona* general = TheChallengeGenerals->getGeneralByTemplateName(pt->getName());
+					Bool startsLocked = general ? !general->isStartingEnabled() : FALSE;
+					if (disallowLockedGenerals && startsLocked)
+						continue;
+				}
+				else
+				{
+					liveObserverLog("LIVE_OBSERVER: tryStartNewGame() — TheChallengeGenerals is NULL, skipping locked general check\n");
+				}
 
 				// prevent from loading disallowed templates, in case your peer hacked their GUI.
 
@@ -2179,12 +2245,14 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 
 
 				placeNetworkBuildingsForPlayer(i, slot, player, pt);
+				liveObserverLog("LIVE_OBSERVER: buildings placed for slot %d\n", i);
 			}
 
 			updateLoadProgress(progressCount++);
 
 		}
 	}
+	liveObserverLog("LIVE_OBSERVER: tryStartNewGame() — buildings done, frame=%d\n", m_frame);
 	// update the loadscreen
 	updateLoadProgress(LOAD_PROGRESS_POST_INITIAL_NETWORK_BUILDINGS);
 
@@ -2568,6 +2636,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 	message.format("GameStart: %s", TheGlobalData->m_mapName.str());
 	PROFILER_MSG(message.str(), message.getLength());
 #endif
+	liveObserverLog("LIVE_OBSERVER: tryStartNewGame() COMPLETE — frame=%d\n", m_frame);
 }
 
 //-----------------------------------------------------------------------------------------
@@ -2779,8 +2848,9 @@ void GameLogic::processCommandList(CommandList* list)
 		logicMessageDispatcher(msg, NULL);
 	}
 
-	if (m_shouldValidateCRCs && !TheNetwork->sawCRCMismatch())
+	if (m_shouldValidateCRCs && !TheNetwork->sawCRCMismatch() && !(TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER))
 	{
+		liveObserverLog("GameLogic: CRC validation check (live observer guard passed)\n");
 		Bool sawCRCMismatch = FALSE;
 		Int numPlayers = 0;
 		DEBUG_ASSERTCRASH(TheNetwork, ("No Network!"));
