@@ -191,6 +191,38 @@ AsciiString LiveStreamer::computeGameHash(
 }
 
 // ============================================================================
+// jsonEscape — escape special characters for safe JSON string values
+// ============================================================================
+
+AsciiString LiveStreamer::jsonEscape(const AsciiString& raw)
+{
+	AsciiString result;
+	const char* src = raw.str();
+	
+	// Worst case: every char becomes \\ or \" (2x), plus null terminator
+	Int maxLen = (Int)(strlen(src) * 2 + 1);
+	result.ensureUniqueBufferOfSize(maxLen + 1, true, nullptr, nullptr);
+	char* dst = result.peek();
+	
+	while (*src)
+	{
+		switch (*src)
+		{
+			case '\\': *dst++ = '\\'; *dst++ = '\\'; break;
+			case '"':  *dst++ = '\\'; *dst++ = '"';  break;
+			case '\n': *dst++ = '\\'; *dst++ = 'n';  break;
+			case '\r': *dst++ = '\\'; *dst++ = 'r';  break;
+			case '	': *dst++ = '\\'; *dst++ = 't';  break;
+			default:   *dst++ = *src; break;
+		}
+		src++;
+	}
+	*dst = '\0';
+	
+	return result;
+}
+
+// ============================================================================
 // init — set relay URL and start the background network thread
 // ============================================================================
 
@@ -267,10 +299,10 @@ void LiveStreamer::registerForGame(
 	json.format(
 		"{\"type\":\"register\",\"game_hash\":\"%s\",\"player_name\":\"%s\","
 		"\"map_name\":\"%s\",\"gameMode\":\"%s\",\"can_stream\":%s}",
-		gameHash.str(),
-		playerName.str(),
-		mapName.str(),
-		gameMode.str(),
+		jsonEscape(gameHash).str(),
+		jsonEscape(playerName).str(),
+		jsonEscape(mapName).str(),
+		jsonEscape(gameMode).str(),
 		canStream ? "true" : "false");
 
 	// Log registration details
@@ -377,7 +409,7 @@ void LiveStreamer::sendMetadata()
 
 				AsciiString playerEntry;
 				playerEntry.format("{\"slot\":%d,\"name\":\"%s\",\"team\":%d}",
-					i, nameAscii.str(), p->getPlayerIndex());
+					i, jsonEscape(nameAscii).str(), p->getPlayerIndex());
 				playersJson.concat(playerEntry);
 			}
 		}
@@ -397,9 +429,9 @@ void LiveStreamer::sendMetadata()
 		"{\"type\":\"metadata\",\"game_hash\":\"%s\",\"game_id\":\"%s\","
 		"\"map_name\":\"%s\",\"players\":%s,"
 		"\"exe_crc\":%u,\"ini_crc\":%u,\"current_frame\":%u}",
-		m_gameHash.str(),
-		m_gameId.str(),
-		mapName.str(),
+		jsonEscape(m_gameHash).str(),
+		jsonEscape(m_gameId).str(),
+		jsonEscape(mapName).str(),
 		playersJson.str(),
 		exeCRC,
 		iniCRC,

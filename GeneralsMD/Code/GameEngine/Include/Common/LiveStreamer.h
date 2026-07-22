@@ -83,6 +83,9 @@ public:
 		UnsignedInt startTime,
 		const AsciiString& sortedPlayerNames);
 
+	/// Escape special characters for JSON string values.
+	static AsciiString jsonEscape(const AsciiString& raw);
+
 private:
 	/// Background thread entry point.
 	void networkThreadFunc();
