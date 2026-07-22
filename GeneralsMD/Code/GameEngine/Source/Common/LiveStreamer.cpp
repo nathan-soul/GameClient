@@ -657,11 +657,10 @@ bool LiveStreamer::connectToRelay()
 	mc = curl_multi_wait(multi, nullptr, 0, 1000, &numfds);
 
 	// Check if connected
-	CURLcode res;
-	mc = curl_multi_info_read(multi, &runningHandles);
-	if (mc)
+	CURLMsg* infoMsg = curl_multi_info_read(multi, &runningHandles);
+	if (infoMsg)
 	{
-		res = mc->data.result;
+		CURLcode res = infoMsg->data.result;
 		if (res != CURLE_OK)
 		{
 			DEBUG_LOG(("LiveStreamer::connectToRelay() - connection failed: %s", curl_easy_strerror(res)));

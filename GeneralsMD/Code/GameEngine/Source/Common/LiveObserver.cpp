@@ -90,6 +90,117 @@ static void base64Decode(const char* encoded, size_t len, std::vector<char>& out
 		}
 	}
 }
+// ============================================================================
+// readArgumentFromBuffer — read a single argument from a binary buffer
+// Same switch as Recorder::readArgument(), but reads from memory instead of file.
+// ============================================================================
+
+static void readArgumentFromBuffer(GameMessageArgumentDataType type, GameMessage* msg, const char*& pos, Int& remaining)
+{
+	switch (type) {
+	case ARGUMENTDATATYPE_INTEGER: {
+		if (remaining < (Int)sizeof(Int)) return;
+		Int val;
+		memcpy(&val, pos, sizeof(val));
+		pos += sizeof(val);
+		remaining -= sizeof(val);
+		msg->appendIntegerArgument(val);
+		break;
+	}
+	case ARGUMENTDATATYPE_REAL: {
+		if (remaining < (Int)sizeof(Real)) return;
+		Real val;
+		memcpy(&val, pos, sizeof(val));
+		pos += sizeof(val);
+		remaining -= sizeof(val);
+		msg->appendRealArgument(val);
+		break;
+	}
+	case ARGUMENTDATATYPE_BOOLEAN: {
+		if (remaining < (Int)sizeof(Bool)) return;
+		Bool val;
+		memcpy(&val, pos, sizeof(val));
+		pos += sizeof(val);
+		remaining -= sizeof(val);
+		msg->appendBooleanArgument(val);
+		break;
+	}
+	case ARGUMENTDATATYPE_OBJECTID: {
+		if (remaining < (Int)sizeof(ObjectID)) return;
+		ObjectID val;
+		memcpy(&val, pos, sizeof(val));
+		pos += sizeof(val);
+		remaining -= sizeof(val);
+		msg->appendObjectIDArgument(val);
+		break;
+	}
+	case ARGUMENTDATATYPE_DRAWABLEID: {
+		if (remaining < (Int)sizeof(DrawableID)) return;
+		DrawableID val;
+		memcpy(&val, pos, sizeof(val));
+		pos += sizeof(val);
+		remaining -= sizeof(val);
+		msg->appendDrawableIDArgument(val);
+		break;
+	}
+	case ARGUMENTDATATYPE_TEAMID: {
+		if (remaining < (Int)sizeof(UnsignedInt)) return;
+		UnsignedInt val;
+		memcpy(&val, pos, sizeof(val));
+		pos += sizeof(val);
+		remaining -= sizeof(val);
+		msg->appendTeamIDArgument(val);
+		break;
+	}
+	case ARGUMENTDATATYPE_LOCATION: {
+		if (remaining < (Int)sizeof(Coord3D)) return;
+		Coord3D val;
+		memcpy(&val, pos, sizeof(val));
+		pos += sizeof(val);
+		remaining -= sizeof(val);
+		msg->appendLocationArgument(val);
+		break;
+	}
+	case ARGUMENTDATATYPE_PIXEL: {
+		if (remaining < (Int)sizeof(ICoord2D)) return;
+		ICoord2D val;
+		memcpy(&val, pos, sizeof(val));
+		pos += sizeof(val);
+		remaining -= sizeof(val);
+		msg->appendPixelArgument(val);
+		break;
+	}
+	case ARGUMENTDATATYPE_PIXELREGION: {
+		if (remaining < (Int)sizeof(IRegion2D)) return;
+		IRegion2D val;
+		memcpy(&val, pos, sizeof(val));
+		pos += sizeof(val);
+		remaining -= sizeof(val);
+		msg->appendPixelRegionArgument(val);
+		break;
+	}
+	case ARGUMENTDATATYPE_TIMESTAMP: {
+		if (remaining < (Int)sizeof(UnsignedInt)) return;
+		UnsignedInt val;
+		memcpy(&val, pos, sizeof(val));
+		pos += sizeof(val);
+		remaining -= sizeof(val);
+		msg->appendTimestampArgument(val);
+		break;
+	}
+	case ARGUMENTDATATYPE_WIDECHAR: {
+		if (remaining < (Int)sizeof(WideChar)) return;
+		WideChar val;
+		memcpy(&val, pos, sizeof(val));
+		pos += sizeof(val);
+		remaining -= sizeof(val);
+		msg->appendWideCharArgument(val);
+		break;
+	}
+	default:
+		break;
+	}
+}
 
 // ============================================================================
 // Singleton
@@ -277,23 +388,24 @@ void LiveObserver::feedCommandsToCommandList()
 			{
 				const char* data = it->serializedCommands.data();
 				Int dataSize = (Int)it->serializedCommands.size();
-
-				// Walk through the serialized command buffer
 				Int pos = 0;
-				while (pos + 8 <= dataSize) // minimum: 4-byte frame + 4-byte type
+
+				// Binary format (same as Recorder::writeToFile / LiveStreamer::serializeFrame):
+				// [4-byte frame][4-byte type][4-byte playerIndex][1-byte numTypes][type entries...][arguments...]
+				while (pos + 13 <= dataSize) // minimum: 4 frame + 4 type + 4 player + 1 numTypes = 13
 				{
-					// Read frame number (4 bytes, little-endian)
-					UnsignedInt frameNum = 0;
+					// Read frame number (4 bytes)
+					UnsignedInt frameNum;
 					memcpy(&frameNum, data + pos, sizeof(frameNum));
 					pos += sizeof(frameNum);
 
 					// Read message type (4 bytes)
-					GameMessage::Type msgType = GameMessage::MSG_NULL;
+					GameMessage::Type msgType;
 					memcpy(&msgType, data + pos, sizeof(msgType));
 					pos += sizeof(msgType);
 
 					// Read player index (4 bytes)
-					Int playerIndex = 0;
+					Int playerIndex;
 					memcpy(&playerIndex, data + pos, sizeof(playerIndex));
 					pos += sizeof(playerIndex);
 
@@ -303,145 +415,64 @@ void LiveObserver::feedCommandsToCommandList()
 					UnsignedByte numTypes = (UnsignedByte)data[pos];
 					pos += sizeof(numTypes);
 
-					// Skip argument type info entries: each is [1-byte type][1-byte argCount]
-					for (Int t = 0; t < numTypes; ++t)
+					// Read argument type info entries: each is [1-byte type][1-byte argCount]
+					if (pos + numTypes * 2 > dataSize)
+						break;
+
+					GameMessageParser* parser = newInstance(GameMessageParser)();
+					Int totalArgs = 0;
+					for (UnsignedByte i = 0; i < numTypes; ++i)
 					{
-						if (pos + 2 > dataSize) break;
-						pos += 2; // skip type byte + argCount byte
+						UnsignedByte argType = (UnsignedByte)data[pos];
+						pos += 1;
+						UnsignedByte argc = (UnsignedByte)data[pos];
+						pos += 1;
+						parser->addArgType((GameMessageArgumentDataType)argType, argc);
+						totalArgs += argc;
 					}
 
-					// Create the GameMessage
-					if (msgType <= GameMessage::MSG_BEGIN_NETWORK_MESSAGES ||
-						msgType >= GameMessage::MSG_END_NETWORK_MESSAGES)
-					{
-						continue; // skip non-network messages
-					}
-
+					// Create the GameMessage using the correct API
 					GameMessage* msg = newInstance(GameMessage)(msgType);
-					msg->setPlayerIndex(playerIndex);
+					msg->friend_setPlayerIndex(playerIndex);
 
-					// We need the parser to know how many arguments and their types
-					GameMessageParser parser(msg);
-					Int numArgs = parser.getNumArguments();
-
-					for (Int a = 0; a < numArgs; ++a)
+					// Read arguments using parser's linked-list type info (same as Recorder::appendNextCommand)
+					GameMessageParserArgumentType* parserArgType = parser->getFirstArgumentType();
+					GameMessageArgumentDataType lastType = ARGUMENTDATATYPE_UNKNOWN;
+					Int argsLeft = 0;
+					if (parserArgType != nullptr)
 					{
-						GameMessageArgumentDataType argType = parser.getArgumentType(a);
-						switch (argType)
+						lastType = parserArgType->getType();
+						argsLeft = parserArgType->getArgCount();
+					}
+					for (Int j = 0; j < totalArgs; ++j)
+					{
+						if (pos >= dataSize)
+							break;
+						readArgumentFromBuffer(lastType, msg, data, pos, dataSize);
+
+						--argsLeft;
+						if (argsLeft == 0)
 						{
-						case ARGUMENTDATATYPE_INTEGER:
-							if (pos + sizeof(Int) <= dataSize)
+							if (parserArgType != nullptr)
+								parserArgType = parserArgType->getNext();
+							if (parserArgType != nullptr)
 							{
-								Int val;
-								memcpy(&val, data + pos, sizeof(val));
-								msg->appendIntegerArgument(val);
-								pos += sizeof(val);
+								argsLeft = parserArgType->getArgCount();
+								lastType = parserArgType->getType();
 							}
-							break;
-						case ARGUMENTDATATYPE_REAL:
-							if (pos + sizeof(Real) <= dataSize)
-							{
-								Real val;
-								memcpy(&val, data + pos, sizeof(val));
-								msg->appendRealArgument(val);
-								pos += sizeof(val);
-							}
-							break;
-						case ARGUMENTDATATYPE_BOOLEAN:
-							if (pos + sizeof(Bool) <= dataSize)
-							{
-								Bool val;
-								memcpy(&val, data + pos, sizeof(val));
-								msg->appendBooleanArgument(val);
-								pos += sizeof(val);
-							}
-							break;
-						case ARGUMENTDATATYPE_OBJECTID:
-							if (pos + sizeof(ObjectID) <= dataSize)
-							{
-								ObjectID val;
-								memcpy(&val, data + pos, sizeof(val));
-								msg->appendObjectIDArgument(val);
-								pos += sizeof(val);
-							}
-							break;
-						case ARGUMENTDATATYPE_DRAWABLEID:
-							if (pos + sizeof(DrawableID) <= dataSize)
-							{
-								DrawableID val;
-								memcpy(&val, data + pos, sizeof(val));
-								msg->appendDrawableIDArgument(val);
-								pos += sizeof(val);
-							}
-							break;
-						case ARGUMENTDATATYPE_TEAMID:
-							if (pos + sizeof(UnsignedInt) <= dataSize)
-							{
-								UnsignedInt val;
-								memcpy(&val, data + pos, sizeof(val));
-								msg->appendIntegerArgument((Int)val);
-								pos += sizeof(val);
-							}
-							break;
-						case ARGUMENTDATATYPE_LOCATION:
-							if (pos + sizeof(Coord3D) <= dataSize)
-							{
-								Coord3D val;
-								memcpy(&val, data + pos, sizeof(val));
-								msg->appendCoord3DArgument(val);
-								pos += sizeof(val);
-							}
-							break;
-						case ARGUMENTDATATYPE_PIXEL:
-							if (pos + sizeof(ICoord2D) <= dataSize)
-							{
-								ICoord2D val;
-								memcpy(&val, data + pos, sizeof(val));
-								msg->appendICoord2DArgument(val);
-								pos += sizeof(val);
-							}
-							break;
-						case ARGUMENTDATATYPE_PIXELREGION:
-							if (pos + sizeof(IRegion2D) <= dataSize)
-							{
-								IRegion2D val;
-								memcpy(&val, data + pos, sizeof(val));
-								msg->appendIRegion2DArgument(val);
-								pos += sizeof(val);
-							}
-							break;
-						case ARGUMENTDATATYPE_TIMESTAMP:
-							if (pos + sizeof(UnsignedInt) <= dataSize)
-							{
-								UnsignedInt val;
-								memcpy(&val, data + pos, sizeof(val));
-								msg->appendIntegerArgument((Int)val);
-								pos += sizeof(val);
-							}
-							break;
-						case ARGUMENTDATATYPE_WIDECHAR:
-							if (pos + sizeof(WideChar) <= dataSize)
-							{
-								WideChar val;
-								memcpy(&val, data + pos, sizeof(val));
-								msg->appendWideCharArgument(val);
-								pos += sizeof(val);
-							}
-							break;
-						default:
-							// Unknown argument type — skip the message
-							deleteInstance(msg);
-							msg = nullptr;
-							pos = dataSize; // abort this message
-							break;
 						}
-						if (!msg)
-							break;
 					}
 
-					if (msg)
+					deleteInstance(parser);
+
+					// Append to command list (skip CRC messages, as Recorder does)
+					if (msgType != GameMessage::MSG_BEGIN_NETWORK_MESSAGES)
 					{
 						TheCommandList->appendMessage(msg);
+					}
+					else
+					{
+						deleteInstance(msg);
 					}
 				}
 			}
@@ -595,12 +626,11 @@ bool LiveObserver::connectToRelay()
 	mc = curl_multi_wait(multi, nullptr, 0, 1000, &numfds);
 
 	// Check if connected
-	CURLMcode infoResult;
 	int infoRunning = 0;
-	infoResult = curl_multi_info_read(multi, &infoRunning);
-	if (infoResult)
+	CURLMsg* infoMsg = curl_multi_info_read(multi, &infoRunning);
+	if (infoMsg)
 	{
-		CURLcode res = infoResult->data.result;
+		CURLcode res = infoMsg->data.result;
 		if (res != CURLE_OK)
 		{
 			DEBUG_LOG(("LiveObserver::connectToRelay() - connection failed: %s", curl_easy_strerror(res)));
