@@ -707,10 +707,13 @@ void RecorderClass::startRecording(GameDifficulty diff, Int originalGameMode, In
 
 	// --- Always log live stream config at game start (works without GENERALS_ONLINE) ---
 	liveStreamerInitLog();
-	liveStreamLog("=== Live Stream Config (Recorder) ===\n");
-	liveStreamLog("LiveStreamEnabled: %s\n", TheGlobalData->m_liveStreamEnabled ? "true" : "false");
-	liveStreamLog("LiveStreamRelayUrl: %s\n", TheGlobalData->m_liveStreamRelayUrl.str());
-	liveStreamLog("LiveStreamCanStream: %s\n", TheGlobalData->m_liveStreamCanStream ? "true" : "false");
+	if (TheGlobalData)
+	{
+		liveStreamLog("=== Live Stream Config (Recorder) ===\n");
+		liveStreamLog("LiveStreamEnabled: %s\n", TheGlobalData->m_liveStreamEnabled ? "true" : "false");
+		liveStreamLog("LiveStreamRelayUrl: %s\n", TheGlobalData->m_liveStreamRelayUrl.str());
+		liveStreamLog("LiveStreamCanStream: %s\n", TheGlobalData->m_liveStreamCanStream ? "true" : "false");
+	}
 	// --- End live stream config logging ---
 
 	/*
@@ -723,6 +726,8 @@ void RecorderClass::startRecording(GameDifficulty diff, Int originalGameMode, In
 
 #if defined(GENERALS_ONLINE)
 	// Live streaming — initialize and register with relay server
+	try
+	{
 	if (TheGlobalData && TheGlobalData->m_liveStreamEnabled)
 	{
 		if (TheLiveStreamer == nullptr)
@@ -792,6 +797,13 @@ void RecorderClass::startRecording(GameDifficulty diff, Int originalGameMode, In
 
 			DEBUG_LOG(("RecorderClass::startRecording() - Live stream registered, hash=%s", gameHash.str()));
 		}
+	}
+	}
+	catch (...)
+	{
+		// Live streamer init failed — game continues without streaming
+		DEBUG_LOG(("RecorderClass::startRecording() - Live streamer init failed, continuing without streaming"));
+		liveStreamLog("RecorderClass::startRecording() - Live streamer init EXCEPTION, continuing without streaming\n");
 	}
 #endif
 }
