@@ -41,6 +41,24 @@ extern GameLogic* TheGameLogic;
 extern CommandList* TheCommandList;
 
 // ============================================================================
+// findSubstring — wrapper around strstr() for AsciiString (AsciiString::find
+// only takes a single char, not a string pattern)
+// ============================================================================
+static Int findSubstring(const AsciiString& haystack, const char* needle, Int startPos = 0)
+{
+	const char* str = haystack.str();
+	if (!str || !needle || startPos < 0)
+		return -1;
+	Int len = (Int)strlen(str);
+	if (startPos >= len)
+		return -1;
+	const char* found = strstr(str + startPos, needle);
+	if (!found)
+		return -1;
+	return (Int)(found - str);
+}
+
+// ============================================================================
 // base64Encode — encode binary data to base64 string
 // ============================================================================
 
@@ -565,26 +583,26 @@ void LiveStreamer::networkThreadFunc()
 			// Expected: {"type":"role","role":"streamer","gameId":"..."}
 			AsciiString incoming(recvBuffer.data(), (Int)recvBuffer.size());
 
-			if (incoming.find("role") != -1)
+			if (findSubstring(incoming, "role") != -1)
 			{
 				// Extract role and gameId from JSON (simple parsing)
 				AsciiString role;
 				AsciiString gameId;
 
-				Int rolePos = incoming.find("\"role\":\"");
+				Int rolePos = findSubstring(incoming, "\"role\":\"");
 				if (rolePos != -1)
 				{
 					Int start = rolePos + 8;
-					Int end = incoming.find("\"", start);
+					Int end = findSubstring(incoming, "\"", start);
 					if (end != -1)
 						role = AsciiString(incoming.str() + start, end - start);
 				}
 
-				Int idPos = incoming.find("\"game_id\":\"");
+				Int idPos = findSubstring(incoming, "\"game_id\":\"");
 				if (idPos != -1)
 				{
 					Int start = idPos + 10;
-					Int end = incoming.find("\"", start);
+					Int end = findSubstring(incoming, "\"", start);
 					if (end != -1)
 						gameId = AsciiString(incoming.str() + start, end - start);
 				}
