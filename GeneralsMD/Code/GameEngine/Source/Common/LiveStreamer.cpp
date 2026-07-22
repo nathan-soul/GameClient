@@ -197,7 +197,10 @@ AsciiString LiveStreamer::computeGameHash(
 void LiveStreamer::init(const AsciiString& relayUrl)
 {
 	if (m_shouldRun)
+	{
+		liveStreamLog("LiveStreamer::init: already running, skipping\n");
 		return;
+	}
 
 	m_relayUrl = relayUrl;
 	m_shouldRun = TRUE;
@@ -206,10 +209,13 @@ void LiveStreamer::init(const AsciiString& relayUrl)
 	m_isBackup = FALSE;
 
 	DEBUG_LOG(("LiveStreamer::init() - connecting to %s", relayUrl.str()));
-	liveStreamLog("init() - relay=%s\n", relayUrl.str());
+	liveStreamLog("LiveStreamer::init: relayUrl=%s\n", relayUrl.str());
+	liveStreamLog("LiveStreamer::init: m_shouldRun=%d, m_connected=%d\n", m_shouldRun, m_connected);
 
 	// Start the background network thread
 	m_networkThread = std::thread(&LiveStreamer::networkThreadFunc, this);
+	liveStreamLog("LiveStreamer::init: network thread launched (id=%lu)\n",
+		(unsigned long)m_networkThread.native_handle());
 }
 
 // ============================================================================
@@ -219,20 +225,27 @@ void LiveStreamer::init(const AsciiString& relayUrl)
 void LiveStreamer::close()
 {
 	if (!m_shouldRun)
+	{
+		liveStreamLog("LiveStreamer::close: not running, skipping\n");
 		return;
+	}
 
+	liveStreamLog("LiveStreamer::close: shutting down (connected=%d, isStreaming=%d, isBackup=%d)\n",
+		m_connected, m_isStreaming, m_isBackup);
 	m_shouldRun = FALSE;
 	m_isStreaming = FALSE;
 	m_isBackup = FALSE;
 
 	if (m_networkThread.joinable())
 	{
+		liveStreamLog("LiveStreamer::close: joining network thread...\n");
 		m_networkThread.join();
+		liveStreamLog("LiveStreamer::close: network thread joined\n");
 	}
 
 	m_connected = FALSE;
 	DEBUG_LOG(("LiveStreamer::close() - shut down"));
-	liveStreamLog("close() - shutting down\n");
+	liveStreamLog("LiveStreamer::close: done\n");
 }
 
 // ============================================================================
@@ -260,6 +273,11 @@ void LiveStreamer::registerForGame(
 		gameMode.str(),
 		canStream ? "true" : "false");
 
+	// Log registration details
+	liveStreamLog("LiveStreamer::registerForGame: game_hash=%.200s\n", gameHash.str());
+	liveStreamLog("LiveStreamer::registerForGame: player=%.200s can_stream=%d\n", playerName.str(), canStream);
+	liveStreamLog("LiveStreamer::registerForGame: registration JSON=%.200s\n", json.str());
+
 	// Queue for sending on the network thread
 	QueuedMessage msg;
 	msg.isBinary = FALSE;
@@ -269,9 +287,8 @@ void LiveStreamer::registerForGame(
 	std::lock_guard<std::mutex> lock(m_sendMutex);
 	m_outgoingQueue.push(msg);
 
+	liveStreamLog("LiveStreamer::registerForGame: queued %d bytes\n", (int)msg.data.size());
 	DEBUG_LOG(("LiveStreamer::registerForGame() - hash=%s player=%s", gameHash.str(), playerName.str()));
-	liveStreamLog("registerForGame() - hash=%s player=%s can_stream=%s\n",
-		gameHash.str(), playerName.str(), canStream ? "true" : "false");
 }
 
 // ============================================================================
@@ -281,6 +298,7 @@ void LiveStreamer::registerForGame(
 void LiveStreamer::onRoleAssigned(const AsciiString& role, const AsciiString& gameId)
 {
 	m_gameId = gameId;
+	liveStreamLog("LiveStreamer::onRoleAssigned: role=%.100s gameId=%.100s\n", role.str(), gameId.str());
 
 	if (role == "streamer")
 	{
@@ -324,7 +342,11 @@ void LiveStreamer::onTakeover()
 void LiveStreamer::sendMetadata()
 {
 	if (!m_connected || !m_isStreaming)
+	{
+		liveStreamLog("LiveStreamer::sendMetadata: skipped (connected=%d, isStreaming=%d)\n",
+			m_connected, m_isStreaming);
 		return;
+	}
 
 	// Build metadata JSON
 	AsciiString mapName;
@@ -392,7 +414,8 @@ void LiveStreamer::sendMetadata()
 	m_outgoingQueue.push(msg);
 
 	DEBUG_LOG(("LiveStreamer::sendMetadata() - sent metadata for frame %u", currentFrame));
-	liveStreamLog("sendMetadata() - map=%s, frame=%u\n", mapName.str(), currentFrame);
+	liveStreamLog("LiveStreamer::sendMetadata: map=%.100s frame=%u json_size=%d\n",
+		mapName.str(), currentFrame, (int)json.getLength());
 }
 
 // ============================================================================
@@ -402,7 +425,11 @@ void LiveStreamer::sendMetadata()
 void LiveStreamer::streamFrame(UnsignedInt frame, GameMessage* cmdList, Int currentFps)
 {
 	if (!m_connected || !m_isStreaming)
+	{
+		liveStreamLog("LiveStreamer::streamFrame: skipped (connected=%d, isStreaming=%d)\n",
+			m_connected, m_isStreaming);
 		return;
+	}
 
 	// Throttle metadata sends — once every 5 seconds (300 frames at 60fps)
 	if (m_lastMetadataFrame == 0 || (frame - m_lastMetadataFrame) > (UnsignedInt)(currentFps * 5))
@@ -574,6 +601,7 @@ void LiveStreamer::serializeArgument(Int argType, const void* argData, std::vect
 		break;
 	default:
 		DEBUG_LOG(("LiveStreamer::serializeArgument - unknown type %d", argType));
+		liveStreamLog("LiveStreamer::serializeArgument: unknown type %d\n", argType);
 		break;
 	}
 }
@@ -585,19 +613,21 @@ void LiveStreamer::serializeArgument(Int argType, const void* argData, std::vect
 void LiveStreamer::networkThreadFunc()
 {
 	DEBUG_LOG(("LiveStreamer::networkThreadFunc() - thread started"));
-	liveStreamLog("networkThreadFunc() - thread started\n");
+	liveStreamLog("LiveStreamer: network thread started\n");
 
 	// Initialize CURL
+	liveStreamLog("LiveStreamer: curl_global_init(CURL_GLOBAL_DEFAULT)\n");
 	curl_global_init(CURL_GLOBAL_DEFAULT);
 
 	if (!connectToRelay())
 	{
 		DEBUG_LOG(("LiveStreamer::networkThreadFunc() - failed to connect to relay"));
-		liveStreamLog("networkThreadFunc() - FAILED to connect to relay\n");
+		liveStreamLog("LiveStreamer: network thread FAILED to connect to relay, exiting\n");
 		m_shouldRun = FALSE;
 		curl_global_cleanup();
 		return;
 	}
+	liveStreamLog("LiveStreamer: connected to relay, entering main loop\n");
 
 	// Main loop: send queued messages, receive responses
 	while (m_shouldRun)
@@ -622,14 +652,17 @@ void LiveStreamer::networkThreadFunc()
 
 		// --- Receive incoming messages ---
 		std::vector<char> recvBuffer;
+		liveStreamLog("LiveStreamer: wsRecv called, buffer state: size=%d\n", (int)recvBuffer.size());
 		if (wsRecv(recvBuffer) && !recvBuffer.empty())
 		{
+			liveStreamLog("LiveStreamer: received %d bytes from relay\n", (int)recvBuffer.size());
 			// Parse incoming JSON messages
 			// Expected: {"type":"role","role":"streamer","gameId":"..."}
 			AsciiString incoming(recvBuffer.data(), (Int)recvBuffer.size());
 
 			if (findSubstring(incoming, "role") != -1)
 			{
+				liveStreamLog("LiveStreamer: incoming message contains 'role'\n");
 				// Extract role and gameId from JSON (simple parsing)
 				AsciiString role;
 				AsciiString gameId;
@@ -640,7 +673,10 @@ void LiveStreamer::networkThreadFunc()
 					Int start = rolePos + 8;
 					Int end = findSubstring(incoming, "\"", start);
 					if (end != -1)
+					{
 						role = AsciiString(incoming.str() + start, end - start);
+						liveStreamLog("LiveStreamer: parsed role=%.50s\n", role.str());
+					}
 				}
 
 				Int idPos = findSubstring(incoming, "\"game_id\":\"");
@@ -649,13 +685,25 @@ void LiveStreamer::networkThreadFunc()
 					Int start = idPos + 10;
 					Int end = findSubstring(incoming, "\"", start);
 					if (end != -1)
+					{
 						gameId = AsciiString(incoming.str() + start, end - start);
+						liveStreamLog("LiveStreamer: parsed game_id=%.50s\n", gameId.str());
+					}
 				}
 
 				if (!role.isEmpty())
 				{
+					liveStreamLog("LiveStreamer: calling onRoleAssigned(%.50s, %.50s)\n", role.str(), gameId.str());
 					onRoleAssigned(role, gameId);
 				}
+				else
+				{
+					liveStreamLog("LiveStreamer: role string empty, skipping onRoleAssigned\n");
+				}
+			}
+			else
+			{
+				liveStreamLog("LiveStreamer: incoming message does not contain 'role', ignoring\n");
 			}
 		}
 
@@ -664,22 +712,26 @@ void LiveStreamer::networkThreadFunc()
 	}
 
 	// Cleanup
+	liveStreamLog("LiveStreamer: cleaning up CURL handles\n");
 	if (m_curlEasy)
 	{
+		liveStreamLog("LiveStreamer: curl_easy_cleanup\n");
 		curl_easy_cleanup((CURL*)m_curlEasy);
 		m_curlEasy = nullptr;
 	}
 	if (m_curlMulti)
 	{
+		liveStreamLog("LiveStreamer: curl_multi_cleanup\n");
 		curl_multi_cleanup((CURLM*)m_curlMulti);
 		m_curlMulti = nullptr;
 	}
 
+	liveStreamLog("LiveStreamer: curl_global_cleanup\n");
 	curl_global_cleanup();
 
 	m_connected = FALSE;
 	DEBUG_LOG(("LiveStreamer::networkThreadFunc() - thread exiting"));
-	liveStreamLog("networkThreadFunc() - thread exiting\n");
+	liveStreamLog("LiveStreamer: network thread exiting\n");
 }
 
 // ============================================================================
@@ -688,39 +740,50 @@ void LiveStreamer::networkThreadFunc()
 
 bool LiveStreamer::connectToRelay()
 {
+	liveStreamLog("LiveStreamer::connectToRelay: connecting to %.200s...\n", m_relayUrl.str());
 	CURL* easy = curl_easy_init();
 	if (!easy)
 	{
 		DEBUG_LOG(("LiveStreamer::connectToRelay() - curl_easy_init failed"));
-		liveStreamLog("connectToRelay() - curl_easy_init FAILED\n");
+		liveStreamLog("LiveStreamer::connectToRelay: curl_easy_init FAILED\n");
 		return false;
 	}
+	liveStreamLog("LiveStreamer::connectToRelay: curl_easy_init=%p (success)\n", (void*)easy);
 
 	CURLM* multi = curl_multi_init();
 	if (!multi)
 	{
 		DEBUG_LOG(("LiveStreamer::connectToRelay() - curl_multi_init failed"));
-		liveStreamLog("connectToRelay() - curl_multi_init FAILED\n");
+		liveStreamLog("LiveStreamer::connectToRelay: curl_multi_init FAILED\n");
 		curl_easy_cleanup(easy);
 		return false;
 	}
+	liveStreamLog("LiveStreamer::connectToRelay: curl_multi_init=%p (success)\n", (void*)multi);
 
 	// Configure the WebSocket connection
+	liveStreamLog("LiveStreamer::connectToRelay: curl_easy_setopt CURLOPT_URL=%.200s\n", m_relayUrl.str());
 	curl_easy_setopt(easy, CURLOPT_URL, m_relayUrl.str());
+	liveStreamLog("LiveStreamer::connectToRelay: curl_easy_setopt CURLOPT_CONNECT_ONLY=2L\n");
 	curl_easy_setopt(easy, CURLOPT_CONNECT_ONLY, 2L); // 2 = use WebSocket protocol
 	curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 0L);
 	curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 0L);
+	liveStreamLog("LiveStreamer::connectToRelay: SSL verification disabled\n");
 
 	// Add to multi handle
+	liveStreamLog("LiveStreamer::connectToRelay: curl_multi_add_handle\n");
 	curl_multi_add_handle(multi, easy);
 
 	// Perform the connection
 	int runningHandles = 0;
+	liveStreamLog("LiveStreamer::connectToRelay: curl_multi_perform\n");
 	CURLMcode mc = curl_multi_perform(multi, &runningHandles);
+	liveStreamLog("LiveStreamer::connectToRelay: curl_multi_perform returned mc=%d, runningHandles=%d\n", (int)mc, runningHandles);
 
 	// Wait for connection to complete
 	int numfds = 0;
+	liveStreamLog("LiveStreamer::connectToRelay: waiting for connection (curl_multi_wait 1000ms)...\n");
 	mc = curl_multi_wait(multi, nullptr, 0, 1000, &numfds);
+	liveStreamLog("LiveStreamer::connectToRelay: curl_multi_wait returned mc=%d, numfds=%d\n", (int)mc, numfds);
 
 	// Check if connected
 	CURLMsg* infoMsg = curl_multi_info_read(multi, &runningHandles);
@@ -730,12 +793,17 @@ bool LiveStreamer::connectToRelay()
 		if (res != CURLE_OK)
 		{
 			DEBUG_LOG(("LiveStreamer::connectToRelay() - connection failed: %s", curl_easy_strerror(res)));
-			liveStreamLog("connectToRelay() - FAILED: %s\n", curl_easy_strerror(res));
+			liveStreamLog("LiveStreamer::connectToRelay: FAILED after timeout: %s (curl code %d)\n",
+				curl_easy_strerror(res), (int)res);
 			curl_multi_remove_handle(multi, easy);
 			curl_easy_cleanup(easy);
 			curl_multi_cleanup(multi);
 			return false;
 		}
+	}
+	else
+	{
+		liveStreamLog("LiveStreamer::connectToRelay: no info message from curl_multi_info_read\n");
 	}
 
 	m_curlEasy = easy;
@@ -743,7 +811,7 @@ bool LiveStreamer::connectToRelay()
 	m_connected = TRUE;
 
 	DEBUG_LOG(("LiveStreamer::connectToRelay() - connected to %s", m_relayUrl.str()));
-	liveStreamLog("connectToRelay() - connected to %s\n", m_relayUrl.str());
+	liveStreamLog("LiveStreamer::connectToRelay: connected! easy=%p multi=%p\n", (void*)easy, (void*)multi);
 	return true;
 }
 
@@ -754,20 +822,29 @@ bool LiveStreamer::connectToRelay()
 bool LiveStreamer::wsSend(const void* data, size_t len)
 {
 	if (!m_curlEasy || !m_connected)
+	{
+		liveStreamLog("LiveStreamer::wsSend: skipped (curlEasy=%p, connected=%d)\n",
+			m_curlEasy, m_connected);
 		return false;
+	}
 
+	liveStreamLog("LiveStreamer::wsSend: sending %d bytes (binary)\n", (int)len);
 	size_t sent = 0;
 	CURLcode res = curl_ws_send((CURL*)m_curlEasy, data, len, &sent, 0, CURLWS_BINARY);
+	liveStreamLog("LiveStreamer::wsSend: curl_ws_send returned %d, sent=%d\n", (int)res, (int)sent);
 
 	if (res == CURLE_OK)
 		return true;
 
 	// CURLE_AGAIN means the socket would block — retry later
 	if (res == CURLE_AGAIN)
+	{
+		liveStreamLog("LiveStreamer::wsSend: CURLE_AGAIN, will retry next tick\n");
 		return true; // not a real error, will retry next tick
+	}
 
 	DEBUG_LOG(("LiveStreamer::wsSend() - error: %s", curl_easy_strerror(res)));
-	liveStreamLog("wsSend() - ERROR: %s\n", curl_easy_strerror(res));
+	liveStreamLog("LiveStreamer::wsSend: ERROR: %s (curl code %d)\n", curl_easy_strerror(res), (int)res);
 	m_connected = FALSE;
 	return false;
 }
@@ -779,26 +856,38 @@ bool LiveStreamer::wsSend(const void* data, size_t len)
 bool LiveStreamer::wsRecv(std::vector<char>& outBuffer)
 {
 	if (!m_curlEasy || !m_connected)
+	{
+		liveStreamLog("LiveStreamer::wsRecv: skipped (curlEasy=%p, connected=%d)\n",
+			m_curlEasy, m_connected);
 		return false;
+	}
 
+	liveStreamLog("LiveStreamer::wsRecv called, buffer state: size=%d\n", (int)outBuffer.size());
 	char buf[4096];
 	size_t nread = 0;
 	const struct curl_ws_frame* meta = nullptr;
 
 	CURLcode res = curl_ws_recv((CURL*)m_curlEasy, buf, sizeof(buf), &nread, &meta);
+	liveStreamLog("LiveStreamer::wsRecv: curl_ws_recv returned %d, nread=%d\n", (int)res, (int)nread);
 
 	if (res == CURLE_OK && nread > 0)
 	{
+		liveStreamLog("LiveStreamer::wsRecv: received %d bytes, first 100 chars: %.100s\n",
+			(int)nread, buf);
 		outBuffer.assign(buf, buf + nread);
 		return true;
 	}
 
 	if (res == CURLE_AGAIN)
+	{
+		liveStreamLog("LiveStreamer::wsRecv: CURLE_AGAIN (no data available)\n");
 		return false; // no data available
+	}
 
 	if (res != CURLE_OK)
 	{
 		DEBUG_LOG(("LiveStreamer::wsRecv() - error: %s", curl_easy_strerror(res)));
+		liveStreamLog("LiveStreamer::wsRecv: ERROR: %s (curl code %d)\n", curl_easy_strerror(res), (int)res);
 		m_connected = FALSE;
 	}
 
@@ -812,14 +901,25 @@ bool LiveStreamer::wsRecv(std::vector<char>& outBuffer)
 bool LiveStreamer::sendJsonMessage(const AsciiString& jsonMsg)
 {
 	if (!m_curlEasy || !m_connected)
+	{
+		liveStreamLog("LiveStreamer::sendJsonMessage: skipped (curlEasy=%p, connected=%d)\n",
+			m_curlEasy, m_connected);
 		return false;
+	}
+	liveStreamLog("LiveStreamer::sendJsonMessage: sending %d bytes: %.200s\n",
+		(int)strlen(jsonMsg.str()), jsonMsg.str());
 	size_t sent = 0;
 	CURLcode res = curl_ws_send((CURL*)m_curlEasy, jsonMsg.str(), strlen(jsonMsg.str()), &sent, 0, CURLWS_TEXT);
+	liveStreamLog("LiveStreamer::sendJsonMessage: curl_ws_send result=%d, sent=%d\n", (int)res, (int)sent);
 	if (res == CURLE_OK)
 		return true;
 	if (res == CURLE_AGAIN)
+	{
+		liveStreamLog("LiveStreamer::sendJsonMessage: CURLE_AGAIN, will retry\n");
 		return true;
+	}
 	DEBUG_LOG(("LiveStreamer::sendJsonMessage() - error: %s", curl_easy_strerror(res)));
+	liveStreamLog("LiveStreamer::sendJsonMessage: ERROR: %s (curl code %d)\n", curl_easy_strerror(res), (int)res);
 	m_connected = FALSE;
 	return false;
 }
