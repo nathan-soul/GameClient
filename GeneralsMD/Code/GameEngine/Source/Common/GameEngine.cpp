@@ -845,6 +845,12 @@ void GameEngine::init()
 				// Set the recorder to live observer mode so the update loop knows
 				// to feed frames from TheLiveObserver instead of normal input.
 				TheRecorder->setMode(RECORDERMODETYPE_LIVE_OBSERVER);
+
+				// Set the pending map file so MSG_NEW_GAME loads the correct map.
+				// Pattern from Recorder::playbackFile (Recorder.cpp:1303).
+				AsciiString mapName = TheLiveObserver->getGameInfo()->getMap();
+				TheWritableGlobalData->m_pendingFile = mapName;
+				liveObserverLog("GameEngine::init: map=%s, recorder mode set to LIVE_OBSERVER\\n", mapName.str());
 			}
 			else
 			{

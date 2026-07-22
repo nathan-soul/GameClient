@@ -1110,6 +1110,14 @@ static void doLiveObserverGameStart(const AsciiString& fullWatchUrl)
 	liveObserverLog("doLiveObserverGameStart: metadata received! Setting recorder mode...\\n");
 	TheRecorder->setMode(RECORDERMODETYPE_LIVE_OBSERVER);
 
+	// Set up the game from observer metadata (same pattern as Recorder::playbackFile)
+	// Critical: TheWritableGlobalData->m_pendingFile tells the game engine which map to load.
+	// Without this, the game loads the shell/default map instead of the actual game map.
+	TheCommandList->reset();
+	AsciiString mapName = TheLiveObserver->getGameInfo()->getMap();
+	liveObserverLog("doLiveObserverGameStart: map=%s\\n", mapName.str());
+	TheWritableGlobalData->m_pendingFile = mapName;
+
 	// Send MSG_NEW_GAME directly to TheCommandList (same pattern as Recorder::playbackFile)
 	liveObserverLog("doLiveObserverGameStart: sending MSG_NEW_GAME(GAME_REPLAY) to TheCommandList...\\n");
 	GameMessage* msg = newInstance(GameMessage)(GameMessage::MSG_NEW_GAME);
