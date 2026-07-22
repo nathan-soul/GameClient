@@ -1690,7 +1690,7 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				campaignSelected = FALSE;
 			}
 			#if defined(GENERALS_ONLINE)
-			else if(controlID == buttonLiveObserverID)
+			else if(control == buttonLiveObserver)
 			{
 				// Show the Live Observer dialog with text entry for game ID
 				if (showLiveObserverDialog)
@@ -1753,7 +1753,7 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 
 				liveObserverDialogPanel->winHide(FALSE);
 			}
-			else if(controlID == buttonLiveObserverConnectID)
+			else if(control == buttonLiveObserverConnect)
 			{
 				// User clicked Connect — build URL and start observer mode
 				if (!liveObserverGameIdEntry || !showLiveObserverDialog)
@@ -1792,7 +1792,7 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				TheShell->reverseAnimatewindow();
 				TheTransitionHandler->setGroup("FadeWholeScreen");
 			}
-			else if(controlID == buttonLiveObserverCancelID)
+			else if(control == buttonLiveObserverCancel)
 			{
 				// User clicked Cancel — hide the dialog
 				if (liveObserverDialogPanel)
