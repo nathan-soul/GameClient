@@ -50,6 +50,7 @@ enum RecorderModeType CPP_11(: Int) {
 	RECORDERMODETYPE_RECORD,
 	RECORDERMODETYPE_PLAYBACK,
 	RECORDERMODETYPE_SIMULATION_PLAYBACK, // Play back replay without any graphics
+	RECORDERMODETYPE_LIVE_OBSERVER, // Live observer mode — receiving frames from relay server
 	RECORDERMODETYPE_NONE // this is a valid state to be in on the shell map, or in saved games
 };
 
@@ -136,8 +137,9 @@ public:
 	};
 	Bool readReplayHeader( ReplayHeader& header );
 
-	RecorderModeType getMode();												///< Returns the current operating mode.
-	Bool isPlaybackMode() const { return m_mode == RECORDERMODETYPE_PLAYBACK || m_mode == RECORDERMODETYPE_SIMULATION_PLAYBACK; }
+	RecorderModeType getMode();														///< Returns the current operating mode.
+	void setMode(RecorderModeType mode) { m_mode = mode; }							///< Sets the current operating mode.
+	Bool isPlaybackMode() const { return m_mode == RECORDERMODETYPE_PLAYBACK || m_mode == RECORDERMODETYPE_SIMULATION_PLAYBACK || m_mode == RECORDERMODETYPE_LIVE_OBSERVER; }
 	void initControls();															///< Show or Hide the Replay controls
 
 	static AsciiString getReplayDir();								///< Returns the directory that holds the replay files.

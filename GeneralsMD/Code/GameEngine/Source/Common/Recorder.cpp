@@ -25,6 +25,7 @@
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
 
 #include "Common/Recorder.h"
+#include "Common/LiveStreamer.h"
 #include "Common/file.h"
 #include "Common/FileSystem.h"
 #include "Common/PlayerList.h"
@@ -408,6 +409,11 @@ void RecorderClass::update() {
 	if (m_mode == RECORDERMODETYPE_RECORD || m_mode == RECORDERMODETYPE_NONE) {
 		updateRecord();
 	}
+	else if (m_mode == RECORDERMODETYPE_LIVE_OBSERVER) {
+		// LiveObserver mode: TheLiveObserver handles feeding commands into
+		// TheCommandList directly.  Recorder does nothing here.
+		return;
+	}
 	else if (isPlaybackMode()) {
 		updatePlayback();
 	}
@@ -517,6 +523,17 @@ void RecorderClass::updateRecord()
 		DEBUG_ASSERTCRASH(m_file != nullptr, ("RecorderClass::updateRecord() - unexpected call to fflush(m_file)"));
 		m_file->flush();
 	}
+
+#if defined(GENERALS_ONLINE)
+	// Live streaming — send frame data to relay server
+	if (TheLiveStreamer && TheLiveStreamer->isStreaming())
+	{
+		UnsignedInt curFrame = TheGameLogic->getFrame();
+		Int curFps = TheGlobalData ? TheGlobalData->m_framesPerSecondLimit : 30;
+		if (curFps <= 0) curFps = 30;
+		TheLiveStreamer->streamFrame(curFrame, TheCommandList->getFirstMessage(), curFps);
+	}
+#endif
 }
 
 /**
@@ -695,6 +712,80 @@ void RecorderClass::startRecording(GameDifficulty diff, Int originalGameMode, In
 	*/
 
 	/// @todo Need to write game options when there are some to be written.
+
+#if defined(GENERALS_ONLINE)
+	// Live streaming — initialize and register with relay server
+	if (TheGlobalData && TheGlobalData->m_liveStreamEnabled)
+	{
+		if (TheLiveStreamer == nullptr)
+		{
+			TheLiveStreamer = createLiveStreamer();
+		}
+		if (TheLiveStreamer)
+		{
+			// Compute game hash from map name and start time
+			AsciiString gameMode;
+			gameMode.format("%d", originalGameMode);
+
+			// Collect sorted player names for hash
+			AsciiString sortedNames;
+			if (ThePlayerList)
+			{
+				for (Int pi = 0; pi < MAX_SLOTS; ++pi)
+				{
+					Player* p = ThePlayerList->getNthPlayer(pi);
+					if (p && p->isPlayerActive())
+					{
+						UnicodeString displayName = p->getPlayerDisplayName();
+						AsciiString nameAscii;
+						nameAscii.translate(displayName);
+						if (!sortedNames.isEmpty())
+							sortedNames.concat("|");
+						sortedNames.concat(nameAscii);
+					}
+				}
+			}
+
+			UnsignedInt startTimeVal = 0;
+			time(&startTime);
+			startTimeVal = (UnsignedInt)startTime;
+
+			AsciiString gameHash = LiveStreamer::computeGameHash(
+				TheGlobalData->m_mapName, gameMode, startTimeVal, sortedNames);
+
+			// Connect to relay server
+			AsciiString relayUrl = TheGlobalData->m_liveStreamRelayUrl;
+			if (relayUrl.isEmpty())
+				relayUrl = "ws://192.168.2.108:8765";
+			TheLiveStreamer->init(relayUrl);
+
+			// Get local player name
+			AsciiString localPlayerName;
+			if (ThePlayerList)
+			{
+				Player* localP = ThePlayerList->getLocalPlayer();
+				if (localP)
+				{
+					UnicodeString displayName = localP->getPlayerDisplayName();
+					localPlayerName.translate(displayName);
+				}
+			}
+
+			// Register with the relay
+			TheLiveStreamer->registerForGame(
+				gameHash,
+				localPlayerName,
+				TheGlobalData->m_mapName,
+				gameMode,
+				TheGlobalData->m_liveStreamCanStream);
+
+			// Send metadata immediately
+			TheLiveStreamer->sendMetadata();
+
+			DEBUG_LOG(("RecorderClass::startRecording() - Live stream registered, hash=%s", gameHash.str()));
+		}
+	}
+#endif
 }
 
 /**
@@ -734,6 +825,16 @@ void RecorderClass::stopRecording() {
 #endif
 	}
 	m_fileName.clear();
+
+#if defined(GENERALS_ONLINE)
+	// Live streaming — shut down the streamer when recording stops
+	if (TheLiveStreamer)
+	{
+		TheLiveStreamer->close();
+		delete TheLiveStreamer;
+		TheLiveStreamer = nullptr;
+	}
+#endif
 }
 
 /**

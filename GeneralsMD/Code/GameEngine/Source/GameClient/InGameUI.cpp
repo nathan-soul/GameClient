@@ -50,6 +50,8 @@
 #include "Common/ThingTemplate.h"
 #include "Common/BuildAssistant.h"
 #include "Common/Recorder.h"
+#include "Common/LiveStreamer.h"
+#include "Common/LiveObserver.h"
 #include "Common/SpecialPower.h"
 #include "Common/OptionPreferences.h"
 #include "GameClient/Anim2D.h"
@@ -9079,6 +9081,90 @@ void InGameUI::drawPlayerInfoList()
 				safeDrawRepositionPanel(this, baseScale);
 				safeHandleRepositionClicks(this, baseScale);
 			}
+
+#if defined(GENERALS_ONLINE)
+		// Live streaming status indicator — top-center of screen
+		if (TheLiveStreamer && (TheLiveStreamer->isStreaming() || TheLiveStreamer->isBackup()))
+		{
+			DisplayString* streamStatus = TheDisplayStringManager->newDisplayString();
+			if (streamStatus)
+			{
+				streamStatus->setFont(TheFontLibrary->getFont("ArialFont", Int(14 * baseScale)));
+				UnicodeString statusText;
+				if (TheLiveStreamer->isStreaming())
+				{
+					statusText.translate(AsciiString("STREAMING"));
+				}
+				else
+				{
+					statusText.translate(AsciiString("BACKUP"));
+				}
+				streamStatus->setText(statusText);
+				Int statusW = streamStatus->getWidth();
+				Int statusH = streamStatus->getHeight();
+				Int statusX = (TheDisplay->getWidth() - statusW) / 2;
+				Int statusY = Int(10 * baseScale);
+				streamStatus->draw(statusX, statusY, 0xFF00FF00, 0);
+				TheDisplayStringManager->freeDisplayString(streamStatus);
+			}
+		}
+
+		// Live observer status indicator — top-center of screen
+		if (TheLiveObserver && TheLiveObserver->isConnected())
+		{
+			DisplayString* observerStatus = TheDisplayStringManager->newDisplayString();
+			if (observerStatus)
+			{
+				observerStatus->setFont(TheFontLibrary->getFont("ArialFont", Int(14 * baseScale)));
+
+				UnicodeString statusText;
+				Int bufferDelay = TheLiveObserver->getBufferDelay();
+				Real bufferSeconds = (Real)bufferDelay / 30.0f; // approximate at 30 logic fps
+
+				if (!TheLiveObserver->isReady())
+				{
+					statusText.translate(AsciiString("LIVE - CONNECTING..."));
+					observerStatus->setText(statusText);
+					Int statusW = observerStatus->getWidth();
+					Int statusX = (TheDisplay->getWidth() - statusW) / 2;
+					Int statusY = Int(10 * baseScale);
+					observerStatus->draw(statusX, statusY, 0xFFFFFF00, 0); // yellow
+				}
+				else if (!TheLiveObserver->isConnected())
+				{
+					statusText.translate(AsciiString("DISCONNECTED"));
+					observerStatus->setText(statusText);
+					Int statusW = observerStatus->getWidth();
+					Int statusX = (TheDisplay->getWidth() - statusW) / 2;
+					Int statusY = Int(10 * baseScale);
+					observerStatus->draw(statusX, statusY, 0xFF0000FF, 0); // red
+				}
+				else
+				{
+					// Show buffer delay in seconds
+					AsciiString delayStr;
+					delayStr.format("LIVE  -%.0fs", bufferSeconds);
+					statusText.translate(delayStr);
+					observerStatus->setText(statusText);
+					Int statusW = observerStatus->getWidth();
+					Int statusX = (TheDisplay->getWidth() - statusW) / 2;
+					Int statusY = Int(10 * baseScale);
+
+					// Color based on buffer health
+					UnsignedInt color;
+					if (bufferSeconds < 3.0f)
+						color = 0xFF0000FF; // red — low buffer
+					else if (bufferSeconds < 10.0f)
+						color = 0xFF00FFFF; // yellow — moderate
+					else
+						color = 0xFF00FF00; // green — healthy
+
+					observerStatus->draw(statusX, statusY, color, 0);
+				}
+				TheDisplayStringManager->freeDisplayString(observerStatus);
+			}
+		}
+#endif
 		}
 
 		// TheSuperHackers @feature 15/07/2026 Public wrappers — delegate to SEH-safe static helpers.

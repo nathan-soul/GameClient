@@ -63,6 +63,7 @@
 #include "Common/DamageFX.h"
 #include "Common/MultiplayerSettings.h"
 #include "Common/Recorder.h"
+#include "Common/LiveObserver.h"
 #include "Common/SpecialPower.h"
 #include "Common/TerrainTypes.h"
 #include "Common/Upgrade.h"
@@ -824,6 +825,31 @@ void GameEngine::init()
 
 	// NGMP_CHANGE: Init our settings
 	NGMP_OnlineServicesManager::Settings.Initialize();
+
+#if defined(GENERALS_ONLINE)
+	// Live observer mode: connect to relay server if -livewatch was specified
+	if (!TheGlobalData->m_liveWatchUrl.isEmpty())
+	{
+		TheLiveObserver = createLiveObserver();
+		if (TheLiveObserver)
+		{
+			TheLiveObserver->connect(TheGlobalData->m_liveWatchUrl.str(), "");
+
+			// Block until metadata arrives (map, players, CRC info)
+			if (TheLiveObserver->receiveGameMetadata())
+			{
+				DEBUG_LOG(("GameEngine::init() - Live observer metadata received, starting live session"));
+				// Set the recorder to live observer mode so the update loop knows
+				// to feed frames from TheLiveObserver instead of normal input.
+				TheRecorder->setMode(RECORDERMODETYPE_LIVE_OBSERVER);
+			}
+			else
+			{
+				DEBUG_LOG(("GameEngine::init() - Live observer failed to receive metadata"));
+			}
+		}
+	}
+#endif
 }
 
 /** -----------------------------------------------------------------------------------------------
@@ -973,7 +999,18 @@ void GameEngine::update()
 
 			TheAudio->UPDATE();
 			TheGameClient->UPDATE();
+
+#if defined(GENERALS_ONLINE)
+			// In live observer mode, TheLiveObserver feeds commands into TheCommandList
+			// directly.  Skip normal message propagation which would inject local
+			// input (keyboard/mouse) that doesn't exist in the live feed.
+			if (!TheRecorder || TheRecorder->getMode() != RECORDERMODETYPE_LIVE_OBSERVER)
+			{
+				TheMessageStream->propagateMessages();
+			}
+#else
 			TheMessageStream->propagateMessages();
+#endif
 
             if (TheNetwork != nullptr)
             {
@@ -1000,6 +1037,24 @@ void GameEngine::update()
 
 		if (canUpdateLogic)
 		{
+			// Live observer: feed the next frame's commands from the relay before
+			// the logic tick so they execute on the correct frame.
+#if defined(GENERALS_ONLINE)
+			if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
+			{
+				if (TheLiveObserver && TheLiveObserver->isConnected())
+				{
+					UnsignedInt nextFrame = TheGameLogic->getFrame() + 1;
+					if (!TheLiveObserver->waitForFrame(nextFrame))
+					{
+						// No frame available yet — buffer underrun.  Skip this
+						// logic tick to avoid running ahead of the stream.
+						return;
+					}
+					TheLiveObserver->feedCommandsToCommandList();
+				}
+			}
+#endif
 			TheGameClient->step();
 			TheGameLogic->UPDATE();
 		}

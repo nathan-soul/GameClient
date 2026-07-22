@@ -539,8 +539,13 @@ GlobalData* GlobalData::m_theOriginal = nullptr;
 	{ "UseLocalMOTD",								INI::parseBool,				nullptr,			offsetof( GlobalData, m_useLocalMOTD ) },
 	{ "BaseStatsDir",								INI::parseAsciiString,nullptr,			offsetof( GlobalData, m_baseStatsDir ) },
 	{ "LocalMOTDPath",							INI::parseAsciiString,nullptr,			offsetof( GlobalData, m_MOTDPath ) },
-	{ "ExtraLogging",								INI::parseBool,				nullptr,			offsetof( GlobalData, m_extraLogging ) },
+	{ "ExtraLogging",								INI::parseBool,			nullptr,	offsetof( GlobalData, m_extraLogging ) },
 #endif
+
+	// Live streaming
+	{ "LiveStreamEnabled",							INI::parseBool,			nullptr,	offsetof( GlobalData, m_liveStreamEnabled ) },
+	{ "LiveStreamRelayUrl",							INI::parseAsciiString,	nullptr,	offsetof( GlobalData, m_liveStreamRelayUrl ) },
+	{ "LiveStreamCanStream",						INI::parseBool,			nullptr,	offsetof( GlobalData, m_liveStreamCanStream ) },
 
 	{ nullptr,					nullptr,						nullptr,						0 }
 
@@ -638,6 +643,9 @@ GlobalData::GlobalData()
 	m_chipSetType = 0;
 	m_headless = FALSE;
 	m_exportStats = FALSE;
+	m_liveStreamEnabled = FALSE;
+	m_liveStreamRelayUrl = "ws://192.168.2.108:8765";
+	m_liveStreamCanStream = TRUE;
 	m_windowed = 0;
 	m_xResolution = 800;
 	m_yResolution = 600;

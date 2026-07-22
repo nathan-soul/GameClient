@@ -3585,6 +3585,16 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 	{
 		if (TheGlobalData)
 		{
+#if defined(GENERALS_ONLINE)
+			// In live observer mode: fast forward is not allowed.
+			if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
+			{
+				TheInGameUI->messageNoFormat(
+					TheGameText->FETCH_OR_SUBSTITUTE("GUI:FF_DISABLED_LIVE", L"Fast Forward is disabled in live mode"));
+				disp = DESTROY_MESSAGE;
+				break;
+			}
+#endif
 #if !defined(_ALLOW_DEBUG_CHEATS_IN_RELEASE)//may be defined in GameCommon.h
 			if (TheGameLogic->isInReplayGame())
 #endif
@@ -3593,13 +3603,13 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 				TheInGameUI->messageNoFormat(TheGlobalData->m_TiVOFastMode
 					? TheGameText->FETCH_OR_SUBSTITUTE("GUI:FF_ON", L"Fast Forward is on")
 					: TheGameText->FETCH_OR_SUBSTITUTE("GUI:FF_OFF", L"Fast Forward is off")
-				);
+					);
 			}
 		}
 
 		disp = DESTROY_MESSAGE;
 		break;
-
+	}
 	}
 	case GameMessage::MSG_META_TOGGLE_PAUSE:
 	case GameMessage::MSG_META_TOGGLE_PAUSE_ALT:
