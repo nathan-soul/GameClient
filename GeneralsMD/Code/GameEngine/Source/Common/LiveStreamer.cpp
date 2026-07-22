@@ -308,7 +308,7 @@ void LiveStreamer::registerForGame(
 	QueuedMessage msg;
 	msg.isBinary = FALSE;
 	const char* jsonStr = json.str();
-	msg.data.assign(jsonStr, jsonStr + strlen(jsonStr));
+	msg.data.assign(jsonStr, jsonStr + strlen(jsonStr) + 1);  // +1 for null terminator
 
 	std::lock_guard<std::mutex> lock(m_sendMutex);
 	m_outgoingQueue.push(msg);
@@ -434,7 +434,7 @@ void LiveStreamer::sendMetadata()
 	QueuedMessage msg;
 	msg.isBinary = FALSE;
 	const char* jsonStr = json.str();
-	msg.data.assign(jsonStr, jsonStr + strlen(jsonStr));
+	msg.data.assign(jsonStr, jsonStr + strlen(jsonStr) + 1);  // +1 for null terminator
 
 	std::lock_guard<std::mutex> lock(m_sendMutex);
 	m_outgoingQueue.push(msg);
@@ -485,7 +485,7 @@ void LiveStreamer::streamFrame(UnsignedInt frame, GameMessage* cmdList, Int curr
 	QueuedMessage msg;
 	msg.isBinary = FALSE;
 	const char* jsonStr = jsonFrame.str();
-	msg.data.assign(jsonStr, jsonStr + strlen(jsonStr));
+	msg.data.assign(jsonStr, jsonStr + strlen(jsonStr) + 1);  // +1 for null terminator
 
 	std::lock_guard<std::mutex> lock(m_sendMutex);
 	m_outgoingQueue.push(msg);
