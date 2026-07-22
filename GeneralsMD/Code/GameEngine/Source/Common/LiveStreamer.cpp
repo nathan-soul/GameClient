@@ -210,7 +210,7 @@ void LiveStreamer::init(const AsciiString& relayUrl)
 
 	DEBUG_LOG(("LiveStreamer::init() - connecting to %s", relayUrl.str()));
 	liveStreamLog("LiveStreamer::init: relayUrl=%s\n", relayUrl.str());
-	liveStreamLog("LiveStreamer::init: m_shouldRun=%d, m_connected=%d\n", m_shouldRun, m_connected);
+	liveStreamLog("LiveStreamer::init: m_shouldRun=%d, m_connected=%d\n", m_shouldRun.load(), m_connected.load());
 
 	// Start the background network thread
 	m_networkThread = std::thread(&LiveStreamer::networkThreadFunc, this);
@@ -231,7 +231,7 @@ void LiveStreamer::close()
 	}
 
 	liveStreamLog("LiveStreamer::close: shutting down (connected=%d, isStreaming=%d, isBackup=%d)\n",
-		m_connected, m_isStreaming, m_isBackup);
+		m_connected.load(), m_isStreaming.load(), m_isBackup.load());
 	m_shouldRun = FALSE;
 	m_isStreaming = FALSE;
 	m_isBackup = FALSE;
@@ -344,7 +344,7 @@ void LiveStreamer::sendMetadata()
 	if (!m_connected || !m_isStreaming)
 	{
 		liveStreamLog("LiveStreamer::sendMetadata: skipped (connected=%d, isStreaming=%d)\n",
-			m_connected, m_isStreaming);
+			m_connected.load(), m_isStreaming.load());
 		return;
 	}
 
@@ -427,7 +427,7 @@ void LiveStreamer::streamFrame(UnsignedInt frame, GameMessage* cmdList, Int curr
 	if (!m_connected || !m_isStreaming)
 	{
 		liveStreamLog("LiveStreamer::streamFrame: skipped (connected=%d, isStreaming=%d)\n",
-			m_connected, m_isStreaming);
+			m_connected.load(), m_isStreaming.load());
 		return;
 	}
 
@@ -824,7 +824,7 @@ bool LiveStreamer::wsSend(const void* data, size_t len)
 	if (!m_curlEasy || !m_connected)
 	{
 		liveStreamLog("LiveStreamer::wsSend: skipped (curlEasy=%p, connected=%d)\n",
-			m_curlEasy, m_connected);
+			m_curlEasy, m_connected.load());
 		return false;
 	}
 
@@ -858,7 +858,7 @@ bool LiveStreamer::wsRecv(std::vector<char>& outBuffer)
 	if (!m_curlEasy || !m_connected)
 	{
 		liveStreamLog("LiveStreamer::wsRecv: skipped (curlEasy=%p, connected=%d)\n",
-			m_curlEasy, m_connected);
+			m_curlEasy, m_connected.load());
 		return false;
 	}
 
@@ -903,7 +903,7 @@ bool LiveStreamer::sendJsonMessage(const AsciiString& jsonMsg)
 	if (!m_curlEasy || !m_connected)
 	{
 		liveStreamLog("LiveStreamer::sendJsonMessage: skipped (curlEasy=%p, connected=%d)\n",
-			m_curlEasy, m_connected);
+			m_curlEasy, m_connected.load());
 		return false;
 	}
 	liveStreamLog("LiveStreamer::sendJsonMessage: sending %d bytes: %.200s\n",
