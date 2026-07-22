@@ -464,119 +464,125 @@ void LiveStreamer::sendMetadata()
 }
 
 // ============================================================================
-// streamFrame — serialize and queue a frame for sending
+// bufferMessage — serialize a single GameMessage into the per-frame buffer.
+// Called from Recorder::updateRecord() on the SAME messages that
+// writeToFile() writes to the .rep file.  This guarantees the relay
+// gets the exact same binary data.
 // ============================================================================
 
-void LiveStreamer::streamFrame(UnsignedInt frame, GameMessage* cmdList, Int currentFps)
+void LiveStreamer::bufferMessage(GameMessage* msg, UnsignedInt frame)
+{
+	if (!m_connected || !m_isStreaming)
+		return;
+
+	if (!msg)
+		return;
+
+	// Only serialize network messages (same filter as writeToFile)
+	if (msg->getType() <= GameMessage::MSG_BEGIN_NETWORK_MESSAGES ||
+	    msg->getType() >= GameMessage::MSG_END_NETWORK_MESSAGES)
+		return;
+
+	serializeMessage(msg, frame, m_frameBuffer);
+}
+
+// ============================================================================
+// serializeMessage — serialize a single GameMessage (same format as .rep)
+// ============================================================================
+
+void LiveStreamer::serializeMessage(GameMessage* msg, UnsignedInt frame, std::vector<char>& outBuffer)
+{
+	// Same format as RecorderClass::writeToFile():
+	//   [4-byte frame][4-byte msg type][4-byte player index]
+	//   [1-byte numTypes][type entries...][arguments...]
+
+	// Frame number
+	outBuffer.insert(outBuffer.end(), (const char*)&frame, (const char*)&frame + sizeof(frame));
+
+	// Message type
+	GameMessage::Type type = msg->getType();
+	outBuffer.insert(outBuffer.end(), (const char*)&type, (const char*)&type + sizeof(type));
+
+	// Player index
+	Int playerIndex = msg->getPlayerIndex();
+	outBuffer.insert(outBuffer.end(), (const char*)&playerIndex, (const char*)&playerIndex + sizeof(playerIndex));
+
+	// Argument type info (via GameMessageParser)
+	GameMessageParser* parser = newInstance(GameMessageParser)(msg);
+	UnsignedByte numTypes = (UnsignedByte)parser->getNumTypes();
+	outBuffer.push_back((char)numTypes);
+
+	GameMessageParserArgumentType* argType = parser->getFirstArgumentType();
+	while (argType != nullptr)
+	{
+		UnsignedByte t = (UnsignedByte)(argType->getType());
+		outBuffer.push_back((char)t);
+
+		UnsignedByte argCount = (UnsignedByte)(argType->getArgCount());
+		outBuffer.push_back((char)argCount);
+
+		argType = argType->getNext();
+	}
+
+	// Arguments
+	Int numArgs = msg->getArgumentCount();
+	for (Int i = 0; i < numArgs; ++i)
+	{
+		serializeArgument(msg->getArgumentDataType(i), msg->getArgument(i), outBuffer);
+	}
+
+	deleteInstance(parser);
+}
+
+// ============================================================================
+// flushFrame — send the accumulated per-frame buffer to the relay
+// ============================================================================
+
+void LiveStreamer::flushFrame(UnsignedInt frame, Int currentFps)
 {
 	if (!m_connected || !m_isStreaming)
 	{
-		liveStreamLog("LiveStreamer::streamFrame: skipped (connected=%d, isStreaming=%d)\n",
-			m_connected.load(), m_isStreaming.load());
+		m_frameBuffer.clear();
 		return;
 	}
 
-	// Throttle metadata sends — once every 5 seconds (300 frames at 60fps)
+	// Throttle metadata sends — once every 5 seconds
 	if (m_lastMetadataFrame == 0 || (frame - m_lastMetadataFrame) > (UnsignedInt)(currentFps * 5))
 	{
 		sendMetadata();
 		m_lastMetadataFrame = frame;
 	}
 
-	// Serialize the frame commands into a binary buffer
-	std::vector<char> frameBuffer;
-	serializeFrame(frame, cmdList, frameBuffer);
-
-	// Build a JSON frame message — always send, even if empty.
-	// Empty frames are essential for lockstep simulation: the observer needs
-	// every frame number so waitForFrame() doesn't stall.
+	// Build a JSON frame message.  Empty frames (no commands this tick)
+	// are still sent so the observer can advance its frame counter.
 	AsciiString jsonFrame;
-	if (frameBuffer.empty())
+	if (m_frameBuffer.empty())
 	{
-		// Placeholder for a frame with no commands
 		jsonFrame.format(
 			"{\"type\":\"frame\",\"frame\":%u,\"fps\":%d,\"commands\":\"\"}",
 			frame, currentFps);
 	}
 	else
 	{
-		// Base64-encode the binary commands
 		AsciiString b64Commands;
-		base64Encode(frameBuffer.data(), frameBuffer.size(), b64Commands);
+		base64Encode(m_frameBuffer.data(), m_frameBuffer.size(), b64Commands);
 
 		jsonFrame.format(
 			"{\"type\":\"frame\",\"frame\":%u,\"fps\":%d,\"commands\":\"%s\"}",
 			frame, currentFps, b64Commands.str());
 	}
 
-	// Queue as text message
-	QueuedMessage msg;
-	msg.isBinary = FALSE;
+	// Queue for background thread
+	QueuedMessage qmsg;
+	qmsg.isBinary = FALSE;
 	const char* jsonStr = jsonFrame.str();
-	msg.data.assign(jsonStr, jsonStr + strlen(jsonStr) + 1);  // +1 for null terminator
+	qmsg.data.assign(jsonStr, jsonStr + strlen(jsonStr) + 1);
 
 	std::lock_guard<std::mutex> lock(m_sendMutex);
-	m_outgoingQueue.push(msg);
-}
+	m_outgoingQueue.push(qmsg);
 
-// ============================================================================
-// serializeFrame — replicate the .rep file writeToFile() format
-// ============================================================================
-
-void LiveStreamer::serializeFrame(UnsignedInt frame, GameMessage* cmdList, std::vector<char>& outBuffer)
-{
-	// Walk the command list and serialize each network message
-	// Same format as RecorderClass::writeToFile():
-	//   [4-byte frame][2-byte msg type][4-byte player index]
-	//   [1-byte numTypes][type entries...][arguments...]
-
-	GameMessage* msg = cmdList;
-	while (msg != nullptr)
-	{
-		if (msg->getType() > GameMessage::MSG_BEGIN_NETWORK_MESSAGES &&
-			msg->getType() < GameMessage::MSG_END_NETWORK_MESSAGES)
-		{
-			// Frame number
-			UnsignedInt f = frame;
-			outBuffer.insert(outBuffer.end(), (const char*)&f, (const char*)&f + sizeof(f));
-
-			// Message type (2 bytes — uses the Int enum, written as 4 bytes in .rep)
-			GameMessage::Type type = msg->getType();
-			outBuffer.insert(outBuffer.end(), (const char*)&type, (const char*)&type + sizeof(type));
-
-			// Player index
-			Int playerIndex = msg->getPlayerIndex();
-			outBuffer.insert(outBuffer.end(), (const char*)&playerIndex, (const char*)&playerIndex + sizeof(playerIndex));
-
-			// Argument type info (via GameMessageParser)
-			GameMessageParser* parser = newInstance(GameMessageParser)(msg);
-			UnsignedByte numTypes = (UnsignedByte)parser->getNumTypes();
-			outBuffer.push_back((char)numTypes);
-
-			GameMessageParserArgumentType* argType = parser->getFirstArgumentType();
-			while (argType != nullptr)
-			{
-				UnsignedByte t = (UnsignedByte)(argType->getType());
-				outBuffer.push_back((char)t);
-
-				UnsignedByte argCount = (UnsignedByte)(argType->getArgCount());
-				outBuffer.push_back((char)argCount);
-
-				argType = argType->getNext();
-			}
-
-			// Arguments
-			Int numArgs = msg->getArgumentCount();
-			for (Int i = 0; i < numArgs; ++i)
-			{
-				serializeArgument(msg->getArgumentDataType(i), msg->getArgument(i), outBuffer);
-			}
-
-			deleteInstance(parser);
-			parser = nullptr;
-		}
-		msg = msg->next();
-	}
+	// Clear buffer for next frame
+	m_frameBuffer.clear();
 }
 
 // ============================================================================

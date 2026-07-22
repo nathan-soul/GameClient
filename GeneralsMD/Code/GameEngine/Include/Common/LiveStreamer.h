@@ -59,8 +59,14 @@ public:
 	/// Called when the relay assigns a role ("streamer" or "backup" or "none").
 	void onRoleAssigned(const AsciiString& role, const AsciiString& gameId);
 
-	/// Stream one frame of commands (same format as .rep file writeToFile).
-	void streamFrame(UnsignedInt frame, GameMessage* cmdList, Int currentFps);
+	/// Buffer a single GameMessage for the relay (called from writeToFile path).
+	/// Serializes the message in the same binary format as the .rep file.
+	/// Must be followed by flushFrame() to send the accumulated data.
+	void bufferMessage(GameMessage* msg, UnsignedInt frame);
+
+	/// Send buffered frame data to the relay and clear the buffer.
+	/// Called at the end of each frame from Recorder::updateRecord().
+	void flushFrame(UnsignedInt frame, Int currentFps);
 
 	/// Send game metadata (map, players, CRC info, version, etc.).
 	void sendMetadata();
@@ -102,8 +108,8 @@ private:
 	/// Send a JSON message over WebSocket.
 	bool sendJsonMessage(const AsciiString& jsonMsg);
 
-	/// Serialize a frame into a binary buffer (same format as .rep writeToFile).
-	void serializeFrame(UnsignedInt frame, GameMessage* cmdList, std::vector<char>& outBuffer);
+	/// Serialize a single GameMessage into a binary buffer (same format as .rep writeToFile).
+	void serializeMessage(GameMessage* msg, UnsignedInt frame, std::vector<char>& outBuffer);
 
 	/// Serialize a single GameMessage argument.
 	void serializeArgument(Int argType, const void* argData, std::vector<char>& outBuffer);
@@ -137,6 +143,11 @@ private:
 
 	// Frame counter for throttling metadata sends
 	UnsignedInt m_lastMetadataFrame;
+
+	// Per-frame buffer: accumulates messages during a game tick,
+	// flushed to the relay at the end of the frame.  This mirrors
+	// the exact data that writeToFile() writes to the .rep file.
+	std::vector<char> m_frameBuffer;
 };
 
 extern LiveStreamer* TheLiveStreamer;

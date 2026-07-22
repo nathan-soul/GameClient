@@ -411,7 +411,10 @@ void RecorderClass::update() {
 	}
 	else if (m_mode == RECORDERMODETYPE_LIVE_OBSERVER) {
 		// LiveObserver mode: TheLiveObserver handles feeding commands into
-		// TheCommandList directly.  Recorder does nothing here.
+		// TheCommandList directly.  Still cull bad local input commands
+		// (unit orders, etc.) so the observer can freely move the camera
+		// without affecting the live game state.
+		cullBadCommands();
 		return;
 	}
 	else if (isPlaybackMode()) {
@@ -507,6 +510,7 @@ void RecorderClass::updateRecord()
 			m_fileName.clear();
 		}
 		else {
+			// Write network messages to .rep file (if recording is active)
 			if (m_file != nullptr) {
 				if ((msg->getType() > GameMessage::MSG_BEGIN_NETWORK_MESSAGES) &&
 					(msg->getType() < GameMessage::MSG_END_NETWORK_MESSAGES)) {
@@ -515,6 +519,15 @@ void RecorderClass::updateRecord()
 					needFlush = TRUE;
 				}
 			}
+
+			// Buffer for live relay — same messages that writeToFile() serializes.
+			// Called on EVERY network message (not just when recording) so the
+			// relay gets the exact same binary data as the .rep file.
+#if defined(GENERALS_ONLINE)
+			if (TheLiveStreamer) {
+				TheLiveStreamer->bufferMessage(msg, TheGameLogic->getFrame());
+			}
+#endif
 		}
 		msg = msg->next();
 	}
@@ -525,13 +538,13 @@ void RecorderClass::updateRecord()
 	}
 
 #if defined(GENERALS_ONLINE)
-	// Live streaming — send frame data to relay server
-	if (TheLiveStreamer && TheLiveStreamer->isStreaming())
-	{
+	// Flush accumulated frame data to the relay.  Empty frames are still
+	// sent (placeholders) so the observer's frame counter stays in sync.
+	if (TheLiveStreamer && TheLiveStreamer->isStreaming()) {
 		UnsignedInt curFrame = TheGameLogic->getFrame();
 		Int curFps = TheGlobalData ? TheGlobalData->m_framesPerSecondLimit : 30;
 		if (curFps <= 0) curFps = 30;
-		TheLiveStreamer->streamFrame(curFrame, TheCommandList->getFirstMessage(), curFps);
+		TheLiveStreamer->flushFrame(curFrame, curFps);
 	}
 #endif
 }

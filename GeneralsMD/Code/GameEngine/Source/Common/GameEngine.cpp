@@ -1047,13 +1047,11 @@ void GameEngine::update()
 			TheGameClient->UPDATE();
 
 #if defined(GENERALS_ONLINE)
-			// In live observer mode, TheLiveObserver feeds commands into TheCommandList
-			// directly.  Skip normal message propagation which would inject local
-			// input (keyboard/mouse) that doesn't exist in the live feed.
-			if (!TheRecorder || TheRecorder->getMode() != RECORDERMODETYPE_LIVE_OBSERVER)
-			{
-				TheMessageStream->propagateMessages();
-			}
+			// Propagate local input messages even in live observer mode.
+			// The Recorder::cullBadCommands() call in Recorder::update()
+			// filters gameplay commands (unit orders, etc.) while allowing
+			// camera controls (scroll, rotate, zoom) to pass through.
+			TheMessageStream->propagateMessages();
 #else
 			TheMessageStream->propagateMessages();
 #endif
