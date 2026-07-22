@@ -448,7 +448,8 @@ void LiveObserver::feedCommandsToCommandList()
 					{
 						if (pos >= dataSize)
 							break;
-						readArgumentFromBuffer(lastType, msg, data, pos, dataSize);
+						Int remaining = (Int)(dataSize - (pos - data));
+						readArgumentFromBuffer(lastType, msg, pos, remaining);
 
 						--argsLeft;
 						if (argsLeft == 0)
