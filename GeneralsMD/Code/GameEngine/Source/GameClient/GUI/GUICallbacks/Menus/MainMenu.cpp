@@ -1759,7 +1759,8 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 					break;
 
 				UnicodeString gameIdUnicode = GadgetTextEntryGetText(liveObserverGameIdEntry);
-				AsciiString gameId = gameIdUnicode.str();
+				AsciiString gameId;
+				gameId.translate(gameIdUnicode);
 
 				if (gameId.isEmpty())
 					break;
