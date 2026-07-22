@@ -747,7 +747,7 @@ void RecorderClass::startRecording(GameDifficulty diff, Int originalGameMode, In
 			}
 
 			UnsignedInt startTimeVal = 0;
-			time(&startTime);
+			::time(&startTime);
 			startTimeVal = (UnsignedInt)startTime;
 
 			AsciiString gameHash = LiveStreamer::computeGameHash(

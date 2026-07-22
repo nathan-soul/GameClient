@@ -24,7 +24,7 @@
 #include "Common/PlayerList.h"
 #include "Common/Player.h"
 #include "Common/GameEngine.h"
-#include "Common/GameLogic.h"
+#include "GameLogic/GameLogic.h"
 #include "Common/AsciiString.h"
 #include "Common/CRCDebug.h"
 

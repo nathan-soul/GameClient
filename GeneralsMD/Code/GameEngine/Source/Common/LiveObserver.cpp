@@ -26,7 +26,7 @@
 #include "Common/PlayerList.h"
 #include "Common/Player.h"
 #include "Common/GameEngine.h"
-#include "Common/GameLogic.h"
+#include "GameLogic/GameLogic.h"
 #include "Common/AsciiString.h"
 #include "Common/Recorder.h"
 
@@ -161,7 +161,7 @@ Bool LiveObserver::waitForFrame(UnsignedInt targetFrame)
 	// Check if we already have the frame buffered
 	{
 		std::lock_guard<std::mutex> lock(m_pendingMutex);
-		for (const FrameData& fd : m_pendingFrames)
+		for (const LiveFrameData& fd : m_pendingFrames)
 		{
 			if (fd.frameNumber >= targetFrame)
 				return TRUE;
@@ -183,7 +183,7 @@ Bool LiveObserver::waitForFrame(UnsignedInt targetFrame)
 		elapsed += pollIntervalMs;
 
 		std::lock_guard<std::mutex> lock(m_pendingMutex);
-		for (const FrameData& fd : m_pendingFrames)
+		for (const LiveFrameData& fd : m_pendingFrames)
 		{
 			if (fd.frameNumber >= targetFrame)
 				return TRUE;
@@ -798,12 +798,12 @@ void LiveObserver::parseMetadataMessage(const AsciiString& json)
 }
 
 // ============================================================================
-// deserializeFrame — convert binary payload to FrameData and buffer it
+// deserializeFrame — convert binary payload to LiveFrameData and buffer it
 // ============================================================================
 
 void LiveObserver::deserializeFrame(UnsignedInt frameNum, const char* payload, Int payloadSize)
 {
-	FrameData fd;
+	LiveFrameData fd;
 	fd.frameNumber = frameNum;
 	fd.serializedCommands.assign(payload, payload + payloadSize);
 

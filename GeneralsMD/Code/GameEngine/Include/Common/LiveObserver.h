@@ -33,11 +33,11 @@
 class GameMessage;
 
 /**
- * FrameData holds a single frame's worth of commands received from the relay server.
+ * LiveFrameData holds a single frame's worth of commands received from the relay server.
  * Each frame contains a frame number and a serialized list of GameMessages to append
  * to TheCommandList during playback.
  */
-struct FrameData
+struct LiveFrameData
 {
 	UnsignedInt frameNumber;
 	std::vector<char> serializedCommands; ///< Binary data in the same format as .rep writeToFile()
@@ -130,7 +130,7 @@ private:
 	/// Parse an incoming JSON metadata message from the relay.
 	void parseMetadataMessage(const AsciiString& json);
 
-	/// Deserialize binary commands into a FrameData and push to m_pendingFrames.
+	/// Deserialize binary commands into a LiveFrameData and push to m_pendingFrames.
 	void deserializeFrame(UnsignedInt frameNum, const char* payload, Int payloadSize);
 
 	// --- State ---
@@ -155,7 +155,7 @@ private:
 	mutable std::mutex m_pendingMutex;
 
 	/// Buffered frames waiting to be consumed by the game thread.
-	std::list<FrameData> m_pendingFrames;
+	std::list<LiveFrameData> m_pendingFrames;
 
 	/// Reconstructed game info from metadata.
 	ReplayGameInfo m_replayGameInfo;
