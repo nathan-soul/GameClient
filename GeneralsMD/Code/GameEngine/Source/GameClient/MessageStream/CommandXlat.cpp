@@ -3610,7 +3610,6 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 		disp = DESTROY_MESSAGE;
 		break;
 	}
-	}
 	case GameMessage::MSG_META_TOGGLE_PAUSE:
 	case GameMessage::MSG_META_TOGGLE_PAUSE_ALT:
 	{
