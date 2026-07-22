@@ -279,7 +279,7 @@ void LiveObserver::connect(const AsciiString& relayUrl, const AsciiString& gameI
 	liveObserverLog("LiveObserver::connect: relay_url=%.200s\n", relayUrl.str());
 	liveObserverLog("LiveObserver::connect: game_id=%.200s\n", gameId.str());
 	liveObserverLog("LiveObserver::connect: m_shouldRun=%d, m_connected=%d, m_metadataReceived=%d\n",
-		m_shouldRun, m_connected, m_metadataReceived);
+		m_shouldRun.load(), m_connected.load(), m_metadataReceived.load());
 
 	m_networkThread = std::thread(&LiveObserver::networkThreadFunc, this);
 	liveObserverLog("LiveObserver::connect: network thread launched (id=%lu)\n",
@@ -828,7 +828,7 @@ bool LiveObserver::wsRecv(std::vector<char>& outBuffer)
 	if (!m_curlEasy || !m_connected)
 	{
 		liveObserverLog("LiveObserver::wsRecv: skipped (curlEasy=%p, connected=%d)\n",
-			m_curlEasy, m_connected);
+			m_curlEasy, m_connected.load());
 		return false;
 	}
 
@@ -873,7 +873,7 @@ bool LiveObserver::sendJsonMessage(const AsciiString& jsonMsg)
 	if (!m_curlEasy || !m_connected)
 	{
 		liveObserverLog("LiveObserver::sendJsonMessage: skipped (curlEasy=%p, connected=%d)\n",
-			m_curlEasy, m_connected);
+			m_curlEasy, m_connected.load());
 		return false;
 	}
 	liveObserverLog("LiveObserver::sendJsonMessage: sending %d bytes: %.200s\n",
@@ -1061,8 +1061,7 @@ void LiveObserver::parseMetadataMessage(const AsciiString& json)
 	{
 		liveObserverLog("LiveObserver::parseMetadataMessage: unknown message type '%.50s'\n", msgType.str());
 	}
-	}
-	}
+}
 // ============================================================================
 // deserializeFrame — convert binary payload to LiveFrameData and buffer it
 // ============================================================================
