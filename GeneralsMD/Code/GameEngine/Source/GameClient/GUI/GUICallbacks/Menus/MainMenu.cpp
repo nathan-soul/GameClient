@@ -696,12 +696,12 @@ void MainMenuShutdown( WindowLayout *layout, void *userData )
 	CancelPatchCheckCallback();
 
 #if defined(GENERALS_ONLINE)
-	// Clean up Live Observer dialog if it's still visible
-	if (showLiveObserverDialog && liveObserverDialogPanel)
-	{
-		liveObserverDialogPanel->winHide(TRUE);
-		showLiveObserverDialog = FALSE;
-	}
+// Clean up Live Observer dialog if it's still visible
+if (showLiveObserverDialog)
+{
+	hideLiveObserverDialog();
+	showLiveObserverDialog = FALSE;
+}
 #endif
 
 	// if we are shutting down for an immediate pop, skip the animations
@@ -1040,6 +1040,19 @@ WindowMsgHandledType MainMenuInput( GameWindow *window, UnsignedInt msg,
 }
 
 void PrintOffsetsFromControlBarParent();
+#if defined(GENERALS_ONLINE)
+// Helper to hide all Live Observer dialog controls
+static void hideLiveObserverDialog(void)
+{
+	if (buttonLiveObserverConnect)
+		buttonLiveObserverConnect->winHide(TRUE);
+	if (buttonLiveObserverCancel)
+		buttonLiveObserverCancel->winHide(TRUE);
+	if (liveObserverGameIdEntry)
+		liveObserverGameIdEntry->winHide(TRUE);
+}
+#endif
+
 //-------------------------------------------------------------------------------------------------
 /** Main menu window system callback */
 //-------------------------------------------------------------------------------------------------
@@ -1698,25 +1711,15 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 
 				showLiveObserverDialog = TRUE;
 
-				// Create a panel for the dialog
-				WinInstanceData panelInstData;
-				panelInstData.init();
-				panelInstData.m_style = GWS_MOUSE_TRACK;
-				liveObserverDialogPanel = TheWindowManager->winCreate(parentMainMenu,
-					WIN_STATUS_ENABLED,
-					100, 150, 300, 120,
-					nullptr, &panelInstData);
-
 				// Static text label
 				WinInstanceData labelInstData;
 				labelInstData.init();
 				labelInstData.m_style = GWS_STATIC_TEXT | GWS_MOUSE_TRACK;
 				labelInstData.m_textLabelString = "Enter Game ID:";
-				GameWindow *label = TheWindowManager->gogoGadgetStaticText(liveObserverDialogPanel,
+				TheWindowManager->gogoGadgetStaticText(parentMainMenu,
 					WIN_STATUS_ENABLED,
-					10, 10, 280, 20,
+					100, 160, 280, 20,
 					&labelInstData, nullptr, nullptr, TRUE);
-				(void)label; // referenced via dialog panel
 
 				// Text entry for game ID
 				EntryData entryData;
@@ -1726,9 +1729,9 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				entryInstData.init();
 				entryInstData.m_style = GWS_ENTRY_FIELD | GWS_MOUSE_TRACK;
 				entryInstData.m_textLabelString = "";
-				liveObserverGameIdEntry = TheWindowManager->gogoGadgetTextEntry(liveObserverDialogPanel,
+				liveObserverGameIdEntry = TheWindowManager->gogoGadgetTextEntry(parentMainMenu,
 					WIN_STATUS_ENABLED,
-					10, 40, 280, 25,
+					100, 190, 280, 25,
 					&entryInstData, &entryData, nullptr, TRUE);
 
 				// Connect button
@@ -1736,9 +1739,9 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				connectInstData.init();
 				BitSet(connectInstData.m_style, GWS_PUSH_BUTTON | GWS_MOUSE_TRACK);
 				connectInstData.m_textLabelString = "Connect";
-				buttonLiveObserverConnect = TheWindowManager->gogoGadgetPushButton(liveObserverDialogPanel,
+				buttonLiveObserverConnect = TheWindowManager->gogoGadgetPushButton(parentMainMenu,
 					WIN_STATUS_ENABLED | WIN_STATUS_IMAGE,
-					10, 75, 130, 26,
+					100, 225, 130, 26,
 					&connectInstData, nullptr, TRUE);
 
 				// Cancel button
@@ -1746,12 +1749,10 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				cancelInstData.init();
 				BitSet(cancelInstData.m_style, GWS_PUSH_BUTTON | GWS_MOUSE_TRACK);
 				cancelInstData.m_textLabelString = "Cancel";
-				buttonLiveObserverCancel = TheWindowManager->gogoGadgetPushButton(liveObserverDialogPanel,
+				buttonLiveObserverCancel = TheWindowManager->gogoGadgetPushButton(parentMainMenu,
 					WIN_STATUS_ENABLED | WIN_STATUS_IMAGE,
-					160, 75, 130, 26,
+					250, 225, 130, 26,
 					&cancelInstData, nullptr, TRUE);
-
-				liveObserverDialogPanel->winHide(FALSE);
 			}
 			else if(control == buttonLiveObserverConnect)
 			{
@@ -1770,9 +1771,8 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				AsciiString fullWatchUrl;
 				fullWatchUrl.format("%s/watch/%s", TheGlobalData->m_liveStreamRelayUrl.str(), gameId.str());
 
-				// Hide the dialog
-				if (liveObserverDialogPanel)
-					liveObserverDialogPanel->winHide(TRUE);
+				// Hide the dialog controls
+				hideLiveObserverDialog();
 				showLiveObserverDialog = FALSE;
 
 				// Set up observer mode (same pattern as parseLiveWatch in CommandLine.cpp)
@@ -1794,9 +1794,8 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 			}
 			else if(control == buttonLiveObserverCancel)
 			{
-				// User clicked Cancel — hide the dialog
-				if (liveObserverDialogPanel)
-					liveObserverDialogPanel->winHide(TRUE);
+				// User clicked Cancel — hide the dialog controls
+				hideLiveObserverDialog();
 				showLiveObserverDialog = FALSE;
 			}
 			#endif
