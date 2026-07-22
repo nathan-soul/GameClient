@@ -199,25 +199,19 @@ AsciiString LiveStreamer::jsonEscape(const AsciiString& raw)
 	AsciiString result;
 	const char* src = raw.str();
 	
-	// Worst case: every char becomes \\ or \" (2x), plus null terminator
-	Int maxLen = (Int)(strlen(src) * 2 + 1);
-	result.ensureUniqueBufferOfSize(maxLen + 1, true, nullptr, nullptr);
-	char* dst = result.peek();
-	
 	while (*src)
 	{
 		switch (*src)
 		{
-			case '\\': *dst++ = '\\'; *dst++ = '\\'; break;
-			case '"':  *dst++ = '\\'; *dst++ = '"';  break;
-			case '\n': *dst++ = '\\'; *dst++ = 'n';  break;
-			case '\r': *dst++ = '\\'; *dst++ = 'r';  break;
-			case '	': *dst++ = '\\'; *dst++ = 't';  break;
-			default:   *dst++ = *src; break;
+			case '\\': result.concat('\\'); result.concat('\\'); break;
+			case '"':  result.concat('\\'); result.concat('"');  break;
+			case '\n': result.concat('\\'); result.concat('n');  break;
+			case '\r': result.concat('\\'); result.concat('r');  break;
+			case '	': result.concat('\\'); result.concat('t');  break;
+			default:   result.concat(*src); break;
 		}
 		src++;
 	}
-	*dst = '\0';
 	
 	return result;
 }
