@@ -339,7 +339,7 @@ void LiveStreamer::sendMetadata()
 
 				AsciiString playerEntry;
 				playerEntry.format("{\"slot\":%d,\"name\":\"%s\",\"team\":%d}",
-					i, nameAscii.str(), p->getTeam());
+					i, nameAscii.str(), p->getPlayerIndex());
 				playersJson.concat(playerEntry);
 			}
 		}
