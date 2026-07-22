@@ -694,10 +694,19 @@ bool LiveObserver::connectToRelay()
 
 	// Configure the WebSocket connection
 	AsciiString url;
-	if (m_isReconnecting)
+	if (m_gameId.isEmpty())
+	{
+		// Full URL was passed directly (e.g. from menu UI or -livewatch with full URL)
+		url = m_relayUrl;
+	}
+	else if (m_isReconnecting)
+	{
 		url.format("%s/watch-reconnect/%s", m_relayUrl.str(), m_gameId.str());
+	}
 	else
+	{
 		url.format("%s/watch/%s", m_relayUrl.str(), m_gameId.str());
+	}
 	liveObserverLog("LiveObserver::connectToRelay: curl_easy_setopt CURLOPT_URL=%.200s\n", url.str());
 	curl_easy_setopt(easy, CURLOPT_URL, url.str());
 	liveObserverLog("LiveObserver::connectToRelay: curl_easy_setopt CURLOPT_CONNECT_ONLY=2L\n");

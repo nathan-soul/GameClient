@@ -76,6 +76,12 @@
 #include "GameClient/InGameUI.h"
 #include "../OnlineServices_Init.h"
 
+#if defined(GENERALS_ONLINE)
+#include "Common/LiveObserver.h"
+#include "GameClient/ClientInstance.h"
+#include "GameClient/GadgetTextEntry.h"
+#endif
+
 
 // PRIVATE DATA ///////////////////////////////////////////////////////////////////////////////////
 
@@ -138,6 +144,19 @@ static NameKeyType buttonMediumID = NAMEKEY_INVALID;
 static NameKeyType buttonHardID = NAMEKEY_INVALID;
 static NameKeyType buttonDiffBackID = NAMEKEY_INVALID;
 
+#if defined(GENERALS_ONLINE)
+// Live Observer button and dialog controls
+static NameKeyType buttonLiveObserverID = NAMEKEY_INVALID;
+static NameKeyType buttonLiveObserverConnectID = NAMEKEY_INVALID;
+static NameKeyType buttonLiveObserverCancelID = NAMEKEY_INVALID;
+static NameKeyType liveObserverGameIdEntryID = NAMEKEY_INVALID;
+static GameWindow *buttonLiveObserver = nullptr;
+static GameWindow *buttonLiveObserverConnect = nullptr;
+static GameWindow *buttonLiveObserverCancel = nullptr;
+static GameWindow *liveObserverGameIdEntry = nullptr;
+static GameWindow *liveObserverDialogPanel = nullptr;
+static Bool showLiveObserverDialog = FALSE;
+#endif
 
 // window pointers --------------------------------------------------------------------------------
 static GameWindow *parentMainMenu = nullptr;
@@ -558,6 +577,29 @@ void MainMenuInit( WindowLayout *layout, void *userData )
 																									 &instData, nullptr, TRUE );
 #endif
 
+#if defined(GENERALS_ONLINE)
+	// Live Observer button — only show if relay URL is configured
+	if (!TheGlobalData->m_liveStreamRelayUrl.isEmpty())
+	{
+		// Register control IDs
+		buttonLiveObserverID = TheNameKeyGenerator->nameToKey("MainMenu.wnd:ButtonLiveObserver");
+		buttonLiveObserverConnectID = TheNameKeyGenerator->nameToKey("MainMenu.wnd:ButtonLiveObserverConnect");
+		buttonLiveObserverCancelID = TheNameKeyGenerator->nameToKey("MainMenu.wnd:ButtonLiveObserverCancel");
+		liveObserverGameIdEntryID = TheNameKeyGenerator->nameToKey("MainMenu.wnd:LiveObserverGameIdEntry");
+
+		// Create the "Live Observer" button
+		WinInstanceData instDataLive;
+		instDataLive.init();
+		BitSet(instDataLive.m_style, GWS_PUSH_BUTTON | GWS_MOUSE_TRACK);
+		instDataLive.m_textLabelString = "Live Observer";
+		instDataLive.setTooltipText(L"Watch a live game via relay server");
+		buttonLiveObserver = TheWindowManager->gogoGadgetPushButton(parentMainMenu,
+			WIN_STATUS_ENABLED | WIN_STATUS_IMAGE,
+			25, 210, 180, 26,
+			&instDataLive, nullptr, TRUE);
+	}
+#endif
+
 	initLabelVersion();
 
 	//TheShell->registerWithAnimateManager(buttonCampaign, WIN_ANIMATION_SLIDE_LEFT, TRUE, 800);
@@ -652,6 +694,15 @@ void MainMenuShutdown( WindowLayout *layout, void *userData )
 		isShuttingDown = TRUE;
 
 	CancelPatchCheckCallback();
+
+#if defined(GENERALS_ONLINE)
+	// Clean up Live Observer dialog if it's still visible
+	if (showLiveObserverDialog && liveObserverDialogPanel)
+	{
+		liveObserverDialogPanel->winHide(TRUE);
+		showLiveObserverDialog = FALSE;
+	}
+#endif
 
 	// if we are shutting down for an immediate pop, skip the animations
 	Bool popImmediate = *(Bool *)userData;
@@ -1638,6 +1689,115 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				diffReverseSide();
 				campaignSelected = FALSE;
 			}
+			#if defined(GENERALS_ONLINE)
+			else if(controlID == buttonLiveObserverID)
+			{
+				// Show the Live Observer dialog with text entry for game ID
+				if (showLiveObserverDialog)
+					break;
+
+				showLiveObserverDialog = TRUE;
+
+				// Create a panel for the dialog
+				WinInstanceData panelInstData;
+				panelInstData.init();
+				panelInstData.m_style = GWS_CHILD | GWS_MOUSE_TRACK;
+				liveObserverDialogPanel = TheWindowManager->winCreate(parentMainMenu,
+					WIN_STATUS_ENABLED,
+					100, 150, 300, 120,
+					nullptr, &panelInstData);
+
+				// Static text label
+				WinInstanceData labelInstData;
+				labelInstData.init();
+				labelInstData.m_style = GWS_STATIC_TEXT | GWS_MOUSE_TRACK;
+				labelInstData.m_textLabelString = "Enter Game ID:";
+				GameWindow *label = TheWindowManager->gogoGadgetStaticText(liveObserverDialogPanel,
+					WIN_STATUS_ENABLED,
+					10, 10, 280, 20,
+					&labelInstData, nullptr, nullptr, TRUE);
+
+				// Text entry for game ID
+				EntryData entryData;
+				memset(&entryData, 0, sizeof(entryData));
+				entryData.maxTextLen = 30;
+				WinInstanceData entryInstData;
+				entryInstData.init();
+				entryInstData.m_style = GWS_ENTRY_FIELD | GWS_MOUSE_TRACK;
+				entryInstData.m_textLabelString = "";
+				liveObserverGameIdEntry = TheWindowManager->gogoGadgetTextEntry(liveObserverDialogPanel,
+					WIN_STATUS_ENABLED,
+					10, 40, 280, 25,
+					&entryInstData, &entryData, nullptr, TRUE);
+
+				// Connect button
+				WinInstanceData connectInstData;
+				connectInstData.init();
+				BitSet(connectInstData.m_style, GWS_PUSH_BUTTON | GWS_MOUSE_TRACK);
+				connectInstData.m_textLabelString = "Connect";
+				buttonLiveObserverConnect = TheWindowManager->gogoGadgetPushButton(liveObserverDialogPanel,
+					WIN_STATUS_ENABLED | WIN_STATUS_IMAGE,
+					10, 75, 130, 26,
+					&connectInstData, nullptr, TRUE);
+
+				// Cancel button
+				WinInstanceData cancelInstData;
+				cancelInstData.init();
+				BitSet(cancelInstData.m_style, GWS_PUSH_BUTTON | GWS_MOUSE_TRACK);
+				cancelInstData.m_textLabelString = "Cancel";
+				buttonLiveObserverCancel = TheWindowManager->gogoGadgetPushButton(liveObserverDialogPanel,
+					WIN_STATUS_ENABLED | WIN_STATUS_IMAGE,
+					160, 75, 130, 26,
+					&cancelInstData, nullptr, TRUE);
+
+				liveObserverDialogPanel->winHide(FALSE);
+			}
+			else if(controlID == buttonLiveObserverConnectID)
+			{
+				// User clicked Connect — build URL and start observer mode
+				if (!liveObserverGameIdEntry || !showLiveObserverDialog)
+					break;
+
+				UnicodeString gameIdUnicode = GadgetTextEntryGetText(liveObserverGameIdEntry);
+				AsciiString gameId = gameIdUnicode.str();
+
+				if (gameId.isEmpty())
+					break;
+
+				// Build the full watch URL: relayUrl/watch/gameId
+				AsciiString fullWatchUrl;
+				fullWatchUrl.format("%s/watch/%s", TheGlobalData->m_liveStreamRelayUrl.str(), gameId.str());
+
+				// Hide the dialog
+				if (liveObserverDialogPanel)
+					liveObserverDialogPanel->winHide(TRUE);
+				showLiveObserverDialog = FALSE;
+
+				// Set up observer mode (same pattern as parseLiveWatch in CommandLine.cpp)
+				TheWritableGlobalData->m_liveWatchUrl = fullWatchUrl;
+				TheWritableGlobalData->m_playIntro = FALSE;
+				TheWritableGlobalData->m_afterIntro = TRUE;
+				TheWritableGlobalData->m_playSizzle = FALSE;
+				TheWritableGlobalData->m_shellMapOn = FALSE;
+
+				// Multi-instance support like replay mode
+				rts::ClientInstance::setMultiInstance(TRUE);
+				rts::ClientInstance::skipPrimaryInstance();
+
+				// Trigger game start
+				startGame = TRUE;
+				buttonPushed = TRUE;
+				TheShell->reverseAnimatewindow();
+				TheTransitionHandler->setGroup("FadeWholeScreen");
+			}
+			else if(controlID == buttonLiveObserverCancelID)
+			{
+				// User clicked Cancel — hide the dialog
+				if (liveObserverDialogPanel)
+					liveObserverDialogPanel->winHide(TRUE);
+				showLiveObserverDialog = FALSE;
+			}
+			#endif
 
 
 			break;
