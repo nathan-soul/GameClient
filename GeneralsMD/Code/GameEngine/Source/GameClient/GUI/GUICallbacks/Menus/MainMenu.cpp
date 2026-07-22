@@ -78,8 +78,11 @@
 
 #if defined(GENERALS_ONLINE)
 #include "Common/LiveObserver.h"
+#include "Common/Recorder.h"
+#include "Common/MessageStream.h"
 #include "GameClient/ClientInstance.h"
 #include "GameClient/GadgetTextEntry.h"
+#include "GameLogic/GameLogic.h"
 #endif
 
 
@@ -156,9 +159,12 @@ static GameWindow *buttonLiveObserverCancel = nullptr;
 static GameWindow *liveObserverGameIdEntry = nullptr;
 static GameWindow *liveObserverDialogPanel = nullptr;
 static Bool showLiveObserverDialog = FALSE;
+static Bool startLiveObserverGame = FALSE;
+static AsciiString m_liveObserverStartUrl;
 
 // Forward declaration
 static void hideLiveObserverDialog(void);
+static void doLiveObserverGameStart(const AsciiString& fullWatchUrl);
 #endif
 
 // window pointers --------------------------------------------------------------------------------
@@ -329,6 +335,18 @@ static void doGameStart()
 
 	if (TheGameLogic->isInGame())
 		TheGameLogic->clearGameData();
+
+#if defined(GENERALS_ONLINE)
+	// If we're in live observer mode, TheLiveObserver already sent MSG_NEW_GAME
+	// directly to TheCommandList with GAME_REPLAY.  Don't send a second one here
+	// or we'd start a duplicate game.
+	if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
+	{
+		liveObserverLog("doGameStart: skipping MSG_NEW_GAME (already sent by observer)\\n");
+		isShuttingDown = TRUE;
+		return;
+	}
+#endif
 
 	// send a message to the logic for a new game
 	GameMessage *msg = TheMessageStream->appendMessage( GameMessage::MSG_NEW_GAME );
@@ -962,6 +980,14 @@ void MainMenuUpdate( WindowLayout *layout, void *userData )
 
 
 
+#if defined(GENERALS_ONLINE)
+	if (startLiveObserverGame && TheShell->isAnimFinished() && TheTransitionHandler->isFinished())
+	{
+		startLiveObserverGame = FALSE;
+		doLiveObserverGameStart(m_liveObserverStartUrl);
+	}
+#endif
+
 	if (startGame && TheShell->isAnimFinished() && TheTransitionHandler->isFinished())
 	{
 		doGameStart();
@@ -1053,6 +1079,49 @@ static void hideLiveObserverDialog(void)
 		buttonLiveObserverCancel->winHide(TRUE);
 	if (liveObserverGameIdEntry)
 		liveObserverGameIdEntry->winHide(TRUE);
+}
+
+// Initialize the live observer, connect to relay, receive metadata,
+// send MSG_NEW_GAME directly to TheCommandList, and trigger game start.
+static void doLiveObserverGameStart(const AsciiString& fullWatchUrl)
+{
+	liveObserverInitLog(fullWatchUrl.str());
+	liveObserverLog("=== doLiveObserverGameStart (from menu) ===\\n");
+	liveObserverLog("URL: %s\\n", fullWatchUrl.str());
+
+	// Initialize the LiveObserver (same flow as GameEngine::init)
+	TheLiveObserver = createLiveObserver();
+	if (!TheLiveObserver)
+	{
+		liveObserverLog("doLiveObserverGameStart: createLiveObserver() returned NULL!\\n");
+		return;
+	}
+
+	liveObserverLog("doLiveObserverGameStart: connecting to relay...\\n");
+	TheLiveObserver->connect(fullWatchUrl, "");
+
+	liveObserverLog("doLiveObserverGameStart: waiting for metadata (blocking, up to 10s)...\\n");
+	if (!TheLiveObserver->receiveGameMetadata())
+	{
+		liveObserverLog("doLiveObserverGameStart: FAILED to receive metadata (timeout or disconnect)\\n");
+		return;
+	}
+
+	liveObserverLog("doLiveObserverGameStart: metadata received! Setting recorder mode...\\n");
+	TheRecorder->setMode(RECORDERMODETYPE_LIVE_OBSERVER);
+
+	// Send MSG_NEW_GAME directly to TheCommandList (same pattern as Recorder::playbackFile)
+	liveObserverLog("doLiveObserverGameStart: sending MSG_NEW_GAME(GAME_REPLAY) to TheCommandList...\\n");
+	GameMessage* msg = newInstance(GameMessage)(GameMessage::MSG_NEW_GAME);
+	msg->appendIntegerArgument(GAME_REPLAY);
+	msg->appendIntegerArgument(DIFFICULTY_NORMAL);
+	msg->appendIntegerArgument(0);
+	TheCommandList->appendMessage(msg);
+
+	// We already sent MSG_NEW_GAME to TheCommandList — let doGameStart()
+	// handle the shutdown transition. Set startGame to trigger it.
+	liveObserverLog("doLiveObserverGameStart: setting startGame=TRUE for shell transition\\n");
+	startGame = TRUE;
 }
 #endif
 
@@ -1792,7 +1861,9 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				rts::ClientInstance::skipPrimaryInstance();
 
 				// Trigger game start
-				startGame = TRUE;
+				// Save the URL for the deferred start
+				m_liveObserverStartUrl = fullWatchUrl;
+				startLiveObserverGame = TRUE;
 				buttonPushed = TRUE;
 				TheShell->reverseAnimatewindow();
 				TheTransitionHandler->setGroup("FadeWholeScreen");
