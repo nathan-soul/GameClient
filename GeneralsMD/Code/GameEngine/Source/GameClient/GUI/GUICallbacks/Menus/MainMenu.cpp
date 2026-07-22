@@ -1841,9 +1841,27 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				if (gameId.isEmpty())
 					break;
 
-				// Build the full watch URL: relayUrl/watch/gameId
+				// Build the full watch URL: strip any trailing path from relayUrl, then append /watch/gameId
+				// e.g. "ws://host:8765/register" -> "ws://host:8765" then "/watch/gameId"
+				AsciiString baseUrl;
+				{
+					const char* relayStr = TheGlobalData->m_liveStreamRelayUrl.str();
+					const char* schemeEnd = strstr(relayStr, "://");
+					if (schemeEnd)
+					{
+						const char* pathStart = strchr(schemeEnd + 3, '/');
+						if (pathStart)
+							baseUrl = AsciiString(relayStr, (int)(pathStart - relayStr));
+						else
+							baseUrl = TheGlobalData->m_liveStreamRelayUrl;
+					}
+					else
+					{
+						baseUrl = TheGlobalData->m_liveStreamRelayUrl;
+					}
+				}
 				AsciiString fullWatchUrl;
-				fullWatchUrl.format("%s/watch/%s", TheGlobalData->m_liveStreamRelayUrl.str(), gameId.str());
+				fullWatchUrl.format("%s/watch/%s", baseUrl.str(), gameId.str());
 
 				// Hide the dialog controls
 				hideLiveObserverDialog();

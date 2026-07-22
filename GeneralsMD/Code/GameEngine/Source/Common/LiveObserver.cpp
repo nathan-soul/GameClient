@@ -334,6 +334,16 @@ Bool LiveObserver::receiveGameMetadata()
 
 	liveObserverLog("LiveObserver::receiveGameMetadata: waiting for metadata (timeout=%d ms)...\n", timeoutMs);
 
+	// Phase 1: wait for connection (up to 5s) — connect() spawns the network
+	// thread which sets m_connected = TRUE after WebSocket handshake completes
+	const Int connectTimeoutMs = 5000;
+	while (!m_connected && elapsed < connectTimeoutMs)
+	{
+		Sleep(pollIntervalMs);
+		elapsed += pollIntervalMs;
+	}
+
+	// Phase 2: wait for metadata with remaining time
 	while (!m_metadataReceived && m_connected && elapsed < timeoutMs)
 	{
 		Sleep(pollIntervalMs);
@@ -579,8 +589,11 @@ void LiveObserver::networkThreadFunc()
 			// Try to connect or reconnect
 			if (reconnectToRelay())
 			{
-				m_reconnectAttempts = 0;
-				liveObserverLog("LiveObserver: reconnected successfully\n");
+				// Do NOT reset m_reconnectAttempts here — wait until we receive
+				// real data from the relay (the old connectToRelay could return
+				// true from a phantom TCP connection before the WebSocket handshake
+				// completed).  Reset happens after a successful wsRecv below.
+				liveObserverLog("LiveObserver: reconnected successfully, waiting for data to verify\n");
 
 				// Send a reconnect message with our last known frame
 				if (m_lastProcessedFrame > 0)
@@ -614,6 +627,12 @@ void LiveObserver::networkThreadFunc()
 		liveObserverLog("LiveObserver: wsRecv called, buffer state: size=%d\n", (int)recvBuffer.size());
 		if (wsRecv(recvBuffer) && !recvBuffer.empty())
 		{
+			// Real data received — connection is verified, reset reconnect counter
+			if (m_reconnectAttempts > 0)
+			{
+				liveObserverLog("LiveObserver: data received after reconnect, resetting reconnect attempts\n");
+				m_reconnectAttempts = 0;
+			}
 			liveObserverLog("LiveObserver: received %d bytes from relay\n", (int)recvBuffer.size());
 			// All messages are now JSON text frames
 			AsciiString incoming(recvBuffer.data(), (Int)recvBuffer.size());
@@ -719,17 +738,32 @@ bool LiveObserver::connectToRelay()
 	liveObserverLog("LiveObserver::connectToRelay: curl_multi_add_handle\n");
 	curl_multi_add_handle(multi, easy);
 
-	// Perform the connection
+	// Perform the connection — loop until the WebSocket handshake completes
+	// or we time out.  The correct curl_multi pattern requires repeated
+	// perform→wait cycles; a single cycle is not sufficient because the
+	// WebSocket upgrade may not finish within the first 1 s wait.
 	int runningHandles = 0;
-	liveObserverLog("LiveObserver::connectToRelay: curl_multi_perform\n");
+	liveObserverLog("LiveObserver::connectToRelay: curl_multi_perform (loop)\n");
 	CURLMcode mc = curl_multi_perform(multi, &runningHandles);
 	liveObserverLog("LiveObserver::connectToRelay: curl_multi_perform returned mc=%d, runningHandles=%d\n", (int)mc, runningHandles);
 
-	// Wait for connection to complete
 	int numfds = 0;
-	liveObserverLog("LiveObserver::connectToRelay: waiting for connection (curl_multi_wait 1000ms)...\n");
-	mc = curl_multi_wait(multi, nullptr, 0, 1000, &numfds);
-	liveObserverLog("LiveObserver::connectToRelay: curl_multi_wait returned mc=%d, numfds=%d\n", (int)mc, numfds);
+	const int kConnectTimeoutMs = 10000; // 10 second total connect timeout
+	int elapsedMs = 0;
+	const int kPollIntervalMs = 250;
+
+	while (runningHandles > 0 && mc == CURLM_OK && elapsedMs < kConnectTimeoutMs)
+	{
+		mc = curl_multi_wait(multi, nullptr, 0, kPollIntervalMs, &numfds);
+		liveObserverLog("LiveObserver::connectToRelay: curl_multi_wait returned mc=%d, numfds=%d (elapsed %dms)\n",
+			(int)mc, numfds, elapsedMs);
+		elapsedMs += kPollIntervalMs;
+		if (mc != CURLM_OK)
+			break;
+		mc = curl_multi_perform(multi, &runningHandles);
+		liveObserverLog("LiveObserver::connectToRelay: curl_multi_perform returned mc=%d, runningHandles=%d\n",
+			(int)mc, runningHandles);
+	}
 
 	// Check if connected
 	int infoRunning = 0;
@@ -740,7 +774,7 @@ bool LiveObserver::connectToRelay()
 		if (res != CURLE_OK)
 		{
 			DEBUG_LOG(("LiveObserver::connectToRelay() - connection failed: %s", curl_easy_strerror(res)));
-			liveObserverLog("LiveObserver::connectToRelay: FAILED after timeout: %s (curl code %d)\n",
+			liveObserverLog("LiveObserver::connectToRelay: FAILED: %s (curl code %d)\n",
 				curl_easy_strerror(res), (int)res);
 			curl_multi_remove_handle(multi, easy);
 			curl_easy_cleanup(easy);
@@ -750,7 +784,14 @@ bool LiveObserver::connectToRelay()
 	}
 	else
 	{
-		liveObserverLog("LiveObserver::connectToRelay: no info message from curl_multi_info_read\n");
+		// curl_multi_info_read returned NULL — the connection did NOT complete.
+		// Do NOT set m_connected = TRUE; treat this as a timeout / failure.
+		liveObserverLog("LiveObserver::connectToRelay: connection timed out (no info message after %dms, runningHandles=%d)\n",
+			elapsedMs, runningHandles);
+		curl_multi_remove_handle(multi, easy);
+		curl_easy_cleanup(easy);
+		curl_multi_cleanup(multi);
+		return false;
 	}
 
 	m_curlEasy = easy;
