@@ -1715,6 +1715,8 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				showLiveObserverDialog = TRUE;
 
 				// Static text label
+				TextData labelTextData;
+				memset(&labelTextData, 0, sizeof(labelTextData));
 				WinInstanceData labelInstData;
 				labelInstData.init();
 				labelInstData.m_style = GWS_STATIC_TEXT | GWS_MOUSE_TRACK;
@@ -1722,7 +1724,7 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				TheWindowManager->gogoGadgetStaticText(parentMainMenu,
 					WIN_STATUS_ENABLED,
 					100, 160, 280, 20,
-					&labelInstData, nullptr, nullptr, TRUE);
+					&labelInstData, &labelTextData, nullptr, TRUE);
 
 				// Text entry for game ID
 				EntryData entryData;
