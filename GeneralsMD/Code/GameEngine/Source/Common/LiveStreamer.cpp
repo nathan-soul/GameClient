@@ -479,9 +479,32 @@ void LiveStreamer::bufferMessage(GameMessage* msg, UnsignedInt frame)
 		return;
 
 	// Only serialize network messages (same filter as writeToFile)
-	if (msg->getType() <= GameMessage::MSG_BEGIN_NETWORK_MESSAGES ||
-	    msg->getType() >= GameMessage::MSG_END_NETWORK_MESSAGES)
+	GameMessage::Type msgType = msg->getType();
+	if (msgType <= GameMessage::MSG_BEGIN_NETWORK_MESSAGES ||
+	    msgType >= GameMessage::MSG_END_NETWORK_MESSAGES)
+	{
+		// DEBUG: log filtered messages every 300 frames
+		static UnsignedInt s_lastFilteredLog = 0;
+		if (frame - s_lastFilteredLog >= 300)
+		{
+			liveStreamLog("LiveStreamer::bufferMessage: FILTERED msg type=%d frame=%u\n",
+				(int)msgType, frame);
+			s_lastFilteredLog = frame;
+		}
 		return;
+	}
+
+	// DEBUG: log every 300th buffered message
+	static UnsignedInt s_lastBufferLog = 0;
+	static Int s_bufferedCount = 0;
+	s_bufferedCount++;
+	if (frame - s_lastBufferLog >= 300)
+	{
+		liveStreamLog("LiveStreamer::bufferMessage: BUFFERED type=%d frame=%u count=%d bytes_before=%d\n",
+			(int)msgType, frame, s_bufferedCount, (int)m_frameBuffer.size());
+		s_lastBufferLog = frame;
+		s_bufferedCount = 0;
+	}
 
 	serializeMessage(msg, frame, m_frameBuffer);
 }
@@ -544,6 +567,15 @@ void LiveStreamer::flushFrame(UnsignedInt frame, Int currentFps)
 	{
 		m_frameBuffer.clear();
 		return;
+	}
+
+	// Debug: log buffer size periodically
+	static UnsignedInt s_lastLoggedFrame = 0;
+	if (frame - s_lastLoggedFrame >= 300 || !m_frameBuffer.empty())
+	{
+		liveStreamLog("LiveStreamer::flushFrame: frame=%u buffer_bytes=%d\n",
+			frame, (int)m_frameBuffer.size());
+		s_lastLoggedFrame = frame;
 	}
 
 	// Throttle metadata sends — once every 5 seconds
@@ -711,60 +743,58 @@ void LiveStreamer::networkThreadFunc()
 		}
 
 		// --- Receive incoming messages ---
-		std::vector<char> recvBuffer;
-		liveStreamLog("LiveStreamer: wsRecv called, buffer state: size=%d\n", (int)recvBuffer.size());
-		if (wsRecv(recvBuffer) && !recvBuffer.empty())
+	std::vector<char> recvBuffer;
+	//liveStreamLog("LiveStreamer: wsRecv called, buffer state: size=%d\n", (int)recvBuffer.size());
+	if (wsRecv(recvBuffer) && !recvBuffer.empty())
+	{
+		//liveStreamLog("LiveStreamer: received %d bytes from relay\n", (int)recvBuffer.size());
+		// Parse incoming JSON messages
+		AsciiString incoming(recvBuffer.data(), (Int)recvBuffer.size());
+
+		if (findSubstring(incoming, "role") != -1)
 		{
-			liveStreamLog("LiveStreamer: received %d bytes from relay\n", (int)recvBuffer.size());
-			// Parse incoming JSON messages
-			// Expected: {"type":"role","role":"streamer","gameId":"..."}
-			AsciiString incoming(recvBuffer.data(), (Int)recvBuffer.size());
+			//liveStreamLog("LiveStreamer: incoming message contains 'role'\n");
+			AsciiString role;
+			AsciiString gameId;
 
-			if (findSubstring(incoming, "role") != -1)
+			Int rolePos = findSubstring(incoming, "\"role\":\"");
+			if (rolePos != -1)
 			{
-				liveStreamLog("LiveStreamer: incoming message contains 'role'\n");
-				// Extract role and gameId from JSON (simple parsing)
-				AsciiString role;
-				AsciiString gameId;
+				Int start = rolePos + 8;
+				Int end = findSubstring(incoming, "\"", start);
+				if (end != -1)
+				{
+					role = AsciiString(incoming.str() + start, end - start);
+					//liveStreamLog("LiveStreamer: parsed role=%.50s\n", role.str());
+				}
+			}
 
-				Int rolePos = findSubstring(incoming, "\"role\":\"");
-				if (rolePos != -1)
+			Int idPos = findSubstring(incoming, "\"game_id\":\"");
+			if (idPos != -1)
+			{
+				Int start = idPos + 10;
+				Int end = findSubstring(incoming, "\"", start);
+				if (end != -1)
 				{
-					Int start = rolePos + 8;
-					Int end = findSubstring(incoming, "\"", start);
-					if (end != -1)
-					{
-						role = AsciiString(incoming.str() + start, end - start);
-						liveStreamLog("LiveStreamer: parsed role=%.50s\n", role.str());
-					}
+					gameId = AsciiString(incoming.str() + start, end - start);
+					//liveStreamLog("LiveStreamer: parsed game_id=%.50s\n", gameId.str());
 				}
+			}
 
-				Int idPos = findSubstring(incoming, "\"game_id\":\"");
-				if (idPos != -1)
-				{
-					Int start = idPos + 10;
-					Int end = findSubstring(incoming, "\"", start);
-					if (end != -1)
-					{
-						gameId = AsciiString(incoming.str() + start, end - start);
-						liveStreamLog("LiveStreamer: parsed game_id=%.50s\n", gameId.str());
-					}
-				}
-
-				if (!role.isEmpty())
-				{
-					liveStreamLog("LiveStreamer: calling onRoleAssigned(%.50s, %.50s)\n", role.str(), gameId.str());
-					onRoleAssigned(role, gameId);
-				}
-				else
-				{
-					liveStreamLog("LiveStreamer: role string empty, skipping onRoleAssigned\n");
-				}
+			if (!role.isEmpty())
+			{
+				liveStreamLog("LiveStreamer: onRoleAssigned(%.50s, %.50s)\n", role.str(), gameId.str());
+				onRoleAssigned(role, gameId);
 			}
 			else
 			{
-				liveStreamLog("LiveStreamer: incoming message does not contain 'role', ignoring\n");
+				//liveStreamLog("LiveStreamer: role string empty, skipping onRoleAssigned\n");
 			}
+		}
+		else
+		{
+			//liveStreamLog("LiveStreamer: incoming message does not contain 'role', ignoring\n");
+		}
 		}
 
 		// Small sleep to avoid busy-waiting (1ms)
@@ -973,30 +1003,30 @@ bool LiveStreamer::wsRecv(std::vector<char>& outBuffer)
 {
 	if (!m_curlEasy || !m_connected)
 	{
-		liveStreamLog("LiveStreamer::wsRecv: skipped (curlEasy=%p, connected=%d)\n",
-			m_curlEasy, m_connected.load());
+		//liveStreamLog("LiveStreamer::wsRecv: skipped (curlEasy=%p, connected=%d)\n",
+		//	m_curlEasy, m_connected.load());
 		return false;
 	}
 
-	liveStreamLog("LiveStreamer::wsRecv called, buffer state: size=%d\n", (int)outBuffer.size());
+	//liveStreamLog("LiveStreamer::wsRecv called, buffer state: size=%d\n", (int)outBuffer.size());
 	char buf[4096];
 	size_t nread = 0;
 	const struct curl_ws_frame* meta = nullptr;
 
 	CURLcode res = curl_ws_recv((CURL*)m_curlEasy, buf, sizeof(buf), &nread, &meta);
-	liveStreamLog("LiveStreamer::wsRecv: curl_ws_recv returned %d, nread=%d\n", (int)res, (int)nread);
+	//liveStreamLog("LiveStreamer::wsRecv: curl_ws_recv returned %d, nread=%d\n", (int)res, (int)nread);
 
 	if (res == CURLE_OK && nread > 0)
 	{
-		liveStreamLog("LiveStreamer::wsRecv: received %d bytes, first 100 chars: %.100s\n",
-			(int)nread, buf);
+		//liveStreamLog("LiveStreamer::wsRecv: received %d bytes, first 100 chars: %.100s\n",
+		//	(int)nread, buf);
 		outBuffer.assign(buf, buf + nread);
 		return true;
 	}
 
 	if (res == CURLE_AGAIN)
 	{
-		liveStreamLog("LiveStreamer::wsRecv: CURLE_AGAIN (no data available)\n");
+		//liveStreamLog("LiveStreamer::wsRecv: CURLE_AGAIN (no data available)\n");
 		return false; // no data available
 	}
 
@@ -1018,15 +1048,15 @@ bool LiveStreamer::sendJsonMessage(const AsciiString& jsonMsg)
 {
 	if (!m_curlEasy || !m_connected)
 	{
-		liveStreamLog("LiveStreamer::sendJsonMessage: skipped (curlEasy=%p, connected=%d)\n",
-			m_curlEasy, m_connected.load());
+		//liveStreamLog("LiveStreamer::sendJsonMessage: skipped (curlEasy=%p, connected=%d)\n",
+		//	m_curlEasy, m_connected.load());
 		return false;
 	}
-	liveStreamLog("LiveStreamer::sendJsonMessage: sending %d bytes: %.200s\n",
-		(int)strlen(jsonMsg.str()), jsonMsg.str());
+	//liveStreamLog("LiveStreamer::sendJsonMessage: sending %d bytes: %.200s\n",
+	//	(int)strlen(jsonMsg.str()), jsonMsg.str());
 	size_t sent = 0;
 	CURLcode res = curl_ws_send((CURL*)m_curlEasy, jsonMsg.str(), strlen(jsonMsg.str()), &sent, 0, CURLWS_TEXT);
-	liveStreamLog("LiveStreamer::sendJsonMessage: curl_ws_send result=%d, sent=%d\n", (int)res, (int)sent);
+	//liveStreamLog("LiveStreamer::sendJsonMessage: curl_ws_send result=%d, sent=%d\n", (int)res, (int)sent);
 	if (res == CURLE_OK)
 		return true;
 	if (res == CURLE_AGAIN)

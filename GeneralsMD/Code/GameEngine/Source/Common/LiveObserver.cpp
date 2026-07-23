@@ -62,12 +62,12 @@ void liveObserverLog(const char* fmt, ...) {
 
 // ============================================================================
 // liveObserverInitLog — write initial config to live_observer_debug.log
-// Called at game start when -livewatch is specified.
+// Called at game start when observer mode is activated via the menu.
 // ============================================================================
 void liveObserverInitLog(const char* watchUrl) {
     liveObserverLog("=== Live Observer Init ===\n");
     liveObserverLog("LiveWatchUrl: %s\n", watchUrl ? watchUrl : "(empty)");
-    liveObserverLog("Observer mode activated via -livewatch\n");
+    liveObserverLog("Observer mode activated\n");
 }
 
 // ============================================================================
@@ -369,133 +369,45 @@ Bool LiveObserver::receiveGameMetadata()
 
 Bool LiveObserver::waitForFrame(UnsignedInt targetFrame)
 {
-	//liveObserverLog("LiveObserver::waitForFrame: target frame %u\n", targetFrame);
-
-	// Check if we already have the EXACT frame buffered
+	// Quick non-blocking check: is this frame already buffered?
+	// We never wait — empty frames are normal in replays.
+	// If the frame isn't here, the game just advances without it.
+	// Accept any frame <= targetFrame so we don't miss early frames.
+	std::lock_guard<std::mutex> lock(m_pendingMutex);
+	for (const LiveFrameData& fd : m_pendingFrames)
 	{
-		std::lock_guard<std::mutex> lock(m_pendingMutex);
-		//liveObserverLog("LiveObserver::waitForFrame: %d pending frames in buffer\n", (int)m_pendingFrames.size());
-		for (const LiveFrameData& fd : m_pendingFrames)
-		{
-			if (fd.frameNumber == targetFrame)
-			{
-				//liveObserverLog("LiveObserver::waitForFrame: frame %u already buffered\n", targetFrame);
-				return TRUE;
-			}
-		}
-		// Log what frames ARE available (first and last)
-		if (!m_pendingFrames.empty())
-		{
-			liveObserverLog("LiveObserver::waitForFrame: buffer has frames %u-%u, need %u\n",
-				m_pendingFrames.front().frameNumber,
-				m_pendingFrames.back().frameNumber,
-				targetFrame);
-
-			// If the buffer already has frames past our target, this frame
-			// is definitively missed — return FALSE immediately so the
-			// caller can insert a placeholder.  Waiting 5 seconds for a
-			// frame that will never arrive is what causes the game to
-			// crawl at ~2 fps instead of running at full speed.
-			if (m_pendingFrames.back().frameNumber > targetFrame)
-			{
-				liveObserverLog("LiveObserver::waitForFrame: frame %u is in the past (buffer ends at %u), returning false for placeholder\n",
-					targetFrame, m_pendingFrames.back().frameNumber);
-				return FALSE;
-			}
-		}
+		if (fd.frameNumber <= targetFrame)
+			return TRUE;
 	}
-
-	// If not connected, return false
-	if (!m_connected)
-	{
-		liveObserverLog("LiveObserver::waitForFrame: not connected, returning false\n");
-		return FALSE;
-	}
-
-	// Wait for the frame to arrive (with timeout)
-	const Int timeoutMs = 5000;
-	const Int pollIntervalMs = 10;
-	Int elapsed = 0;
-	//liveObserverLog("LiveObserver::waitForFrame: waiting for frame %u, timeout=%d ms...\n", targetFrame, timeoutMs);
-
-	while (elapsed < timeoutMs && m_connected)
-	{
-		Sleep(pollIntervalMs);
-		elapsed += pollIntervalMs;
-
-		std::lock_guard<std::mutex> lock(m_pendingMutex);
-		for (const LiveFrameData& fd : m_pendingFrames)
-		{
-			if (fd.frameNumber == targetFrame)
-			{
-				//liveObserverLog("LiveObserver::waitForFrame: frame %u received after %d ms\n", targetFrame, elapsed);
-				return TRUE;
-			}
-		}
-		// Log what's available if we've been waiting a while
-		if (!m_pendingFrames.empty() && (elapsed % 500) < pollIntervalMs)
-		{
-			//liveObserverLog("LiveObserver::waitForFrame: still waiting (elapsed=%d ms), buffer has %u-%u, need %u\n",
-			//	elapsed, m_pendingFrames.front().frameNumber,
-			//	m_pendingFrames.back().frameNumber, targetFrame);
-		}
-	}
-
-	// Timeout — might need reconnect
-	if (!m_connected)
-	{
-		DEBUG_LOG(("LiveObserver::waitForFrame() - disconnected, attempting reconnect"));
-		liveObserverLog("LiveObserver::waitForFrame: disconnected at %d ms, reconnect attempt %d\n",
-			elapsed, m_reconnectAttempts);
-		m_reconnectAttempts++;
-		if (m_reconnectAttempts <= MAX_RECONNECT_ATTEMPTS)
-		{
-			// Signal reconnect in background thread
-			// The background thread handles reconnection
-		}
-	}
-	else
-	{
-		liveObserverLog("LiveObserver::waitForFrame: timeout after %d ms (still connected, frame %u not found)\n",
-			elapsed, targetFrame);
-	}
-
 	return FALSE;
 }
-
-// ============================================================================
-// feedCommandsToCommandList — feed ONE specific frame's commands
+// feedCommandsToCommandList — replay-style frame feeding.
+// Feeds commands for the given targetFrame and discards any older
+// buffered frames (they were missed — same as a replay where
+// frames without recorded commands just advance the simulation).
 // ============================================================================
 
 void LiveObserver::feedCommandsToCommandList(UnsignedInt targetFrame)
 {
-	//liveObserverLog("LiveObserver::feedCommandsToCommandList: targetFrame=%u, currentFrame=%u\n",
-	//	targetFrame, TheGameLogic ? TheGameLogic->getFrame() : 0);
-
 	std::lock_guard<std::mutex> lock(m_pendingMutex);
-	//liveObserverLog("LiveObserver::feedCommandsToCommandList: %d pending frames\n", (int)m_pendingFrames.size());
 
-	// Find the frame matching targetFrame exactly
-	auto it = m_pendingFrames.begin();
-	while (it != m_pendingFrames.end() && it->frameNumber < targetFrame)
-		++it;
-
-	if (it == m_pendingFrames.end() || it->frameNumber != targetFrame)
+	// Process ALL frames up to and including targetFrame.
+	// Frames with commands are deserialized and appended to TheCommandList.
+	// Empty frames (no commands) are simply consumed to advance tracking.
+	// This ensures frame 0 (and any other early frames) are never silently discarded.
+	while (!m_pendingFrames.empty() && m_pendingFrames.front().frameNumber <= targetFrame)
 	{
-		liveObserverLog("LiveObserver::feedCommandsToCommandList: frame %u not found in buffer\n", targetFrame);
-		return;
-	}
+		LiveFrameData& fd = m_pendingFrames.front();
 
-	// Deserialize the binary commands for this ONE frame and append to TheCommandList
-	if (!it->serializedCommands.empty() && TheCommandList)
-	{
-		const char* data = it->serializedCommands.data();
-		Int dataSize = (Int)it->serializedCommands.size();
-		Int pos = 0;
+		if (!fd.serializedCommands.empty() && TheCommandList)
+		{
+			const char* data = fd.serializedCommands.data();
+			Int dataSize = (Int)fd.serializedCommands.size();
+			Int pos = 0;
 
-		// Binary format (same as Recorder::writeToFile / LiveStreamer::serializeFrame):
-		// [4-byte frame][4-byte type][4-byte playerIndex][1-byte numTypes][type entries...][arguments...]
-		while (pos + 13 <= dataSize)
+			// Binary format (same as Recorder::writeToFile):
+			// [4-byte frame][4-byte type][4-byte playerIndex][1-byte numTypes][type entries...][arguments...]
+			while (pos + 13 <= dataSize)
 		{
 			// Read frame number (4 bytes)
 			UnsignedInt frameNum;
@@ -566,17 +478,28 @@ void LiveObserver::feedCommandsToCommandList(UnsignedInt targetFrame)
 			deleteInstance(parser);
 
 			if (msgType != GameMessage::MSG_BEGIN_NETWORK_MESSAGES)
+			{
 				TheCommandList->appendMessage(msg);
+				liveObserverLog("LiveObserver::feedCommandsToCommandList: appended msg type=%d player=%d frame=%u\n",
+					(int)msgType, playerIndex, frameNum);
+			}
 			else
 				deleteInstance(msg);
 		}
 	}
 
-	m_lastProcessedFrame = it->frameNumber;
-	m_pendingFrames.erase(it);
+	m_lastProcessedFrame = fd.frameNumber;
+		m_pendingFrames.pop_front();
+	}
 
-	//liveObserverLog("LiveObserver::feedCommandsToCommandList: processed frame %u, %d frames remaining\n",
-	//	targetFrame, (int)m_pendingFrames.size());
+	// Log buffer state periodically
+	static UnsignedInt s_lastFeedLog = 0;
+	if (targetFrame - s_lastFeedLog >= 60 || s_lastFeedLog == 0)
+	{
+		liveObserverLog("FeedCommands: target=%u remaining=%d lastReceived=%u lastProcessed=%u\n",
+			targetFrame, (int)m_pendingFrames.size(), m_lastReceivedFrame, m_lastProcessedFrame);
+		s_lastFeedLog = targetFrame;
+	}
 }
 
 // ============================================================================
@@ -620,6 +543,15 @@ void LiveObserver::insertPlaceholderFrame(UnsignedInt frameNum)
 Int LiveObserver::getBufferDelay() const
 {
 	return (Int)m_streamerFrame - (Int)m_lastProcessedFrame;
+}
+
+Bool LiveObserver::getFirstBufferedFrame(UnsignedInt& outFrame) const
+{
+	std::lock_guard<std::mutex> lock(m_pendingMutex);
+	if (m_pendingFrames.empty())
+		return FALSE;
+	outFrame = m_pendingFrames.front().frameNumber;
+	return TRUE;
 }
 
 // ============================================================================
@@ -691,7 +623,7 @@ void LiveObserver::networkThreadFunc()
 					liveObserverLog("LiveObserver: data received after reconnect, resetting reconnect attempts\n");
 					m_reconnectAttempts = 0;
 				}
-				//liveObserverLog("LiveObserver: received %d bytes from relay\n", (int)recvBuffer.size());
+				liveObserverLog("LiveObserver: received %d bytes from relay\n", (int)recvBuffer.size());
 				AsciiString incoming(recvBuffer.data(), (Int)recvBuffer.size());
 				incomingQueue.push_back(incoming);
 				recvBuffer.clear();
@@ -708,12 +640,12 @@ void LiveObserver::networkThreadFunc()
 				// Check catchup_bulk BEFORE frame — catchup_bulk contains
 				// frame objects inside its frames array, so a substring
 				// search for "type":"frame" would match the nested ones.
-				if (findSubstring(incoming, "\"type\":\"catchup_bulk\"") != -1)
+				if (findSubstring(incoming, "catchup_bulk") != -1)
 				{
 					liveObserverLog("LiveObserver: incoming message is catchup_bulk\n");
 					parseBulkCatchup(incoming);
 				}
-				else if (findSubstring(incoming, "\"type\":\"frame\"") != -1)
+				else if (findSubstring(incoming, "\"frame\"") != -1)
 				{
 					// Per-frame logging — uncomment to debug frame flow
 					//liveObserverLog("LiveObserver: incoming message is a frame\n");
@@ -788,7 +720,7 @@ bool LiveObserver::connectToRelay()
 	AsciiString url;
 	if (m_gameId.isEmpty())
 	{
-		// Full URL was passed directly (e.g. from menu UI or -livewatch with full URL)
+		// Full URL was passed directly (e.g. from menu UI)
 		url = m_relayUrl;
 	}
 	else if (m_isReconnecting)
@@ -1028,36 +960,52 @@ bool LiveObserver::sendJsonMessage(const AsciiString& jsonMsg)
 
 void LiveObserver::parseFrameMessage(const AsciiString& json)
 {
-	// Per-frame logging — uncomment to debug individual frames
-	//liveObserverLog("LiveObserver::parseFrameMessage: processing frame JSON (len=%d)\n", (int)json.getLength());
+	// Robust JSON parsing that handles both compact (streamer) and
+	// pretty-printed (relay Python send_json) formats.
+	// Python's json.dumps inserts ": " between key and value.
 
-	// Extract frame number
-	Int framePos = findSubstring(json, "\"frame\":");
+	// --- Extract frame number ---
+	Int framePos = findSubstring(json, "\"frame\"");
 	if (framePos == -1)
 	{
 		liveObserverLog("LiveObserver::parseFrameMessage: no 'frame' field found, returning\n");
 		return;
 	}
 
-	Int start = framePos + 8;
-	Int end = findSubstring(json, ",", start);
-	if (end == -1)
-		end = findSubstring(json, "}", start);
-	if (end == -1)
-		return;
+	// Skip past "frame": or "frame" :  (handle spaces around colon)
+	Int start = framePos + 7; // skip "frame"
+	while (start < json.getLength() && json.str()[start] != ':')
+		start++;
+	start++; // skip ':'
+	while (start < json.getLength() && (json.str()[start] == ' ' || json.str()[start] == '	'))
+		start++;
+
+	Int end = start;
+	while (end < json.getLength() && json.str()[end] >= '0' && json.str()[end] <= '9')
+		end++;
 
 	AsciiString frameStr(json.str() + start, end - start);
 	UnsignedInt frameNum = (UnsignedInt)atoi(frameStr.str());
 
-	// Extract base64-encoded commands
-	Int cmdPos = findSubstring(json, "\"commands\":\"");
+	// --- Extract base64-encoded commands ---
+	Int cmdPos = findSubstring(json, "\"commands\"");
 	if (cmdPos == -1)
 		return;
 
-	start = cmdPos + 12;
-	end = findSubstring(json, "\"", start);
-	if (end == -1)
-		return;
+	// Skip past "commands": or "commands" : 
+	start = cmdPos + 10; // skip "commands"
+	while (start < json.getLength() && json.str()[start] != ':')
+		start++;
+	start++; // skip ':'
+	// Find opening quote of the value
+	while (start < json.getLength() && json.str()[start] != '"')
+		start++;
+	start++; // skip opening '"'
+
+	// Find closing quote
+	end = start;
+	while (end < json.getLength() && json.str()[end] != '"')
+		end++;
 
 	AsciiString b64Commands(json.str() + start, end - start);
 	// Per-frame logging — uncomment to debug individual frames
@@ -1076,21 +1024,27 @@ void LiveObserver::parseFrameMessage(const AsciiString& json)
 	{
 		// Push an empty frame to m_pendingFrames so waitForFrame() finds it.
 		// The game engine needs every frame number for lockstep simulation.
-		// Per-frame logging — uncomment to debug individual frames
-		//liveObserverLog("LiveObserver::parseFrameMessage: empty frame %u, buffering placeholder\n", frameNum);
+		if (frameNum % 100 == 0)
+			liveObserverLog("LiveObserver::parseFrameMessage: empty frame %u\n", frameNum);
 		deserializeFrame(frameNum, nullptr, 0);
 	}
 	else
 	{
-		// Per-frame logging — uncomment to debug individual frames
-		//liveObserverLog("LiveObserver::parseFrameMessage: decoded %d bytes for frame %u\n",
-		//	(int)decodedCommands.size(), frameNum);
+		liveObserverLog("LiveObserver::parseFrameMessage: DECODED %d bytes for frame %u\n",
+			(int)decodedCommands.size(), frameNum);
 		deserializeFrame(frameNum, decodedCommands.data(), (Int)decodedCommands.size());
 	}
 
 	// Update last received frame
 	if (frameNum > m_lastReceivedFrame)
 		m_lastReceivedFrame = frameNum;
+
+	// Periodic decode log
+	if (frameNum % 300 == 0 || decodedCommands.size() > 0)
+	{
+		liveObserverLog("ParseFrame: frame=%u decoded_bytes=%d b64_len=%d lastReceived=%u\n",
+			frameNum, (int)decodedCommands.size(), (int)b64Commands.getLength(), m_lastReceivedFrame);
+	}
 
 	// Per-frame logging — uncomment to debug individual frames
 	//DEBUG_LOG(("LiveObserver::parseFrameMessage() - frame %u, decoded %d bytes", frameNum, (Int)decodedCommands.size()));
@@ -1109,8 +1063,8 @@ void LiveObserver::parseMetadataMessage(const AsciiString& json)
 		(int)json.getLength(), json.str());
 	DEBUG_LOG(("LiveObserver::parseMetadataMessage() - %s", json.str()));
 
-	// Check message type
-	Int typePos = findSubstring(json, "\"type\":\"");
+	// Check message type — robust against ": " vs ":" formatting
+	Int typePos = findSubstring(json, "\"type\"");
 	if (typePos == -1)
 	{
 		liveObserverLog("LiveObserver::parseMetadataMessage: no 'type' field found\n");
@@ -1118,9 +1072,18 @@ void LiveObserver::parseMetadataMessage(const AsciiString& json)
 	}
 
 	AsciiString msgType;
-	Int start = typePos + 8;
-	Int end = findSubstring(json, "\"", start);
-	if (end != -1)
+	Int start = typePos + 6; // skip "type"
+	while (start < json.getLength() && json.str()[start] != ':')
+		start++;
+	start++; // skip ':'
+	while (start < json.getLength() && (json.str()[start] == ' ' || json.str()[start] == '	'))
+		start++;
+	if (start < json.getLength() && json.str()[start] == '"')
+		start++; // skip opening quote
+	Int end = start;
+	while (end < json.getLength() && json.str()[end] != '"')
+		end++;
+	if (end > start)
 		msgType = AsciiString(json.str() + start, end - start);
 
 	if (msgType == "metadata")

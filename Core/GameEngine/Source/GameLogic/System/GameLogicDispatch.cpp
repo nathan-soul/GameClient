@@ -2060,7 +2060,7 @@ void GameLogic::logicMessageDispatcher(GameMessage* msg, void* userData)
 	{
 		if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
 		{
-			liveObserverLog("GameLogicDispatch: skipping MSG_LOGIC_CRC in LIVE_OBSERVER mode\n");
+			// CRC validation is skipped in live observer mode
 			break;
 		}
 

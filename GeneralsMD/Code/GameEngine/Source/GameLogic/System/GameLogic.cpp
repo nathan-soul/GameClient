@@ -657,6 +657,9 @@ static void placeNetworkBuildingsForPlayer(Int slotNum, const GameSlot* pSlot, P
 	DEBUG_LOG(("Placing starting building at waypoint %s", waypointName.str()));
 	Object* conYard = placeObjectAtPosition(slotNum, buildingTemplateName, pos, pPlayer, pTemplate);
 
+	liveObserverLog("LIVE_OBSERVER: slot %d — CC ObjectID=%d at (%.0f,%.0f)\n",
+		slotNum, conYard ? conYard->getID() : -1, pos.x, pos.y);
+
 	if (!conYard)
 		return;
 
@@ -689,6 +692,8 @@ static void placeNetworkBuildingsForPlayer(Int slotNum, const GameSlot* pSlot, P
 			{
 				Object* unit = placeObjectAtPosition(slotNum, objName, objPos, pPlayer, pTemplate);
 				if (unit) {
+					liveObserverLog("LIVE_OBSERVER: slot %d — unit ObjectID=%d type=%s\n",
+						slotNum, unit->getID(), objName.str());
 					pPlayer->onUnitCreated(NULL, unit);
 				}
 			}
@@ -1386,6 +1391,26 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 		{
 			TheGameInfo = game = TheChallengeGameInfo;
 		}
+	}
+
+	// Log seed and per-slot overview for determinism diagnosis
+	if (TheRecorder && TheRecorder->isPlaybackMode())
+	{
+		liveObserverLog("LIVE_OBSERVER: tryStartNewGame — game=%p seed=%d slots_occupied=",
+			game, game ? game->getSeed() : -1);
+		if (game)
+		{
+			for (Int si = 0; si < MAX_SLOTS; ++si)
+			{
+				GameSlot* sl = game->getSlot(si);
+				if (sl && sl->isOccupied())
+				{
+					liveObserverLog("%d(tmpl=%d,pos=%d,color=%d) ",
+						si, sl->getPlayerTemplate(), sl->getStartPos(), sl->getColor());
+				}
+			}
+		}
+		liveObserverLog("\n");
 	}
 
 	// On a NEW game, we need to copy the superweapon restrictions from the game info to here

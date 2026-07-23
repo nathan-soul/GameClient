@@ -132,9 +132,6 @@ public:
 	AsciiString m_liveStreamRelayUrl;  ///< WebSocket URL of the relay server.
 	Bool m_liveStreamCanStream;        ///< Can this client act as the streamer?
 
-	// Live observer mode — watch a game in real-time via relay server
-	AsciiString m_liveWatchUrl;        ///< WebSocket URL for live observation (e.g. ws://192.168.2.108:8765/abc123).
-
 	Bool m_windowed;
 	Int m_xResolution;
 	Int m_yResolution;

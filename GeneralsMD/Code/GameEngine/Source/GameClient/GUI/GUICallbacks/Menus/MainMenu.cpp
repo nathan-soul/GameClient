@@ -1927,8 +1927,7 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				hideLiveObserverDialog();
 				showLiveObserverDialog = FALSE;
 
-				// Set up observer mode (same pattern as parseLiveWatch in CommandLine.cpp)
-				TheWritableGlobalData->m_liveWatchUrl = fullWatchUrl;
+				// Set up observer mode
 				TheWritableGlobalData->m_playIntro = FALSE;
 				TheWritableGlobalData->m_afterIntro = TRUE;
 				TheWritableGlobalData->m_playSizzle = FALSE;

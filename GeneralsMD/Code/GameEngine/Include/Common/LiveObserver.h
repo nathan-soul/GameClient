@@ -99,6 +99,10 @@ public:
 	/// Negative means ahead (shouldn't happen).
 	Int getBufferDelay() const;
 
+	/// Returns the first (lowest) frame number currently in the pending buffer.
+	/// Returns false if the buffer is empty.
+	Bool getFirstBufferedFrame(UnsignedInt& outFrame) const;
+
 	/// Returns true if connected to the relay server.
 	Bool isConnected() const { return m_connected.load(); }
 
@@ -190,7 +194,7 @@ LiveObserver* createLiveObserver();
 void liveObserverLog(const char* fmt, ...);
 
 /// Write initial config header to live_observer_debug.log.
-/// Called at game start when -livewatch is specified.
+/// Called at game start when observer mode is activated via the menu.
 void liveObserverInitLog(const char* watchUrl);
 
 #endif // GENERALS_ONLINE

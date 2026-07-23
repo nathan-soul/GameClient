@@ -466,31 +466,6 @@ Int parseReplay(char *args[], int num)
 	return 1;
 }
 
-#if defined(GENERALS_ONLINE)
-//============================================================================
-// Live observer mode — watch a live game via relay server WebSocket
-//============================================================================
-Int parseLiveWatch(char *args[], int num)
-{
-	if (num > 1)
-	{
-		TheWritableGlobalData->m_liveWatchUrl = args[1];
-
-		TheWritableGlobalData->m_playIntro = FALSE;
-		TheWritableGlobalData->m_afterIntro = TRUE;
-		TheWritableGlobalData->m_playSizzle = FALSE;
-		TheWritableGlobalData->m_shellMapOn = FALSE;
-
-		// Multi-instance support like replay mode
-		rts::ClientInstance::setMultiInstance(TRUE);
-		rts::ClientInstance::skipPrimaryInstance();
-
-		return 2;
-	}
-	return 1;
-}
-#endif
-
 Int parseJobs(char *args[], int num)
 {
 	if (num > 1)
@@ -1219,11 +1194,6 @@ static CommandLineParam paramsForStartup[] =
 	// URL to POST compressed stats JSON after export.
 	{ "-statsUrl", parseStatsUrl },
 
-#if defined(GENERALS_ONLINE)
-	// Live observer mode — watch a live game via relay server WebSocket.
-	// Usage: -livewatch ws://192.168.2.108:8765/abc123
-	{ "-livewatch", parseLiveWatch },
-#endif
 };
 
 // These Params are parsed during Engine Init before INI data is loaded

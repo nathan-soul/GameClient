@@ -369,7 +369,8 @@ RecorderClass::~RecorderClass() {
  */
 void RecorderClass::init() {
 	m_originalGameMode = GAME_NONE;
-	m_mode = RECORDERMODETYPE_NONE;
+	if (m_mode != RECORDERMODETYPE_LIVE_OBSERVER)
+		m_mode = RECORDERMODETYPE_NONE;
 	m_file = nullptr;
 	m_fileName.clear();
 	m_currentFilePosition = 0;
@@ -479,6 +480,31 @@ void RecorderClass::updateRecord()
 	Bool needFlush = FALSE;
 	static Int lastFrame = -1;
 	GameMessage* msg = TheCommandList->getFirstMessage();
+
+	// DEBUG: log message count every 300 frames
+	{
+		static UnsignedInt s_lastCountLog = 0;
+		UnsignedInt curFrame = TheGameLogic->getFrame();
+		Int msgCount = 0;
+		Int netMsgCount = 0;
+		GameMessage* tmp = msg;
+		while (tmp) {
+			msgCount++;
+			GameMessage::Type t = tmp->getType();
+			if (t > GameMessage::MSG_BEGIN_NETWORK_MESSAGES && t < GameMessage::MSG_END_NETWORK_MESSAGES)
+				netMsgCount++;
+			tmp = tmp->next();
+		}
+		if (curFrame - s_lastCountLog >= 300)
+		{
+			char buf[256];
+			sprintf(buf, "Recorder::updateRecord frame=%u total=%d net=%d\n", curFrame, msgCount, netMsgCount);
+			OutputDebugStringA(buf);
+			liveStreamLog("%s", buf);
+			s_lastCountLog = curFrame;
+		}
+	}
+
 	while (msg != nullptr) {
 		if (msg->getType() == GameMessage::MSG_NEW_GAME &&
 			msg->getArgument(0)->integer != GAME_SHELL &&
@@ -521,13 +547,11 @@ void RecorderClass::updateRecord()
 			}
 
 			// Buffer for live relay — same messages that writeToFile() serializes.
-			// Called on EVERY network message (not just when recording) so the
-			// relay gets the exact same binary data as the .rep file.
-#if defined(GENERALS_ONLINE)
-			if (TheLiveStreamer) {
-				TheLiveStreamer->bufferMessage(msg, TheGameLogic->getFrame());
-			}
-#endif
+		// Called on EVERY message (not just when recording) so the
+		// relay gets the exact same binary data as the .rep file.
+		if (TheLiveStreamer) {
+			TheLiveStreamer->bufferMessage(msg, TheGameLogic->getFrame());
+		}
 		}
 		msg = msg->next();
 	}
@@ -537,7 +561,6 @@ void RecorderClass::updateRecord()
 		m_file->flush();
 	}
 
-#if defined(GENERALS_ONLINE)
 	// Flush accumulated frame data to the relay.  Empty frames are still
 	// sent (placeholders) so the observer's frame counter stays in sync.
 	if (TheLiveStreamer && TheLiveStreamer->isStreaming()) {
@@ -546,7 +569,6 @@ void RecorderClass::updateRecord()
 		if (curFps <= 0) curFps = 30;
 		TheLiveStreamer->flushFrame(curFrame, curFps);
 	}
-#endif
 }
 
 /**
@@ -1691,16 +1713,26 @@ RecorderClass::CullBadCommandsResult RecorderClass::cullBadCommands() {
 
 	while (msg != nullptr) {
 		next = msg->next();
-		if ((msg->getType() > GameMessage::MSG_BEGIN_NETWORK_MESSAGES) &&
-				(msg->getType() < GameMessage::MSG_END_NETWORK_MESSAGES) &&
-				(msg->getType() != GameMessage::MSG_LOGIC_CRC)) {
 
-			deleteInstance(msg);
-		}
-		else if (msg->getType() == GameMessage::MSG_CLEAR_GAME_DATA)
+		if (msg->getType() == GameMessage::MSG_CLEAR_GAME_DATA)
 		{
 			result.hasClearGameDataMessage = true;
 		}
+		else if (m_mode != RECORDERMODETYPE_LIVE_OBSERVER)
+		{
+			// Normal playback: cull all gameplay commands inserted by the
+			// local user that shouldn't be executed during replay.
+			if ((msg->getType() > GameMessage::MSG_BEGIN_NETWORK_MESSAGES) &&
+				(msg->getType() < GameMessage::MSG_END_NETWORK_MESSAGES) &&
+				(msg->getType() != GameMessage::MSG_LOGIC_CRC))
+			{
+				deleteInstance(msg);
+			}
+		}
+		// LIVE_OBSERVER mode: keep ALL network messages.
+		// They come from the relay (not local input) and must be executed.
+		// Camera/UI input uses MSG_META_* types which are outside the
+		// network message range and are naturally not affected.
 
 		msg = next;
 	}
