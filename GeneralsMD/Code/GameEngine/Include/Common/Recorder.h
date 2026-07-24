@@ -25,6 +25,7 @@
 #pragma once
 
 #include "Common/MessageStream.h"
+#include "Common/ReplayStreamSink.h"
 #include "GameNetwork/GameInfo.h"
 
 class File;
@@ -106,6 +107,7 @@ public:
 	UnsignedInt getPlaybackFrameCount() const { return m_playbackFrameCount; }			///< valid during playback only
 	void stopPlayback();															///< Stops playback.  Its fine to call this even if not playing back a file.
 	Bool simulateReplay(AsciiString filename);
+	Bool startLiveObserverPlayback(AsciiString filename);
 #if defined(RTS_DEBUG)
 	Bool analyzeReplay( AsciiString filename );
 #endif
@@ -160,6 +162,13 @@ public:
 
 	void setArchiveEnabled(Bool enable) { m_archiveReplays = enable; } ///< Enable or disable replay archiving.
 	void stopRecording();															///< Stop recording and close m_file.
+
+	IReplayStreamSink* getStreamSink() { return m_streamSink; }
+	void setStreamSink(IReplayStreamSink* sink) { m_streamSink = sink; }
+	void setLiveStream(Bool live) { m_isLiveStream = live; }
+	void setStreamEnded(Bool ended) { m_streamEnded = ended; }
+	Bool isLiveStream() const { return m_isLiveStream; }
+
 protected:
 	void startRecording(GameDifficulty diff, Int originalGameMode, Int rankPoints, Int maxFPS);					///< Start recording to m_file.
 	void writeToFile(GameMessage *msg);								///< Write this GameMessage to m_file.
@@ -200,6 +209,10 @@ protected:
 	Int m_originalGameMode; // valid in replays
 
 	UnsignedInt m_nextFrame;												///< The Frame that the next message is to be executed on.  This can be -1.
+
+	IReplayStreamSink* m_streamSink;
+	Bool m_isLiveStream;
+	Bool m_streamEnded;
 };
 
 extern RecorderClass *TheRecorder;

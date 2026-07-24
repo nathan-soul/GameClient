@@ -21,30 +21,21 @@
 #if defined(GENERALS_ONLINE)
 
 #include "Common/LiveObserver.h"
-#include "Common/MessageStream.h"
-#include "Common/GlobalData.h"
-#include "Common/PlayerList.h"
-#include "Common/Player.h"
-#include "Common/GameEngine.h"
-#include "GameLogic/GameLogic.h"
-#include "Common/AsciiString.h"
 #include "Common/Recorder.h"
-
-#include "GameNetwork/GameMessageParser.h"
+#include "Common/GlobalData.h"
+#include "Common/FileSystem.h"
+#include "Common/file.h"
 
 #include "GameNetwork/GeneralsOnline/Vendor/libcurl/curl.h"
 #include "GameNetwork/GeneralsOnline/Vendor/libcurl/multi.h"
 #include "GameNetwork/GeneralsOnline/Vendor/libcurl/websockets.h"
 
-#include <algorithm>
 #include <cstdio>
 #include <cstdarg>
-
-extern GameLogic* TheGameLogic;
-extern CommandList* TheCommandList;
+#include <cstring>
 
 // ============================================================================
-// liveObserverLog — write diagnostic messages to live_observer_debug.log
+// liveObserverLog
 // ============================================================================
 void liveObserverLog(const char* fmt, ...) {
     static FILE* logFile = NULL;
@@ -60,10 +51,6 @@ void liveObserverLog(const char* fmt, ...) {
     }
 }
 
-// ============================================================================
-// liveObserverInitLog — write initial config to live_observer_debug.log
-// Called at game start when observer mode is activated via the menu.
-// ============================================================================
 void liveObserverInitLog(const char* watchUrl) {
     liveObserverLog("=== Live Observer Init ===\n");
     liveObserverLog("LiveWatchUrl: %s\n", watchUrl ? watchUrl : "(empty)");
@@ -71,1225 +58,434 @@ void liveObserverInitLog(const char* watchUrl) {
 }
 
 // ============================================================================
-// findSubstring — helper: find pattern in AsciiString, return index or -1
-// AsciiString::find(char) only accepts a single character. For substring
-// searches we use strstr on the raw buffer and convert to an Int offset.
+// LiveObserver
 // ============================================================================
-static Int findSubstring(const AsciiString& str, const char* pattern, Int startPos = 0)
-{
-	const char* haystack = str.str() + startPos;
-	const char* result = strstr(haystack, pattern);
-	if (!result)
-		return -1;
-	return (Int)(result - str.str());
-}
-
-// ============================================================================
-// base64Decode — decode base64 string to binary data
-// ============================================================================
-
-static int base64CharToVal(char c)
-{
-	if (c >= 'A' && c <= 'Z') return c - 'A';
-	if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-	if (c >= '0' && c <= '9') return c - '0' + 52;
-	if (c == '+') return 62;
-	if (c == '/') return 63;
-	return -1;
-}
-
-static void base64Decode(const char* encoded, size_t len, std::vector<char>& out)
-{
-	out.clear();
-	int val = 0, bits = -8;
-	for (size_t i = 0; i < len; i++)
-	{
-		char c = encoded[i];
-		if (c == '=' || c == ' ' || c == '\n' || c == '\r')
-			continue;
-		int v = base64CharToVal(c);
-		if (v < 0) continue;
-		val = (val << 6) + v;
-		bits += 6;
-		if (bits >= 0)
-		{
-			out.push_back((char)((val >> bits) & 0xff));
-			bits -= 8;
-		}
-	}
-}
-// ============================================================================
-// readArgumentFromBuffer — read a single argument from a binary buffer
-// Same switch as Recorder::readArgument(), but reads from memory instead of file.
-// ============================================================================
-
-static void readArgumentFromBuffer(GameMessageArgumentDataType type, GameMessage* msg, const char* data, Int dataSize, Int& pos)
-{
-	switch (type) {
-	case ARGUMENTDATATYPE_INTEGER: {
-		if (pos + (Int)sizeof(Int) > dataSize) return;
-		Int val;
-		memcpy(&val, data + pos, sizeof(val));
-		pos += sizeof(val);
-		msg->appendIntegerArgument(val);
-		break;
-	}
-	case ARGUMENTDATATYPE_REAL: {
-		if (pos + (Int)sizeof(Real) > dataSize) return;
-		Real val;
-		memcpy(&val, data + pos, sizeof(val));
-		pos += sizeof(val);
-		msg->appendRealArgument(val);
-		break;
-	}
-	case ARGUMENTDATATYPE_BOOLEAN: {
-		if (pos + (Int)sizeof(Bool) > dataSize) return;
-		Bool val;
-		memcpy(&val, data + pos, sizeof(val));
-		pos += sizeof(val);
-		msg->appendBooleanArgument(val);
-		break;
-	}
-	case ARGUMENTDATATYPE_OBJECTID: {
-		if (pos + (Int)sizeof(ObjectID) > dataSize) return;
-		ObjectID val;
-		memcpy(&val, data + pos, sizeof(val));
-		pos += sizeof(val);
-		msg->appendObjectIDArgument(val);
-		break;
-	}
-	case ARGUMENTDATATYPE_DRAWABLEID: {
-		if (pos + (Int)sizeof(DrawableID) > dataSize) return;
-		DrawableID val;
-		memcpy(&val, data + pos, sizeof(val));
-		pos += sizeof(val);
-		msg->appendDrawableIDArgument(val);
-		break;
-	}
-	case ARGUMENTDATATYPE_TEAMID: {
-		if (pos + (Int)sizeof(UnsignedInt) > dataSize) return;
-		UnsignedInt val;
-		memcpy(&val, data + pos, sizeof(val));
-		pos += sizeof(val);
-		msg->appendTeamIDArgument(val);
-		break;
-	}
-	case ARGUMENTDATATYPE_LOCATION: {
-		if (pos + (Int)sizeof(Coord3D) > dataSize) return;
-		Coord3D val;
-		memcpy(&val, data + pos, sizeof(val));
-		pos += sizeof(val);
-		msg->appendLocationArgument(val);
-		break;
-	}
-	case ARGUMENTDATATYPE_PIXEL: {
-		if (pos + (Int)sizeof(ICoord2D) > dataSize) return;
-		ICoord2D val;
-		memcpy(&val, data + pos, sizeof(val));
-		pos += sizeof(val);
-		msg->appendPixelArgument(val);
-		break;
-	}
-	case ARGUMENTDATATYPE_PIXELREGION: {
-		if (pos + (Int)sizeof(IRegion2D) > dataSize) return;
-		IRegion2D val;
-		memcpy(&val, data + pos, sizeof(val));
-		pos += sizeof(val);
-		msg->appendPixelRegionArgument(val);
-		break;
-	}
-	case ARGUMENTDATATYPE_TIMESTAMP: {
-		if (pos + (Int)sizeof(UnsignedInt) > dataSize) return;
-		UnsignedInt val;
-		memcpy(&val, data + pos, sizeof(val));
-		pos += sizeof(val);
-		msg->appendTimestampArgument(val);
-		break;
-	}
-	case ARGUMENTDATATYPE_WIDECHAR: {
-		if (pos + (Int)sizeof(WideChar) > dataSize) return;
-		WideChar val;
-		memcpy(&val, data + pos, sizeof(val));
-		pos += sizeof(val);
-		msg->appendWideCharArgument(val);
-		break;
-	}
-	default:
-		break;
-	}
-}
-
-// ============================================================================
-// Singleton
-// ============================================================================
-
 LiveObserver* TheLiveObserver = nullptr;
 
-LiveObserver* createLiveObserver()
-{
-	return MSGNEW("LiveObserver") LiveObserver();
-}
-
-// ============================================================================
-// Constructor / Destructor
-// ============================================================================
-
 LiveObserver::LiveObserver()
-	: m_connected(FALSE)
-	, m_shouldRun(FALSE)
-	, m_metadataReceived(FALSE)
-	, m_lastReceivedFrame(0)
-	, m_lastProcessedFrame(0)
-	, m_streamerFrame(0)
-	, m_streamerFps(0)
-	, m_curlEasy(nullptr)
-	, m_curlMulti(nullptr)
-	, m_reconnectAttempts(0)
-	, m_isReconnecting(false)
+    : m_connected(false)
+    , m_shouldRun(false)
+    , m_headerReceived(false)
+    , m_streamEnded(false)
+    , m_liveFile(nullptr)
+    , m_curlEasy(nullptr)
+    , m_curlMulti(nullptr)
 {
 }
 
 LiveObserver::~LiveObserver()
 {
-	close();
+    close();
 }
 
-// ============================================================================
-// connect — set relay URL/game ID and start the background network thread
-// ============================================================================
-
-void LiveObserver::connect(const AsciiString& relayUrl, const AsciiString& gameId)
+LiveObserver* createLiveObserver()
 {
-	if (m_shouldRun)
-	{
-		liveObserverLog("LiveObserver::connect: already running, skipping\n");
-		return;
-	}
-
-	m_relayUrl = relayUrl;
-	m_gameId = gameId;
-	m_shouldRun = TRUE;
-	m_connected = FALSE;
-	m_metadataReceived = FALSE;
-	m_lastReceivedFrame = 0;
-	m_lastProcessedFrame = 0;
-	m_reconnectAttempts = 0;
-
-	DEBUG_LOG(("LiveObserver::connect() - connecting to %s game %s", relayUrl.str(), gameId.str()));
-	liveObserverLog("LiveObserver::connect: relay_url=%.200s\n", relayUrl.str());
-	liveObserverLog("LiveObserver::connect: game_id=%.200s\n", gameId.str());
-	liveObserverLog("LiveObserver::connect: m_shouldRun=%d, m_connected=%d, m_metadataReceived=%d\n",
-		m_shouldRun.load(), m_connected.load(), m_metadataReceived.load());
-
-	m_networkThread = std::thread(&LiveObserver::networkThreadFunc, this);
-	liveObserverLog("LiveObserver::connect: network thread launched (id=%lu)\n",
-		(unsigned long)m_networkThread.native_handle());
+    return new LiveObserver();
 }
 
 // ============================================================================
-// close — shut down the background thread
+// Network setup
 // ============================================================================
+
+void LiveObserver::connect(const AsciiString& watchUrl)
+{
+    m_relayUrl = watchUrl;
+    m_shouldRun.store(true);
+
+    // Extract game ID from the watch URL (everything after "/watch/")
+    {
+        const char* urlStr = watchUrl.str();
+        const char* watchPos = strstr(urlStr, "/watch/");
+        if (watchPos)
+        {
+            const char* gameIdStart = watchPos + 7; // skip "/watch/"
+            m_gameId.set(gameIdStart);
+            m_liveFilename.format("%s_live.rep", m_gameId.str());
+        }
+        else
+        {
+            m_gameId = "unknown";
+            m_liveFilename = "_live.rep";
+        }
+    }
+
+    liveObserverLog("LiveObserver::connect to %s (game=%s, file=%s)\n",
+        watchUrl.str(), m_gameId.str(), m_liveFilename.str());
+
+    m_networkThread = std::thread(&LiveObserver::networkThreadFunc, this);
+}
 
 void LiveObserver::close()
 {
-	if (!m_shouldRun)
-	{
-		liveObserverLog("LiveObserver::close: not running, skipping\n");
-		return;
-	}
+    m_shouldRun.store(false);
 
-	liveObserverLog("LiveObserver::close: shutting down (connected=%d, metadataReceived=%d, lastFrame=%u)\n",
-		m_connected.load(), m_metadataReceived.load(), m_lastProcessedFrame);
-	m_shouldRun = FALSE;
-	m_connected = FALSE;
+    if (m_networkThread.joinable())
+        m_networkThread.join();
 
-	if (m_networkThread.joinable())
-	{
-		liveObserverLog("LiveObserver::close: joining network thread...\n");
-		m_networkThread.join();
-		liveObserverLog("LiveObserver::close: network thread joined\n");
-	}
+    if (m_liveFile)
+    {
+        m_liveFile->close();
+        m_liveFile = nullptr;
+    }
 
-	// Clear any pending frames
-	{
-		std::lock_guard<std::mutex> lock(m_pendingMutex);
-		liveObserverLog("LiveObserver::close: clearing %d pending frames\n", (int)m_pendingFrames.size());
-		m_pendingFrames.clear();
-	}
-
-	DEBUG_LOG(("LiveObserver::close() - shut down"));
-	liveObserverLog("LiveObserver::close: done\n");
+    m_connected.store(false);
+    m_headerReceived.store(false);
+    m_streamEnded.store(false);
 }
 
 // ============================================================================
-// receiveGameMetadata — block until metadata arrives from the relay
+// Live file management
 // ============================================================================
 
-Bool LiveObserver::receiveGameMetadata()
+bool LiveObserver::openLiveFile()
 {
-	// Wait up to 10 seconds for metadata
-	const Int timeoutMs = 10000;
-	const Int pollIntervalMs = 50;
-	Int elapsed = 0;
+    AsciiString filepath = RecorderClass::getReplayDir();
+    filepath.concat(m_liveFilename);
 
-	liveObserverLog("LiveObserver::receiveGameMetadata: waiting for metadata (timeout=%d ms)...\n", timeoutMs);
+    m_liveFilePath = filepath;
+    m_liveFile = TheFileSystem->openFile(filepath.str(), File::WRITE | File::BINARY);
+    if (!m_liveFile)
+    {
+        liveObserverLog("LiveObserver::openLiveFile FAILED for %s\n", filepath.str());
+        return false;
+    }
 
-	// Phase 1: wait for connection (up to 5s) — connect() spawns the network
-	// thread which sets m_connected = TRUE after WebSocket handshake completes
-	const Int connectTimeoutMs = 5000;
-	while (!m_connected && elapsed < connectTimeoutMs)
-	{
-		Sleep(pollIntervalMs);
-		elapsed += pollIntervalMs;
-	}
-
-	// Phase 2: wait for metadata with remaining time
-	while (!m_metadataReceived && m_connected && elapsed < timeoutMs)
-	{
-		Sleep(pollIntervalMs);
-		elapsed += pollIntervalMs;
-	}
-
-	if (m_metadataReceived)
-	{
-		liveObserverLog("LiveObserver::receiveGameMetadata: metadata received in %d ms\n", elapsed);
-		DEBUG_LOG(("LiveObserver::receiveGameMetadata() - metadata received"));
-		return TRUE;
-	}
-
-	liveObserverLog("LiveObserver::receiveGameMetadata: timeout after %d ms (connected=%d, metadataReceived=%d)\n",
-		elapsed, m_connected.load(), m_metadataReceived.load());
-	DEBUG_LOG(("LiveObserver::receiveGameMetadata() - timeout or disconnect"));
-	return FALSE;
+    liveObserverLog("LiveObserver::openLiveFile opened %s\n", filepath.str());
+    return true;
 }
 
 // ============================================================================
-// waitForFrame — block until the target frame is available
+// Frame handler
 // ============================================================================
 
-Bool LiveObserver::waitForFrame(UnsignedInt targetFrame)
+void LiveObserver::handleFrame(unsigned char type, const char* payload, size_t len)
 {
-	// Quick non-blocking check: is this frame already buffered?
-	// We never wait — empty frames are normal in replays.
-	// If the frame isn't here, the game just advances without it.
-	// Accept any frame <= targetFrame so we don't miss early frames.
-	std::lock_guard<std::mutex> lock(m_pendingMutex);
-	for (const LiveFrameData& fd : m_pendingFrames)
-	{
-		if (fd.frameNumber <= targetFrame)
-			return TRUE;
-	}
-	return FALSE;
+    switch (type)
+    {
+    case 1: // LIVE_MSG_HEADER
+    {
+        if (!openLiveFile())
+            return;
+
+        // Write header bytes
+        if (len > 0)
+            m_liveFile->write(payload, len);
+        m_liveFile->flush();
+
+        // Close write handle so the Recorder can open the file for reading.
+        // Do NOT reopen here — the Recorder needs exclusive access to read
+        // the header during playbackFile().  Reopen lazily when the first
+        // BODY or PATCH frame arrives.
+        m_liveFile->close();
+        m_liveFile = nullptr;
+
+		m_headerReceived.store(true);
+		liveObserverLog("LiveObserver: HEADER received (%zu bytes), ready for playback\n", len);
+        break;
+    }
+
+    case 2: // LIVE_MSG_PATCH
+    {
+        if (len < 8)
+            return;
+
+        // Lazy-open the file for read/write (no truncation)
+        if (!m_liveFile)
+        {
+            m_liveFile = TheFileSystem->openFile(m_liveFilePath.str(), File::READWRITE | File::BINARY);
+        }
+        if (!m_liveFile)
+            return;
+
+        // Parse offset and data length from payload
+        const unsigned char* p = (const unsigned char*)payload;
+        Int offset = (Int)p[0] | ((Int)p[1] << 8) | ((Int)p[2] << 16) | ((Int)p[3] << 24);
+        Int dataLen = (Int)p[4] | ((Int)p[5] << 8) | ((Int)p[6] << 16) | ((Int)p[7] << 24);
+
+        if (dataLen <= 0 || (size_t)(8 + dataLen) > len)
+            return;
+
+        Int fileSize = (Int)m_liveFile->size();
+        Int seekRes = m_liveFile->seek(offset, File::seekMode::START);
+        if (seekRes == offset)
+        {
+            m_liveFile->write(payload + 8, dataLen);
+            m_liveFile->seek(fileSize, File::seekMode::START);
+        }
+
+		liveObserverLog("LiveObserver: PATCH offset=%d size=%d fileSize=%d\n", offset, dataLen, (int)m_liveFile->size());
+        break;
+    }
+
+    case 3: // LIVE_MSG_BODY
+    {
+        // BODY payload: [8B offset uint64 LE][data]
+        if (len < 8)
+        {
+            liveObserverLog("LiveObserver: BODY frame too short (len=%d)\n", (int)len);
+            return;
+        }
+
+        const unsigned char* p = (const unsigned char*)payload;
+        // Read 8-byte absolute file offset (little-endian)
+        Int offset = (Int)(p[0] | ((unsigned long long)p[1] << 8)
+            | ((unsigned long long)p[2] << 16) | ((unsigned long long)p[3] << 24)
+            | ((unsigned long long)p[4] << 32) | ((unsigned long long)p[5] << 40)
+            | ((unsigned long long)p[6] << 48) | ((unsigned long long)p[7] << 56));
+        size_t dataLen = len - 8;
+        if (dataLen == 0)
+        {
+            liveObserverLog("LiveObserver: BODY frame with zero dataLen at offset=%d\n", offset);
+            return;
+        }
+
+        // Lazy-open the file for read/write (no truncation, file exists from HEADER handler)
+        if (!m_liveFile)
+        {
+            m_liveFile = TheFileSystem->openFile(m_liveFilePath.str(), File::READWRITE | File::BINARY);
+        }
+        if (!m_liveFile)
+        {
+            liveObserverLog("LiveObserver: BODY openFile FAILED for %s\n", m_liveFilePath.str());
+            return;
+        }
+
+        // Seek to the specified offset and write the data
+        m_liveFile->seek(offset, File::seekMode::START);
+        m_liveFile->write(payload + 8, (Int)dataLen);
+        m_liveFile->flush();
+        liveObserverLog("LiveObserver: BODY written offset=%d dataLen=%d fileSize=%d\n", offset, (int)dataLen, (int)m_liveFile->size());
+        break;
+    }
+
+    case 4: // LIVE_MSG_END
+    {
+        liveObserverLog("LiveObserver: END received\n");
+        m_streamEnded.store(true);
+
+        if (TheRecorder)
+            TheRecorder->setStreamEnded(TRUE);
+
+        if (m_liveFile)
+        {
+            m_liveFile->flush();
+            m_liveFile->close();
+            m_liveFile = nullptr;
+        }
+        break;
+    }
+
+    case 6: // LIVE_MSG_ERROR
+    {
+        AsciiString errMsg;
+        if (len > 0)
+            errMsg.set(payload, len);
+        liveObserverLog("LiveObserver: ERROR from relay: %s\n", errMsg.str());
+        m_streamEnded.store(true);
+        if (TheRecorder)
+            TheRecorder->setStreamEnded(TRUE);
+        break;
+    }
+
+    default:
+        break;
+    }
 }
-// feedCommandsToCommandList — replay-style frame feeding.
-// Feeds commands for the given targetFrame and discards any older
-// buffered frames (they were missed — same as a replay where
-// frames without recorded commands just advance the simulation).
+
+// ============================================================================
+// WebSocket I/O
 // ============================================================================
 
-void LiveObserver::feedCommandsToCommandList(UnsignedInt targetFrame)
+bool LiveObserver::wsSendBinary(const unsigned char* data, size_t len)
 {
-	std::lock_guard<std::mutex> lock(m_pendingMutex);
+    if (!m_curlEasy)
+        return false;
 
-	// Process ALL frames up to and including targetFrame.
-	// Frames with commands are deserialized and appended to TheCommandList.
-	// Empty frames (no commands) are simply consumed to advance tracking.
-	// This ensures frame 0 (and any other early frames) are never silently discarded.
-	while (!m_pendingFrames.empty() && m_pendingFrames.front().frameNumber <= targetFrame)
-	{
-		LiveFrameData& fd = m_pendingFrames.front();
-
-		if (!fd.serializedCommands.empty() && TheCommandList)
-		{
-			const char* data = fd.serializedCommands.data();
-			Int dataSize = (Int)fd.serializedCommands.size();
-			Int pos = 0;
-
-			// Binary format (same as Recorder::writeToFile):
-			// [4-byte frame][4-byte type][4-byte playerIndex][1-byte numTypes][type entries...][arguments...]
-			while (pos + 13 <= dataSize)
-		{
-			// Read frame number (4 bytes)
-			UnsignedInt frameNum;
-			memcpy(&frameNum, data + pos, sizeof(frameNum));
-			pos += sizeof(frameNum);
-
-			// Read message type (4 bytes)
-			GameMessage::Type msgType;
-			memcpy(&msgType, data + pos, sizeof(msgType));
-			pos += sizeof(msgType);
-
-			// Read player index (4 bytes)
-			Int playerIndex;
-			memcpy(&playerIndex, data + pos, sizeof(playerIndex));
-			pos += sizeof(playerIndex);
-
-			// Read number of argument type entries (1 byte)
-			if (pos >= dataSize)
-				break;
-			UnsignedByte numTypes = (UnsignedByte)data[pos];
-			pos += sizeof(numTypes);
-
-			if (pos + numTypes * 2 > dataSize)
-				break;
-
-			GameMessageParser* parser = newInstance(GameMessageParser)();
-			Int totalArgs = 0;
-			for (UnsignedByte i = 0; i < numTypes; ++i)
-			{
-				UnsignedByte argType = (UnsignedByte)data[pos];
-				pos += 1;
-				UnsignedByte argc = (UnsignedByte)data[pos];
-				pos += 1;
-				parser->addArgType((GameMessageArgumentDataType)argType, argc);
-				totalArgs += argc;
-			}
-
-			GameMessage* msg = newInstance(GameMessage)(msgType);
-			msg->friend_setPlayerIndex(playerIndex);
-
-			GameMessageParserArgumentType* parserArgType = parser->getFirstArgumentType();
-			GameMessageArgumentDataType lastType = ARGUMENTDATATYPE_UNKNOWN;
-			Int argsLeft = 0;
-			if (parserArgType != nullptr)
-			{
-				lastType = parserArgType->getType();
-				argsLeft = parserArgType->getArgCount();
-			}
-			for (Int j = 0; j < totalArgs; ++j)
-			{
-				if (pos >= dataSize)
-					break;
-				readArgumentFromBuffer(lastType, msg, data, dataSize, pos);
-
-				--argsLeft;
-				if (argsLeft == 0)
-				{
-					if (parserArgType != nullptr)
-						parserArgType = parserArgType->getNext();
-					if (parserArgType != nullptr)
-					{
-						argsLeft = parserArgType->getArgCount();
-						lastType = parserArgType->getType();
-					}
-				}
-			}
-
-			deleteInstance(parser);
-
-			if (msgType != GameMessage::MSG_BEGIN_NETWORK_MESSAGES)
-			{
-				TheCommandList->appendMessage(msg);
-				liveObserverLog("LiveObserver::feedCommandsToCommandList: appended msg type=%d player=%d frame=%u\n",
-					(int)msgType, playerIndex, frameNum);
-			}
-			else
-				deleteInstance(msg);
-		}
-	}
-
-	m_lastProcessedFrame = fd.frameNumber;
-		m_pendingFrames.pop_front();
-	}
-
-	// Log buffer state periodically
-	static UnsignedInt s_lastFeedLog = 0;
-	if (targetFrame - s_lastFeedLog >= 60 || s_lastFeedLog == 0)
-	{
-		liveObserverLog("FeedCommands: target=%u remaining=%d lastReceived=%u lastProcessed=%u\n",
-			targetFrame, (int)m_pendingFrames.size(), m_lastReceivedFrame, m_lastProcessedFrame);
-		s_lastFeedLog = targetFrame;
-	}
+    size_t sent = 0;
+    CURLcode rc = curl_ws_send(m_curlEasy, data, len, &sent, 0, CURLWS_BINARY);
+    return (rc == CURLE_OK && sent == len);
 }
 
-// ============================================================================
-// insertPlaceholderFrame — create an empty frame to fill a gap
-// ============================================================================
-
-void LiveObserver::insertPlaceholderFrame(UnsignedInt frameNum)
+bool LiveObserver::wsRecv(std::vector<char>& outBuffer)
 {
-	//liveObserverLog("LiveObserver::insertPlaceholderFrame: frame %u\n", frameNum);
+    if (!m_curlEasy)
+        return false;
 
-	LiveFrameData fd;
-	fd.frameNumber = frameNum;
-	// serializedCommands stays empty — no commands for this frame
+    outBuffer.clear();
+    outBuffer.resize(65536);
 
-	std::lock_guard<std::mutex> lock(m_pendingMutex);
+    const struct curl_ws_frame* meta = nullptr;
+    size_t nread = 0;
+    CURLcode rc = curl_ws_recv(m_curlEasy, outBuffer.data(), outBuffer.size(), &nread, &meta);
+    if (rc == CURLE_AGAIN)
+    {
+        outBuffer.clear();
+        return false;
+    }
+    if (rc != CURLE_OK)
+    {
+        liveObserverLog("LiveObserver::wsRecv error: %d\n", (int)rc);
+        outBuffer.clear();
+        return false;
+    }
 
-	// Insert in sorted order
-	auto it = m_pendingFrames.begin();
-	while (it != m_pendingFrames.end() && it->frameNumber < frameNum)
-		++it;
-
-	if (it != m_pendingFrames.end() && it->frameNumber == frameNum)
-	{
-		//liveObserverLog("LiveObserver::insertPlaceholderFrame: frame %u already exists, skipping\n", frameNum);
-		return;
-	}
-
-	m_pendingFrames.insert(it, fd);
-	//liveObserverLog("LiveObserver::insertPlaceholderFrame: inserted placeholder for frame %u, %d pending\n",
-	//	frameNum, (int)m_pendingFrames.size());
-
-	// Update tracking
-	if (frameNum > m_lastReceivedFrame)
-		m_lastReceivedFrame = frameNum;
+    outBuffer.resize(nread);
+    return nread > 0;
 }
 
-// ============================================================================
-// getBufferDelay — frames behind the streamer
-// ============================================================================
-
-Int LiveObserver::getBufferDelay() const
+bool LiveObserver::connectToRelay()
 {
-	return (Int)m_streamerFrame - (Int)m_lastProcessedFrame;
-}
+    if (m_curlEasy)
+    {
+        curl_easy_cleanup((CURL*)m_curlEasy);
+        m_curlEasy = nullptr;
+    }
+    if (m_curlMulti)
+    {
+        curl_multi_cleanup((CURLM*)m_curlMulti);
+        m_curlMulti = nullptr;
+    }
 
-Bool LiveObserver::getFirstBufferedFrame(UnsignedInt& outFrame) const
-{
-	std::lock_guard<std::mutex> lock(m_pendingMutex);
-	if (m_pendingFrames.empty())
-		return FALSE;
-	outFrame = m_pendingFrames.front().frameNumber;
-	return TRUE;
+    CURL* easy = curl_easy_init();
+    if (!easy)
+    {
+        liveObserverLog("LiveObserver::connectToRelay curl_easy_init failed\n");
+        return false;
+    }
+
+    curl_easy_setopt(easy, CURLOPT_URL, m_relayUrl.str());
+    curl_easy_setopt(easy, CURLOPT_CONNECT_ONLY, 2L);
+
+    CURLM* multi = curl_multi_init();
+    if (!multi)
+    {
+        curl_easy_cleanup(easy);
+        liveObserverLog("LiveObserver::connectToRelay curl_multi_init failed\n");
+        return false;
+    }
+
+    curl_multi_add_handle(multi, easy);
+
+    int stillRunning = 0;
+    CURLMcode mc = curl_multi_perform(multi, &stillRunning);
+    while (mc == CURLM_OK && stillRunning > 0)
+    {
+        mc = curl_multi_poll(multi, NULL, 0, 1000, NULL);
+        if (mc == CURLM_OK)
+            mc = curl_multi_perform(multi, &stillRunning);
+    }
+
+    if (mc != CURLM_OK)
+    {
+        liveObserverLog("LiveObserver::connectToRelay failed: %d\n", (int)mc);
+        curl_multi_remove_handle(multi, easy);
+        curl_multi_cleanup(multi);
+        curl_easy_cleanup(easy);
+        return false;
+    }
+
+    int infoRunning = 0;
+    CURLMsg* infoMsg = curl_multi_info_read(multi, &infoRunning);
+    if (!infoMsg || infoMsg->data.result != CURLE_OK)
+    {
+        int result = infoMsg ? (int)infoMsg->data.result : -1;
+        liveObserverLog("LiveObserver::connectToRelay: handshake failed (result=%d)\n", result);
+        curl_multi_remove_handle(multi, easy);
+        curl_multi_cleanup(multi);
+        curl_easy_cleanup(easy);
+        return false;
+    }
+
+    m_curlEasy = easy;
+    m_curlMulti = multi;
+    m_connected.store(true);
+    liveObserverLog("LiveObserver::connectToRelay connected to %s\n", m_relayUrl.str());
+    return true;
 }
 
 // ============================================================================
-// networkThreadFunc — background thread for all network I/O
+// Background network thread
 // ============================================================================
 
 void LiveObserver::networkThreadFunc()
 {
-	DEBUG_LOG(("LiveObserver::networkThreadFunc() - thread started"));
-	liveObserverLog("LiveObserver: network thread started\n");
-
-	// Initialize CURL
-	liveObserverLog("LiveObserver: curl_global_init(CURL_GLOBAL_DEFAULT)\n");
-	curl_global_init(CURL_GLOBAL_DEFAULT);
-
-	while (m_shouldRun)
-	{
-		if (!m_connected)
-		{
-			liveObserverLog("LiveObserver: not connected, attempting reconnect (attempt %d)\n", m_reconnectAttempts + 1);
-			// Try to connect or reconnect
-			if (reconnectToRelay())
-			{
-				// Do NOT reset m_reconnectAttempts here — wait until we receive
-				// real data from the relay (the old connectToRelay could return
-				// true from a phantom TCP connection before the WebSocket handshake
-				// completed).  Reset happens after a successful wsRecv below.
-				liveObserverLog("LiveObserver: reconnected successfully, waiting for data to verify\n");
-
-				// Send a reconnect message with our last known frame
-				if (m_lastProcessedFrame > 0)
-				{
-					AsciiString json;
-					json.format(
-						"{\"type\":\"reconnect\",\"game_id\":\"%s\",\"last_frame\":%u}",
-						m_gameId.str(), m_lastProcessedFrame);
-					liveObserverLog("LiveObserver: sending reconnect message (last_frame=%u)\n", m_lastProcessedFrame);
-					sendJsonMessage(json);
-				}
-			}
-			else
-			{
-				liveObserverLog("LiveObserver: reconnect FAILED (attempt %d)\n", m_reconnectAttempts + 1);
-				m_reconnectAttempts++;
-				if (m_reconnectAttempts > MAX_RECONNECT_ATTEMPTS)
-				{
-					DEBUG_LOG(("LiveObserver::networkThreadFunc() - max reconnect attempts reached"));
-					liveObserverLog("LiveObserver: MAX RECONNECT ATTEMPTS reached, thread exiting\n");
-					break;
-				}
-				liveObserverLog("LiveObserver: sleeping %d ms before next reconnect attempt\n", RECONNECT_DELAY_MS);
-				Sleep(RECONNECT_DELAY_MS);
-				continue;
-			}
-		}
-
-		// --- Drain ALL available incoming messages first, then process them ---
-		// Parsing (especially catchup_bulk) can block for seconds. If we parse
-		// before draining, the WebSocket receive buffer fills up and frames are lost.
-		std::vector<AsciiString> incomingQueue;
-
-		// Drain loop: read as long as data is available (non-blocking via CURLE_AGAIN)
-		{
-			std::vector<char> recvBuffer;
-			while (wsRecv(recvBuffer) && !recvBuffer.empty())
-			{
-				if (m_reconnectAttempts > 0)
-				{
-					liveObserverLog("LiveObserver: data received after reconnect, resetting reconnect attempts\n");
-					m_reconnectAttempts = 0;
-				}
-				liveObserverLog("LiveObserver: received %d bytes from relay\n", (int)recvBuffer.size());
-				AsciiString incoming(recvBuffer.data(), (Int)recvBuffer.size());
-				incomingQueue.push_back(incoming);
-				recvBuffer.clear();
-			}
-		}
-
-		// Process all queued messages
-		for (size_t i = 0; i < incomingQueue.size(); ++i)
-		{
-			const AsciiString& incoming = incomingQueue[i];
-
-			if (findSubstring(incoming, "\"type\"") != -1)
-			{
-				// Check catchup_bulk BEFORE frame — catchup_bulk contains
-				// frame objects inside its frames array, so a substring
-				// search for "type":"frame" would match the nested ones.
-				if (findSubstring(incoming, "catchup_bulk") != -1)
-				{
-					liveObserverLog("LiveObserver: incoming message is catchup_bulk\n");
-					parseBulkCatchup(incoming);
-				}
-				else if (findSubstring(incoming, "\"frame\"") != -1)
-				{
-					// Per-frame logging — uncomment to debug frame flow
-					//liveObserverLog("LiveObserver: incoming message is a frame\n");
-					parseFrameMessage(incoming);
-				}
-				else
-				{
-					liveObserverLog("LiveObserver: incoming message is metadata or other\n");
-					parseMetadataMessage(incoming);
-				}
-			}
-			else
-			{
-				liveObserverLog("LiveObserver: incoming message has no 'type' field, ignoring\n");
-			}
-		}
-
-		// Small sleep to avoid busy-waiting (1ms)
-		Sleep(1);
-	}
-
-	// Cleanup
-	liveObserverLog("LiveObserver: cleaning up CURL handles\n");
-	if (m_curlEasy)
-	{
-		liveObserverLog("LiveObserver: curl_easy_cleanup\n");
-		curl_easy_cleanup((CURL*)m_curlEasy);
-		m_curlEasy = nullptr;
-	}
-	if (m_curlMulti)
-	{
-		liveObserverLog("LiveObserver: curl_multi_cleanup\n");
-		curl_multi_cleanup((CURLM*)m_curlMulti);
-		m_curlMulti = nullptr;
-	}
-
-	liveObserverLog("LiveObserver: curl_global_cleanup\n");
-	curl_global_cleanup();
-
-	m_connected = FALSE;
-	DEBUG_LOG(("LiveObserver::networkThreadFunc() - thread exiting"));
-	liveObserverLog("LiveObserver: network thread exiting\n");
-}
-
-// ============================================================================
-// connectToRelay — establish WebSocket connection
-// ============================================================================
-
-bool LiveObserver::connectToRelay()
-{
-	liveObserverLog("LiveObserver::connectToRelay: connecting...\n");
-	CURL* easy = curl_easy_init();
-	if (!easy)
-	{
-		DEBUG_LOG(("LiveObserver::connectToRelay() - curl_easy_init failed"));
-		liveObserverLog("LiveObserver::connectToRelay: curl_easy_init FAILED\n");
-		return false;
-	}
-	liveObserverLog("LiveObserver::connectToRelay: curl_easy_init=%p (success)\n", (void*)easy);
-
-	CURLM* multi = curl_multi_init();
-	if (!multi)
-	{
-		DEBUG_LOG(("LiveObserver::connectToRelay() - curl_multi_init failed"));
-		liveObserverLog("LiveObserver::connectToRelay: curl_multi_init FAILED\n");
-		curl_easy_cleanup(easy);
-		return false;
-	}
-	liveObserverLog("LiveObserver::connectToRelay: curl_multi_init=%p (success)\n", (void*)multi);
-
-	// Configure the WebSocket connection
-	AsciiString url;
-	if (m_gameId.isEmpty())
-	{
-		// Full URL was passed directly (e.g. from menu UI)
-		url = m_relayUrl;
-	}
-	else if (m_isReconnecting)
-	{
-		url.format("%s/watch-reconnect/%s", m_relayUrl.str(), m_gameId.str());
-	}
-	else
-	{
-		url.format("%s/watch/%s", m_relayUrl.str(), m_gameId.str());
-	}
-	liveObserverLog("LiveObserver::connectToRelay: curl_easy_setopt CURLOPT_URL=%.200s\n", url.str());
-	curl_easy_setopt(easy, CURLOPT_URL, url.str());
-	liveObserverLog("LiveObserver::connectToRelay: curl_easy_setopt CURLOPT_CONNECT_ONLY=2L\n");
-	curl_easy_setopt(easy, CURLOPT_CONNECT_ONLY, 2L); // 2 = use WebSocket protocol
-	curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 0L);
-	curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 0L);
-	liveObserverLog("LiveObserver::connectToRelay: SSL verification disabled, isReconnecting=%d\n", m_isReconnecting);
-
-	// Add to multi handle
-	liveObserverLog("LiveObserver::connectToRelay: curl_multi_add_handle\n");
-	curl_multi_add_handle(multi, easy);
-
-	// Perform the connection — loop until the WebSocket handshake completes
-	// or we time out.  The correct curl_multi pattern requires repeated
-	// perform→wait cycles; a single cycle is not sufficient because the
-	// WebSocket upgrade may not finish within the first 1 s wait.
-	int runningHandles = 0;
-	liveObserverLog("LiveObserver::connectToRelay: curl_multi_perform (loop)\n");
-	CURLMcode mc = curl_multi_perform(multi, &runningHandles);
-	liveObserverLog("LiveObserver::connectToRelay: curl_multi_perform returned mc=%d, runningHandles=%d\n", (int)mc, runningHandles);
-
-	int numfds = 0;
-	const int kConnectTimeoutMs = 10000; // 10 second total connect timeout
-	int elapsedMs = 0;
-	const int kPollIntervalMs = 250;
-
-	while (runningHandles > 0 && mc == CURLM_OK && elapsedMs < kConnectTimeoutMs)
-	{
-		mc = curl_multi_wait(multi, nullptr, 0, kPollIntervalMs, &numfds);
-		liveObserverLog("LiveObserver::connectToRelay: curl_multi_wait returned mc=%d, numfds=%d (elapsed %dms)\n",
-			(int)mc, numfds, elapsedMs);
-		elapsedMs += kPollIntervalMs;
-		if (mc != CURLM_OK)
-			break;
-		mc = curl_multi_perform(multi, &runningHandles);
-		liveObserverLog("LiveObserver::connectToRelay: curl_multi_perform returned mc=%d, runningHandles=%d\n",
-			(int)mc, runningHandles);
-	}
-
-	// Check if connected
-	int infoRunning = 0;
-	CURLMsg* infoMsg = curl_multi_info_read(multi, &infoRunning);
-	if (infoMsg)
-	{
-		CURLcode res = infoMsg->data.result;
-		if (res != CURLE_OK)
-		{
-			DEBUG_LOG(("LiveObserver::connectToRelay() - connection failed: %s", curl_easy_strerror(res)));
-			liveObserverLog("LiveObserver::connectToRelay: FAILED: %s (curl code %d)\n",
-				curl_easy_strerror(res), (int)res);
-			curl_multi_remove_handle(multi, easy);
-			curl_easy_cleanup(easy);
-			curl_multi_cleanup(multi);
-			return false;
-		}
-	}
-	else
-	{
-		// curl_multi_info_read returned NULL — the connection did NOT complete.
-		// Do NOT set m_connected = TRUE; treat this as a timeout / failure.
-		liveObserverLog("LiveObserver::connectToRelay: connection timed out (no info message after %dms, runningHandles=%d)\n",
-			elapsedMs, runningHandles);
-		curl_multi_remove_handle(multi, easy);
-		curl_easy_cleanup(easy);
-		curl_multi_cleanup(multi);
-		return false;
-	}
-
-	m_curlEasy = easy;
-	m_curlMulti = multi;
-	m_connected = TRUE;
-
-	DEBUG_LOG(("LiveObserver::connectToRelay() - connected to %s", url.str()));
-	liveObserverLog("LiveObserver::connectToRelay: connected! easy=%p multi=%p url=%.200s\n",
-		(void*)easy, (void*)multi, url.str());
-	return true;
-}
-
-// ============================================================================
-// reconnectToRelay — attempt to reconnect after a disconnect
-// ============================================================================
-
-bool LiveObserver::reconnectToRelay()
-{
-	// Clean up old handles
-	liveObserverLog("LiveObserver::reconnectToRelay: cleaning up old handles\n");
-	if (m_curlEasy)
-	{
-		liveObserverLog("LiveObserver::reconnectToRelay: curl_easy_cleanup (old)\n");
-		curl_easy_cleanup((CURL*)m_curlEasy);
-		m_curlEasy = nullptr;
-	}
-	if (m_curlMulti)
-	{
-		liveObserverLog("LiveObserver::reconnectToRelay: curl_multi_cleanup (old)\n");
-		curl_multi_cleanup((CURLM*)m_curlMulti);
-		m_curlMulti = nullptr;
-	}
-
-	m_connected = FALSE;
-
-	DEBUG_LOG(("LiveObserver::reconnectToRelay() - attempt %d", m_reconnectAttempts + 1));
-	liveObserverLog("LiveObserver::reconnectToRelay: attempt %d\n", m_reconnectAttempts + 1);
-
-	m_isReconnecting = true;
-	bool result = connectToRelay();
-	m_isReconnecting = false;
-	liveObserverLog("LiveObserver::reconnectToRelay: result=%s\n", result ? "SUCCESS" : "FAILED");
-	return result;
-}
-
-// ============================================================================
-// wsSend — send data over WebSocket
-// ============================================================================
-
-bool LiveObserver::wsSend(const void* data, size_t len)
-{
-	if (!m_curlEasy || !m_connected)
-	{
-		liveObserverLog("LiveObserver::wsSend: skipped (curlEasy=%p, connected=%d)\n",
-			m_curlEasy, m_connected.load());
-		return false;
-	}
-
-	liveObserverLog("LiveObserver::wsSend: sending %d bytes (binary)\n", (int)len);
-	size_t sent = 0;
-	CURLcode res = curl_ws_send((CURL*)m_curlEasy, data, len, &sent, 0, CURLWS_BINARY);
-	liveObserverLog("LiveObserver::wsSend: curl_ws_send returned %d, sent=%d\n", (int)res, (int)sent);
-
-	if (res == CURLE_OK)
-		return true;
-
-	if (res == CURLE_AGAIN)
-	{
-		liveObserverLog("LiveObserver::wsSend: CURLE_AGAIN, will retry next tick\n");
-		return true; // not a real error, will retry next tick
-	}
-
-	DEBUG_LOG(("LiveObserver::wsSend() - error: %s", curl_easy_strerror(res)));
-	liveObserverLog("LiveObserver::wsSend: ERROR: %s (curl code %d)\n", curl_easy_strerror(res), (int)res);
-	m_connected = FALSE;
-	return false;
-}
-
-// ============================================================================
-// wsRecv — receive data from WebSocket (non-blocking)
-// ============================================================================
-
-bool LiveObserver::wsRecv(std::vector<char>& outBuffer)
-{
-	if (!m_curlEasy || !m_connected)
-	{
-		liveObserverLog("LiveObserver::wsRecv: skipped (curlEasy=%p, connected=%d)\n",
-			m_curlEasy, m_connected.load());
-		return false;
-	}
-
-	// Use a large buffer for catchup_bulk messages (can be several MB).
-	// Stack allocation of 256KB handles typical games; for longer games the
-	// relay sends chunked catchup.
-	static const size_t kRecvBufSize = 262144; // 256 KB
-	static char* s_recvBuf = nullptr;
-	if (!s_recvBuf)
-		s_recvBuf = new char[kRecvBufSize];
-
-	size_t nread = 0;
-	const struct curl_ws_frame* meta = nullptr;
-
-	CURLcode res = curl_ws_recv((CURL*)m_curlEasy, s_recvBuf, kRecvBufSize, &nread, &meta);
-
-	if (res == CURLE_OK && nread > 0)
-	{
-		//liveObserverLog("LiveObserver::wsRecv: received %d bytes, first 100 chars: %.100s\n",
-		//	(int)nread, s_recvBuf);
-		outBuffer.assign(s_recvBuf, s_recvBuf + nread);
-		return true;
-	}
-
-	if (res == CURLE_AGAIN)
-	{
-		return false; // no data available
-	}
-
-	if (res != CURLE_OK)
-	{
-		DEBUG_LOG(("LiveObserver::wsRecv() - error: %s", curl_easy_strerror(res)));
-		liveObserverLog("LiveObserver::wsRecv: ERROR: %s (curl code %d)\n", curl_easy_strerror(res), (int)res);
-		m_connected = FALSE;
-	}
-
-	return false;
-}
-
-// ============================================================================
-// sendJsonMessage — convenience wrapper
-// ============================================================================
-
-bool LiveObserver::sendJsonMessage(const AsciiString& jsonMsg)
-{
-	if (!m_curlEasy || !m_connected)
-	{
-		liveObserverLog("LiveObserver::sendJsonMessage: skipped (curlEasy=%p, connected=%d)\n",
-			m_curlEasy, m_connected.load());
-		return false;
-	}
-	liveObserverLog("LiveObserver::sendJsonMessage: sending %d bytes: %.200s\n",
-		(int)strlen(jsonMsg.str()), jsonMsg.str());
-	size_t sent = 0;
-	CURLcode res = curl_ws_send((CURL*)m_curlEasy, jsonMsg.str(), strlen(jsonMsg.str()), &sent, 0, CURLWS_TEXT);
-	liveObserverLog("LiveObserver::sendJsonMessage: curl_ws_send result=%d, sent=%d\n", (int)res, (int)sent);
-	if (res == CURLE_OK)
-		return true;
-	if (res == CURLE_AGAIN)
-	{
-		liveObserverLog("LiveObserver::sendJsonMessage: CURLE_AGAIN, will retry\n");
-		return true;
-	}
-	DEBUG_LOG(("LiveObserver::sendJsonMessage() - error: %s", curl_easy_strerror(res)));
-	liveObserverLog("LiveObserver::sendJsonMessage: ERROR: %s (curl code %d)\n", curl_easy_strerror(res), (int)res);
-	m_connected = FALSE;
-	return false;
-}
-
-// ============================================================================
-// parseFrameMessage — process a JSON frame message from the relay
-// ============================================================================
-
-void LiveObserver::parseFrameMessage(const AsciiString& json)
-{
-	// Robust JSON parsing that handles both compact (streamer) and
-	// pretty-printed (relay Python send_json) formats.
-	// Python's json.dumps inserts ": " between key and value.
-
-	// --- Extract frame number ---
-	Int framePos = findSubstring(json, "\"frame\"");
-	if (framePos == -1)
-	{
-		liveObserverLog("LiveObserver::parseFrameMessage: no 'frame' field found, returning\n");
-		return;
-	}
-
-	// Skip past "frame": or "frame" :  (handle spaces around colon)
-	Int start = framePos + 7; // skip "frame"
-	while (start < json.getLength() && json.str()[start] != ':')
-		start++;
-	start++; // skip ':'
-	while (start < json.getLength() && (json.str()[start] == ' ' || json.str()[start] == '	'))
-		start++;
-
-	Int end = start;
-	while (end < json.getLength() && json.str()[end] >= '0' && json.str()[end] <= '9')
-		end++;
-
-	AsciiString frameStr(json.str() + start, end - start);
-	UnsignedInt frameNum = (UnsignedInt)atoi(frameStr.str());
-
-	// --- Extract base64-encoded commands ---
-	Int cmdPos = findSubstring(json, "\"commands\"");
-	if (cmdPos == -1)
-		return;
-
-	// Skip past "commands": or "commands" : 
-	start = cmdPos + 10; // skip "commands"
-	while (start < json.getLength() && json.str()[start] != ':')
-		start++;
-	start++; // skip ':'
-	// Find opening quote of the value
-	while (start < json.getLength() && json.str()[start] != '"')
-		start++;
-	start++; // skip opening '"'
-
-	// Find closing quote
-	end = start;
-	while (end < json.getLength() && json.str()[end] != '"')
-		end++;
-
-	AsciiString b64Commands(json.str() + start, end - start);
-	// Per-frame logging — uncomment to debug individual frames
-	//liveObserverLog("LiveObserver::parseFrameMessage: frame=%u, b64_commands_len=%d\n", frameNum, (int)b64Commands.getLength());
-
-	// Base64 decode (may be empty for frames with no commands)
-	std::vector<char> decodedCommands;
-	base64Decode(b64Commands.str(), b64Commands.getLength(), decodedCommands);
-
-	// Update streamer frame tracking regardless of whether we have commands.
-	// Empty frames still advance the game simulation.
-	if (frameNum > m_streamerFrame)
-		m_streamerFrame = frameNum;
-
-	if (decodedCommands.empty())
-	{
-		// Push an empty frame to m_pendingFrames so waitForFrame() finds it.
-		// The game engine needs every frame number for lockstep simulation.
-		if (frameNum % 100 == 0)
-			liveObserverLog("LiveObserver::parseFrameMessage: empty frame %u\n", frameNum);
-		deserializeFrame(frameNum, nullptr, 0);
-	}
-	else
-	{
-		liveObserverLog("LiveObserver::parseFrameMessage: DECODED %d bytes for frame %u\n",
-			(int)decodedCommands.size(), frameNum);
-		deserializeFrame(frameNum, decodedCommands.data(), (Int)decodedCommands.size());
-	}
-
-	// Update last received frame
-	if (frameNum > m_lastReceivedFrame)
-		m_lastReceivedFrame = frameNum;
-
-	// Periodic decode log
-	if (frameNum % 300 == 0 || decodedCommands.size() > 0)
-	{
-		liveObserverLog("ParseFrame: frame=%u decoded_bytes=%d b64_len=%d lastReceived=%u\n",
-			frameNum, (int)decodedCommands.size(), (int)b64Commands.getLength(), m_lastReceivedFrame);
-	}
-
-	// Per-frame logging — uncomment to debug individual frames
-	//DEBUG_LOG(("LiveObserver::parseFrameMessage() - frame %u, decoded %d bytes", frameNum, (Int)decodedCommands.size()));
-	//liveObserverLog("parseFrameMessage() - frame=%u, decoded_bytes=%d\n",
-	//	frameNum, (Int)decodedCommands.size());
-}
-
-// ============================================================================
-// parseMetadataMessage — process a JSON metadata message
-// ============================================================================
-
-void LiveObserver::parseMetadataMessage(const AsciiString& json)
-{
-	// Simple JSON parsing — extract fields we need
-	liveObserverLog("LiveObserver::parseMetadataMessage: len=%d, first 200 chars: %.200s\n",
-		(int)json.getLength(), json.str());
-	DEBUG_LOG(("LiveObserver::parseMetadataMessage() - %s", json.str()));
-
-	// Check message type — robust against ": " vs ":" formatting
-	Int typePos = findSubstring(json, "\"type\"");
-	if (typePos == -1)
-	{
-		liveObserverLog("LiveObserver::parseMetadataMessage: no 'type' field found\n");
-		return;
-	}
-
-	AsciiString msgType;
-	Int start = typePos + 6; // skip "type"
-	while (start < json.getLength() && json.str()[start] != ':')
-		start++;
-	start++; // skip ':'
-	while (start < json.getLength() && (json.str()[start] == ' ' || json.str()[start] == '	'))
-		start++;
-	if (start < json.getLength() && json.str()[start] == '"')
-		start++; // skip opening quote
-	Int end = start;
-	while (end < json.getLength() && json.str()[end] != '"')
-		end++;
-	if (end > start)
-		msgType = AsciiString(json.str() + start, end - start);
-
-	if (msgType == "metadata")
-	{
-		liveObserverLog("LiveObserver::parseMetadataMessage: message type is 'metadata'\n");
-		// Extract streamer frame
-		Int framePos = findSubstring(json, "\"current_frame\":");
-		if (framePos != -1)
-		{
-			start = framePos + 16;
-			end = findSubstring(json, ",", start);
-			if (end == -1)
-				end = findSubstring(json, "}", start);
-			if (end != -1)
-			{
-				AsciiString frameStr(json.str() + start, end - start);
-				m_streamerFrame = (UnsignedInt)atoi(frameStr.str());
-			}
-		}
-
-		// Extract FPS
-		Int fpsPos = findSubstring(json, "\"fps\":");
-		if (fpsPos != -1)
-		{
-			start = fpsPos + 6;
-			end = findSubstring(json, ",", start);
-			if (end == -1)
-				end = findSubstring(json, "}", start);
-			if (end != -1)
-			{
-				AsciiString fpsStr(json.str() + start, end - start);
-				m_streamerFps = atoi(fpsStr.str());
-			}
-		}
-
-		// Extract map name
-		Int mapPos = findSubstring(json, "\"map_name\":\"");
-		if (mapPos != -1)
-		{
-			start = mapPos + 12;
-			end = findSubstring(json, "\"", start);
-			if (end != -1)
-			{
-				AsciiString mapName(json.str() + start, end - start);
-				m_replayGameInfo.setMap(mapName);
-			}
-		}
-
-		// Extract game options string (S=... format)
-		// This contains the full player slot setup needed by ParseAsciiStringToGameInfo()
-		Int optPos = findSubstring(json, "\"game_options\":\"");
-		if (optPos != -1)
-		{
-			start = optPos + 16;
-			end = findSubstring(json, "\"", start);
-			if (end != -1)
-			{
-				m_gameOptionsStr.set(json.str() + start, end - start);
-				liveObserverLog("parseMetadataMessage() - game_options=%.200s\n", m_gameOptionsStr.str());
-			}
-		}
-
-		// Extract exeCRC and iniCRC
-		Int exeCRCPos = findSubstring(json, "\"exe_crc\":");
-		if (exeCRCPos != -1)
-		{
-			start = exeCRCPos + 10;
-			end = findSubstring(json, ",", start);
-			if (end == -1)
-				end = findSubstring(json, "}", start);
-			if (end != -1)
-			{
-				AsciiString crcStr(json.str() + start, end - start);
-				// Store CRC info if needed
-			}
-		}
-
-		m_metadataReceived = TRUE;
-		DEBUG_LOG(("LiveObserver::parseMetadataMessage() - metadata parsed, frame=%u", m_streamerFrame.load()));
-		liveObserverLog("parseMetadataMessage() - metadata parsed: frame=%u\n", m_streamerFrame.load());
-	}
-	else if (msgType == "disconnect")
-	{
-		// Streamer disconnected — we'll keep buffering from reconnect
-		liveObserverLog("LiveObserver::parseMetadataMessage: streamer DISCONNECTED\n");
-		DEBUG_LOG(("LiveObserver::parseMetadataMessage() - streamer disconnected"));
-	}
-	else
-	{
-		liveObserverLog("LiveObserver::parseMetadataMessage: unknown message type '%.50s'\n", msgType.str());
-	}
-}
-
-// ============================================================================
-// parseBulkCatchup — process a catchup_bulk message containing many frames
-// ============================================================================
-
-void LiveObserver::parseBulkCatchup(const AsciiString& json)
-{
-	// Format: {"type":"catchup_bulk","frames":[{...},{...},...],"frame_count":N,...}
-	Int framesStart = findSubstring(json, "\"frames\":[");
-	if (framesStart == -1)
-	{
-		liveObserverLog("parseBulkCatchup: no 'frames' array found\n");
-		return;
-	}
-
-	// Point past "frames":[ to the first frame object
-	Int pos = framesStart + 10;
-	Int jsonLen = (Int)json.getLength();
-	const char* data = json.str();
-
-	Int parsedCount = 0;
-	UnsignedInt maxFrame = 0;
-
-	while (pos < jsonLen)
-	{
-		// Find next frame object: {"type":"frame"...
-		Int frameStart = findSubstring(json, "{\"type\":\"frame\"", pos);
-		if (frameStart == -1) break;
-
-		// Find the matching closing brace for this frame object
-		Int frameEnd = -1;
-		Int braceCount = 0;
-		for (Int i = frameStart; i < jsonLen; ++i)
-		{
-			if (data[i] == '{') braceCount++;
-			else if (data[i] == '}')
-			{
-				braceCount--;
-				if (braceCount == 0) { frameEnd = i + 1; break; }
-			}
-		}
-		if (frameEnd == -1) break;
-
-		// Extract this single frame's JSON
-		AsciiString frameJson(data + frameStart, frameEnd - frameStart);
-
-		// Parse the frame using the existing per-frame parser
-		parseFrameMessage(frameJson);
-		parsedCount++;
-
-		// Update max frame tracking from the last deserialized frame
-		{
-			std::lock_guard<std::mutex> lock(m_pendingMutex);
-			if (!m_pendingFrames.empty())
-			{
-				UnsignedInt lastFrame = m_pendingFrames.back().frameNumber;
-				if (lastFrame > maxFrame) maxFrame = lastFrame;
-			}
-		}
-
-		pos = frameEnd;
-	}
-
-	// Update streamer frame tracking
-	if (maxFrame > m_streamerFrame)
-		m_streamerFrame = maxFrame;
-	if (maxFrame > m_lastReceivedFrame)
-		m_lastReceivedFrame = maxFrame;
-
-	m_metadataReceived = TRUE;
-
-	liveObserverLog("parseBulkCatchup: parsed %d frames, maxFrame=%u, total pending=%d\n",
-		parsedCount, maxFrame, (int)m_pendingFrames.size());
-}
-// ============================================================================
-// deserializeFrame — convert binary payload to LiveFrameData and buffer it
-// ============================================================================
-
-void LiveObserver::deserializeFrame(UnsignedInt frameNum, const char* payload, Int payloadSize)
-{
-	// Per-frame logging — uncomment to debug individual frames
-	//liveObserverLog("LiveObserver::deserializeFrame: frame=%u, payload_size=%d\n", frameNum, payloadSize);
-	LiveFrameData fd;
-	fd.frameNumber = frameNum;
-	if (payload && payloadSize > 0)
-		fd.serializedCommands.assign(payload, payload + payloadSize);
-	// else: empty frame — serializedCommands stays empty, which is correct
-
-	std::lock_guard<std::mutex> lock(m_pendingMutex);
-	// Per-frame logging — uncomment to debug individual frames
-	//liveObserverLog("LiveObserver::deserializeFrame: %d frames pending before insert\n", (int)m_pendingFrames.size());
-
-	// Insert in sorted order by frame number
-	auto it = m_pendingFrames.begin();
-	while (it != m_pendingFrames.end() && it->frameNumber < frameNum)
-		++it;
-
-	// If a frame with this number already exists, replace it
-	if (it != m_pendingFrames.end() && it->frameNumber == frameNum)
-	{
-		// Per-frame logging — uncomment to debug individual frames
-		//liveObserverLog("LiveObserver::deserializeFrame: replacing existing frame %u\n", frameNum);
-		*it = fd;
-	}
-	else
-	{
-		m_pendingFrames.insert(it, fd);
-		// Per-frame logging — uncomment to debug individual frames
-		//liveObserverLog("LiveObserver::deserializeFrame: inserted frame %u, now %d pending\n",
-		//	frameNum, (int)m_pendingFrames.size());
-	}
-
-	// No buffer limit — we need ALL frames from catchup_bulk.
-	// Even 100k frames × ~22 bytes = ~2.2 MB, which is fine.
+    liveObserverLog("LiveObserver::networkThreadFunc started\n");
+
+    if (!connectToRelay())
+    {
+        liveObserverLog("LiveObserver::networkThreadFunc connectToRelay failed\n");
+        m_shouldRun.store(false);
+        return;
+    }
+
+    m_connected.store(true);
+
+    // Persistent buffer for incoming data — multiple frames may arrive in
+    // one wsRecv call, or a frame may be split across multiple calls.
+    std::vector<char> buf;
+
+    while (m_shouldRun.load() && m_connected.load())
+    {
+        {
+            int stillRunning = 0;
+            CURLMcode mpoll = curl_multi_poll(m_curlMulti, NULL, 0, 50, &stillRunning);
+            if (stillRunning)
+                curl_multi_perform((CURLM*)m_curlMulti, &stillRunning);
+            if (mpoll != CURLM_OK)
+            {
+                liveObserverLog("LiveObserver: curl_multi_poll failed (%d), connection lost\n", (int)mpoll);
+                m_connected.store(false);
+                break;
+            }
+        }
+
+        // Append any newly received data to our persistent buffer
+        {
+            std::vector<char> tmp;
+            if (wsRecv(tmp) && !tmp.empty())
+                buf.insert(buf.end(), tmp.begin(), tmp.end());
+        }
+
+        // Process as many complete frames as possible from the buffer
+        while (buf.size() >= 5)
+        {
+            unsigned char msgType = (unsigned char)buf[0];
+            unsigned int msgLen = (unsigned int)buf[1]
+                | ((unsigned int)buf[2] << 8)
+                | ((unsigned int)buf[3] << 16)
+                | ((unsigned int)buf[4] << 24);
+
+            if (buf.size() < (size_t)(5 + msgLen))
+                break; // Partial frame — wait for more data
+
+            const char* payload = (msgLen > 0) ? buf.data() + 5 : nullptr;
+            handleFrame(msgType, payload, msgLen);
+
+            // Remove the processed frame from the buffer
+            buf.erase(buf.begin(), buf.begin() + 5 + msgLen);
+        }
+    }
+
+    // Cleanup
+    if (m_liveFile)
+    {
+        m_liveFile->close();
+        m_liveFile = nullptr;
+    }
+    if (m_curlMulti)
+    {
+        if (m_curlEasy)
+            curl_multi_remove_handle((CURLM*)m_curlMulti, (CURL*)m_curlEasy);
+        curl_multi_cleanup((CURLM*)m_curlMulti);
+        m_curlMulti = nullptr;
+    }
+    if (m_curlEasy)
+    {
+        curl_easy_cleanup((CURL*)m_curlEasy);
+        m_curlEasy = nullptr;
+    }
+    m_connected.store(false);
+    liveObserverLog("LiveObserver::networkThreadFunc ended\n");
 }
 
 #endif // GENERALS_ONLINE

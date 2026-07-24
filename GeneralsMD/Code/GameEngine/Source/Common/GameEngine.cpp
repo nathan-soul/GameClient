@@ -1011,59 +1011,6 @@ void GameEngine::update()
 
 		if (canUpdateLogic)
 		{
-			// Live observer: feed the next frame's commands from the relay before
-			// the logic tick so they execute on the correct frame.
-#if defined(GENERALS_ONLINE)
-			if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
-			{
-				// Log first frame entry (only once)
-				static Bool s_loggedFirstUpdate = FALSE;
-				if (!s_loggedFirstUpdate)
-				{
-					s_loggedFirstUpdate = TRUE;
-					liveObserverLog("GameEngine::update: first logic tick in LIVE_OBSERVER mode — frame=%d\n",
-						TheGameLogic ? TheGameLogic->getFrame() : -1);
-				}
-
-				if (TheLiveObserver && TheLiveObserver->isConnected())
-			{
-				UnsignedInt nextFrame = TheGameLogic->getFrame() + 1;
-				if (!TheLiveObserver->waitForFrame(nextFrame))
-				{
-					// No commands for this frame — same as a replay where a
-					// frame has no recorded commands. The game simulation
-					// just advances naturally. No placeholders, no jumps.
-				}
-				else
-				{
-					TheLiveObserver->feedCommandsToCommandList(nextFrame);
-				}
-
-					// Fast-forward when far behind the streamer (e.g., joining mid-game).
-				// Once within 300 frames (10s at 30fps), run at normal speed.
-				// The threshold is low enough for real-time spectating once caught up.
-				Int delay = TheLiveObserver->getBufferDelay();
-				if (delay > 300) {
-					TheWritableGlobalData->m_TiVOFastMode = TRUE;
-				} else if (delay <= 60) {
-					TheWritableGlobalData->m_TiVOFastMode = FALSE;
-				}
-
-					// Log frame processing progress every ~60 frames (~2s at 30fps)
-					static UnsignedInt lastLoggedFrame = 0;
-					UnsignedInt currentFrame = TheGameLogic->getFrame();
-					if (currentFrame - lastLoggedFrame >= 300 || lastLoggedFrame == 0)
-					{
-						liveObserverLog("LIVE frame=%u delay=%d connected=%d fastfwd=%d streamerFrame=%u\n",
-								currentFrame, TheLiveObserver->getBufferDelay(),
-								TheLiveObserver->isConnected() ? 1 : 0,
-								TheGlobalData->m_TiVOFastMode ? 1 : 0,
-								TheLiveObserver->getStreamerFrame());
-						lastLoggedFrame = currentFrame;
-					}
-				}
-			}
-#endif
 			TheGameClient->step();
 			TheGameLogic->UPDATE();
 		}

@@ -339,12 +339,11 @@ static void doGameStart()
 		TheGameLogic->clearGameData();
 
 #if defined(GENERALS_ONLINE)
-	// If we're in live observer mode, TheLiveObserver already sent MSG_NEW_GAME
-	// directly to TheCommandList with GAME_REPLAY.  Don't send a second one here
-	// or we'd start a duplicate game.
-	if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
+	// If live streaming, playbackFile already sent MSG_NEW_GAME with GAME_REPLAY.
+	// Don't send a second one or we'd start a duplicate game.
+	if (TheRecorder && TheRecorder->isLiveStream())
 	{
-		liveObserverLog("doGameStart: skipping MSG_NEW_GAME (already sent by observer)\\n");
+		liveObserverLog("doGameStart: skipping MSG_NEW_GAME (already sent by live playback)\n");
 		isShuttingDown = TRUE;
 		return;
 	}
@@ -1083,104 +1082,84 @@ static void hideLiveObserverDialog(void)
 		liveObserverGameIdEntry->winHide(TRUE);
 }
 
-// Initialize the live observer, connect to relay, receive metadata,
-// send MSG_NEW_GAME directly to TheCommandList, and trigger game start.
+// Initialize the live observer, connect to relay, wait for HEADER,
+// then start live playback via Recorder::playbackFile on the shared file.
 static void doLiveObserverGameStart(const AsciiString& fullWatchUrl)
 {
 	liveObserverInitLog(fullWatchUrl.str());
-	liveObserverLog("=== doLiveObserverGameStart (from menu) ===\\n");
-	liveObserverLog("URL: %s\\n", fullWatchUrl.str());
+	liveObserverLog("=== doLiveObserverGameStart (from menu) ===\n");
+	liveObserverLog("URL: %s\n", fullWatchUrl.str());
 
-	// Initialize the LiveObserver (same flow as GameEngine::init)
+	// Clean up any previous LiveObserver that might still be running
+	if (TheLiveObserver)
+	{
+		TheLiveObserver->close();
+		delete TheLiveObserver;
+		TheLiveObserver = nullptr;
+	}
+
 	TheLiveObserver = createLiveObserver();
 	if (!TheLiveObserver)
 	{
-		liveObserverLog("doLiveObserverGameStart: createLiveObserver() returned NULL!\\n");
+		liveObserverLog("doLiveObserverGameStart: createLiveObserver() returned NULL!\n");
 		return;
 	}
 
-	liveObserverLog("doLiveObserverGameStart: connecting to relay...\\n");
-	TheLiveObserver->connect(fullWatchUrl, "");
+	liveObserverLog("doLiveObserverGameStart: connecting to relay...\n");
+	TheLiveObserver->connect(fullWatchUrl);
 
-	liveObserverLog("doLiveObserverGameStart: waiting for metadata (blocking, up to 10s)...\\n");
-	if (!TheLiveObserver->receiveGameMetadata())
+	// Block until the HEADER arrives and is written to _live.rep.
+	// readReplayHeader + playbackFile will parse everything we need
+	// (slot list, map, game options) from the header bytes.
+	liveObserverLog("doLiveObserverGameStart: waiting for HEADER (blocking, up to 15s)...\n");
+	Int waited = 0;
+	while (!TheLiveObserver->isReady() && waited < 15000)
 	{
-		liveObserverLog("doLiveObserverGameStart: FAILED to receive metadata (timeout or disconnect)\\n");
+		Sleep(100);
+		waited += 100;
+	}
+	if (!TheLiveObserver->isReady())
+	{
+		liveObserverLog("doLiveObserverGameStart: FAILED — HEADER not received (timeout)\n");
+		TheLiveObserver->close();
+		delete TheLiveObserver;
+		TheLiveObserver = nullptr;
 		return;
 	}
 
-	liveObserverLog("doLiveObserverGameStart: metadata received! Setting recorder mode...\\n");
-	TheRecorder->setMode(RECORDERMODETYPE_LIVE_OBSERVER);
+	liveObserverLog("doLiveObserverGameStart: HEADER received! Starting live playback...\n");
 
-	// Populate TheRecorder->m_gameInfo from the relay metadata.
-	// This mirrors what Recorder::playbackFile() / readReplayHeader() does:
-	// ParseAsciiStringToGameInfo fills in player slots, teams, colors, factions,
-	// starting positions, map, seed, CRC — everything tryStartNewGame() needs.
-	AsciiString gameOptions = TheLiveObserver->getGameOptions();
-	liveObserverLog("doLiveObserverGameStart: game_options=%.200s\\n", gameOptions.str());
-	if (!gameOptions.isEmpty())
+	AsciiString filename = TheLiveObserver->getLiveReplayFilename();
 	{
-		GameInfo* gi = TheRecorder->getGameInfo();
-		gi->reset();
-		gi->enterGame();
-		if (ParseAsciiStringToGameInfo(gi, gameOptions))
+		AsciiString filepath = RecorderClass::getReplayDir();
+		filepath.concat(filename);
+		FILE* fp = fopen(filepath.str(), "rb");
+		if (fp)
 		{
-			// Clamp player templates to valid range.
-			// Streamer may have modded templates; observer may have vanilla.
-			// Out-of-range templates cause nullptr dereference in placeNetworkBuildingsForPlayer().
-			Int maxTemplate = ThePlayerTemplateStore ? ThePlayerTemplateStore->getPlayerTemplateCount() - 1 : 11;
-			for (Int i = 0; i < MAX_SLOTS; ++i)
-			{
-				GameSlot* slot = gi->getSlot(i);
-				if (slot && slot->isOccupied())
-				{
-					Int tmpl = slot->getPlayerTemplate();
-					if (tmpl < 0 || tmpl > maxTemplate)
-					{
-						liveObserverLog("doLiveObserverGameStart: slot %d template %d out of range (max %d), clamping to 0\\n",
-							i, tmpl, maxTemplate);
-						slot->setPlayerTemplate(0);
-					}
-				}
-			}
-
-			gi->startGame(0);
-			liveObserverLog("doLiveObserverGameStart: ParseAsciiStringToGameInfo succeeded, slots populated!\\n");
-
-			// Initialize the deterministic RNG — required for random faction/color assignment
-			Int seed = gi->getSeed();
-			liveObserverLog("doLiveObserverGameStart: InitRandom(seed=%d)\\n", seed);
-			InitRandom(seed);
+			fseek(fp, 0, SEEK_END);
+			long fsize = ftell(fp);
+			fseek(fp, 0, SEEK_SET);
+			char magic[7] = {0};
+			fread(magic, 1, 6, fp);
+			fclose(fp);
+			liveObserverLog("doLiveObserverGameStart: %s size=%ld magic=%.6s\n", filename.str(), fsize, magic);
 		}
 		else
 		{
-			liveObserverLog("doLiveObserverGameStart: ParseAsciiStringToGameInfo FAILED!\\n");
+			liveObserverLog("doLiveObserverGameStart: %s MISSING at %s\n", filename.str(), filepath.str());
 		}
 	}
-	else
+
+	if (!TheRecorder->startLiveObserverPlayback(filename))
 	{
-		liveObserverLog("doLiveObserverGameStart: WARNING — no game_options in metadata!\\n");
+		liveObserverLog("doLiveObserverGameStart: FAILED — playbackFile returned false\n");
+		TheLiveObserver->close();
+		delete TheLiveObserver;
+		TheLiveObserver = nullptr;
+		return;
 	}
 
-	// Set up the game from observer metadata (same pattern as Recorder::playbackFile)
-	// Critical: TheWritableGlobalData->m_pendingFile tells the game engine which map to load.
-	// Without this, the game loads the shell/default map instead of the actual game map.
-	TheCommandList->reset();
-	AsciiString mapName = TheLiveObserver->getGameInfo()->getMap();
-	liveObserverLog("doLiveObserverGameStart: map=%s\\n", mapName.str());
-	TheWritableGlobalData->m_pendingFile = mapName;
-
-	// Send MSG_NEW_GAME directly to TheCommandList (same pattern as Recorder::playbackFile)
-	liveObserverLog("doLiveObserverGameStart: sending MSG_NEW_GAME(GAME_REPLAY) to TheCommandList...\\n");
-	GameMessage* msg = newInstance(GameMessage)(GameMessage::MSG_NEW_GAME);
-	msg->appendIntegerArgument(GAME_REPLAY);
-	msg->appendIntegerArgument(DIFFICULTY_NORMAL);
-	msg->appendIntegerArgument(0);
-	TheCommandList->appendMessage(msg);
-
-	// We already sent MSG_NEW_GAME to TheCommandList — let doGameStart()
-	// handle the shutdown transition. Set startGame to trigger it.
-	liveObserverLog("doLiveObserverGameStart: setting startGame=TRUE for shell transition\\n");
+	liveObserverLog("doLiveObserverGameStart: playback started, set startGame=TRUE\n");
 	startGame = TRUE;
 }
 #endif
