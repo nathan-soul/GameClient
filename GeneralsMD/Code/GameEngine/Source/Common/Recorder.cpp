@@ -1534,12 +1534,17 @@ void RecorderClass::readNextFrame() {
 	DEBUG_LOG(("RecorderClass::readNextFrame - isLiveStream=%d streamEnded=%d mode=%d nextFrame=%d curFrame=%d",
 		m_isLiveStream, m_streamEnded, (int)m_mode, m_nextFrame, TheGameLogic->getFrame()));
 	if (m_isLiveStream) {
-		m_file->seek(0, File::CURRENT);
 		Int savedPos = m_file->seek(0, File::CURRENT);
 		Int bytesRead = m_file->read(&m_nextFrame, sizeof(m_nextFrame));
 		if (bytesRead != sizeof(m_nextFrame)) {
 			if (!m_streamEnded) {
 				UnsignedInt curFrame = TheGameLogic->getFrame();
+				Int curPos = m_file->seek(0, File::CURRENT);
+				if (curPos != savedPos) {
+					liveObserverLog("readNextFrame: PARTIAL read bytesRead=%d savedPos=%d curPos=%d — seeking back\n",
+						bytesRead, savedPos, curPos);
+				}
+				m_file->seek(savedPos, File::START);
 				m_nextFrame = curFrame + 1;
 				if (curFrame % 60 == 0) {
 					liveObserverLog("readNextFrame: WAITING — fileSize=%d filePos=%d curFrame=%d streamEnded=%d\n",
@@ -1580,13 +1585,20 @@ void RecorderClass::readNextFrame() {
  * This reads the next command from the replay file and appends it to TheCommandList.
  */
 void RecorderClass::appendNextCommand() {
+	Int savedPos = 0;
 	if (m_isLiveStream)
-		m_file->seek(0, File::CURRENT);
+		savedPos = m_file->seek(0, File::CURRENT);
 
 	GameMessage::Type type;
 	Int bytesRead = m_file->read(&type, sizeof(type));
 	if (bytesRead != sizeof(type)) {
 		if (m_isLiveStream && !m_streamEnded) {
+			Int curPos = m_file->seek(0, File::CURRENT);
+			if (curPos != savedPos) {
+				liveObserverLog("appendNextCommand: PARTIAL read bytesRead=%d savedPos=%d curPos=%d — seeking back\n",
+					bytesRead, savedPos, curPos);
+			}
+			m_file->seek(savedPos, File::START);
 			return;
 		}
 		liveObserverLog("appendNextCommand: read FAILED (bytes=%d isLiveStream=%d streamEnded=%d) — abandoning, curFrame=%d nextFrame=%d\n",

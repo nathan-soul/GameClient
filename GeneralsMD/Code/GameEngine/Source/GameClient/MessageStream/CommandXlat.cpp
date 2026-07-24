@@ -3586,13 +3586,18 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 		if (TheGlobalData)
 		{
 #if defined(GENERALS_ONLINE)
-			// In live observer mode: fast forward is not allowed.
+			// In live observer mode: fast forward is disabled when within 900 frames (15s) of live.
 			if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
 			{
-				TheInGameUI->messageNoFormat(
-					TheGameText->FETCH_OR_SUBSTITUTE("GUI:FF_DISABLED_LIVE", L"Fast Forward is disabled in live mode"));
-				disp = DESTROY_MESSAGE;
-				break;
+				UnsignedInt liveEdge = TheRecorder->getCachedLiveEdge();
+				UnsignedInt gap = (liveEdge > TheGameLogic->getFrame()) ? (liveEdge - TheGameLogic->getFrame()) : 0;
+				if (gap <= 900)
+				{
+					TheInGameUI->messageNoFormat(
+						TheGameText->FETCH_OR_SUBSTITUTE("GUI:FF_DISABLED_LIVE", L"Fast Forward is disabled in live mode"));
+					disp = DESTROY_MESSAGE;
+					break;
+				}
 			}
 #endif
 #if !defined(_ALLOW_DEBUG_CHEATS_IN_RELEASE)//may be defined in GameCommon.h
