@@ -22,45 +22,24 @@
 
 #include "Common/AsciiString.h"
 #include "Common/GameCommon.h"
-#include "Common/Recorder.h"
-#include "Common/GameType.h"
 #include <thread>
 #include <mutex>
 #include <atomic>
-#include <list>
 #include <vector>
 
-class GameMessage;
+class File;
 
 /**
- * LiveFrameData holds a single frame's worth of commands received from the relay server.
- * Each frame contains a frame number and a serialized list of GameMessages to append
- * to TheCommandList during playback.
- */
-struct LiveFrameData
-{
-	UnsignedInt frameNumber;
-	std::vector<char> serializedCommands; ///< Binary data in the same format as .rep writeToFile()
-};
-
-/**
- * LiveObserver receives live game frames from a relay server via WebSocket,
- * feeding them into TheCommandList so the game renders in real-time as a
- * live replay. It reuses the same serialization format as .rep replay files
- * so the relay can parse and forward frames from the streamer.
+ * LiveObserver receives raw replay bytes (HEADER/PATCH/BODY/END) from the
+ * relay server via WebSocket and writes them to a local "_live.rep" file.
  *
- * This is the read-side counterpart to LiveStreamer.  The streamer writes
- * frames; the observer reads them.
+ * Once the HEADER arrives, it triggers RECORDERMODETYPE_PLAYBACK on the
+ * Recorder — the existing playback infrastructure (readReplayHeader,
+ * updatePlayback, readNextFrame, appendNextCommand) handles everything else.
  *
- * All network I/O happens on a background thread.  The main game thread
- * polls for available frames via waitForFrame() and feeds them into the
- * command list via feedCommandsToCommandList().
- *
- * Usage:
- *   1. Call connect(relayUrl, gameId) to start the background thread.
- *   2. Call receiveGameMetadata() to block until metadata arrives.
- *   3. Each game tick: call waitForFrame(targetFrame), then feedCommandsToCommandList().
- *   4. Call close() when done.
+ * The Recorder reads from the live file while the LiveObserver's background
+ * thread simultaneously appends new BODY data. Short reads in readNextFrame
+ * and appendNextCommand are handled gracefully when m_isLiveStream is set.
  */
 class LiveObserver
 {
@@ -68,133 +47,67 @@ public:
 	LiveObserver();
 	~LiveObserver();
 
-	/// Connect to the relay server and join the specified game session.
-	void connect(const AsciiString& relayUrl, const AsciiString& gameId);
+	/// Connect to the relay and begin receiving replay data.
+	/// Non-blocking; spawns a background thread.
+	/// @param watchUrl Full WebSocket URL (e.g. ws://host:port/watch/GAMEID)
+	void connect(const AsciiString& watchUrl);
 
-	/// Block until game metadata (map, players, CRC info) is received.
-	/// Returns true on success, false on timeout/disconnect.
-	Bool receiveGameMetadata();
-
-	/// Returns a pointer to the reconstructed ReplayGameInfo for game initialization.
-	/// Valid only after receiveGameMetadata() returns true.
-	ReplayGameInfo* getGameInfo() { return &m_replayGameInfo; }
-
-	/// Returns the game options string (S=... format) received from the relay.
-	/// This can be fed to ParseAsciiStringToGameInfo() to populate player slots.
-	const AsciiString& getGameOptions() const { return m_gameOptionsStr; }
-
-	/// Block until at least one frame >= targetFrame is available, or timeout.
-	/// Returns true if a frame is available, false on timeout/disconnect.
-	Bool waitForFrame(UnsignedInt targetFrame);
-
-	/// Feed the commands for a specific frame to TheCommandList.
-	/// Only processes the single frame matching targetFrame if it exists.
-	void feedCommandsToCommandList(UnsignedInt targetFrame);
-
-	/// Insert a placeholder empty frame so the game can advance past gaps.
-	/// Used when waitForFrame times out but future frames are already buffered.
-	void insertPlaceholderFrame(UnsignedInt frameNum);
-
-	/// Returns how many frames behind the streamer the observer currently is.
-	/// Negative means ahead (shouldn't happen).
-	Int getBufferDelay() const;
-
-	/// Returns the first (lowest) frame number currently in the pending buffer.
-	/// Returns false if the buffer is empty.
-	Bool getFirstBufferedFrame(UnsignedInt& outFrame) const;
+	/// Returns true once the HEADER has been received and playback can start.
+	Bool isReady() const { return m_headerReceived.load(); }
 
 	/// Returns true if connected to the relay server.
 	Bool isConnected() const { return m_connected.load(); }
 
-	/// Returns true if metadata has been received and the observer is ready.
-	Bool isReady() const { return m_metadataReceived.load(); }
+	/// Returns true if the streamer has ended the session.
+	Bool isStreamEnded() const { return m_streamEnded.load(); }
 
-	/// Returns the current frame number of the streamer (from metadata updates).
-	UnsignedInt getStreamerFrame() const { return m_streamerFrame.load(); }
-
-	/// Returns the streamer's reported FPS (0 if unknown).
-	Int getStreamerFps() const { return m_streamerFps.load(); }
+	/// Returns the filename of the live replay file (e.g. "996C586F_live.rep").
+	const AsciiString& getLiveReplayFilename() const { return m_liveFilename; }
 
 	/// Close the connection and shut down the background thread.
 	void close();
 
 private:
-	/// Background thread entry point for all network I/O.
+	/// Background thread for network I/O.
 	void networkThreadFunc();
 
-	/// Connect to relay via WebSocket (called from network thread).
+	/// Connect via WebSocket (called from network thread).
 	bool connectToRelay();
 
-	/// Attempt to reconnect to the relay after a disconnect.
-	bool reconnectToRelay();
+	/// Send data over WebSocket binary (called from network thread).
+	bool wsSendBinary(const unsigned char* data, size_t len);
 
-	/// Send data over WebSocket (called from network thread).
-	bool wsSend(const void* data, size_t len);
-
-	/// Receive data from WebSocket (non-blocking, called from network thread).
+	/// Receive data from WebSocket (non-blocking).
 	bool wsRecv(std::vector<char>& outBuffer);
 
-	/// Send a JSON message over WebSocket.
-	bool sendJsonMessage(const AsciiString& jsonMsg);
+	/// Open the local replay file for writing.
+	bool openLiveFile();
 
-	/// Parse an incoming JSON frame message from the relay.
-	void parseFrameMessage(const AsciiString& json);
+	/// Process an incoming binary frame from the relay.
+	void handleFrame(unsigned char type, const char* payload, size_t len);
 
-	/// Parse an incoming catchup_bulk message (array of frames) from the relay.
-	void parseBulkCatchup(const AsciiString& json);
-
-	/// Parse an incoming JSON metadata message from the relay.
-	void parseMetadataMessage(const AsciiString& json);
-
-	/// Deserialize binary commands into a LiveFrameData and push to m_pendingFrames.
-	void deserializeFrame(UnsignedInt frameNum, const char* payload, Int payloadSize);
-
-	// --- State ---
 	std::atomic<Bool> m_connected;
 	std::atomic<Bool> m_shouldRun;
-	std::atomic<Bool> m_metadataReceived;
+	std::atomic<Bool> m_headerReceived;
+	std::atomic<Bool> m_streamEnded;
 
 	AsciiString m_relayUrl;
 	AsciiString m_gameId;
 
-	UnsignedInt m_lastReceivedFrame;    ///< Highest frame number received from relay
-	UnsignedInt m_lastProcessedFrame;   ///< Highest frame number fed to TheCommandList
-	std::atomic<UnsignedInt> m_streamerFrame;  ///< Current frame of the streamer
-	std::atomic<Int> m_streamerFps;            ///< Framerate of the streamer
+	File* m_liveFile;
+	AsciiString m_liveFilePath;
+	AsciiString m_liveFilename;   // e.g. "996C586F_live.rep"
 
-	// CURL WebSocket handles (owned by the background thread)
 	void* m_curlEasy;
 	void* m_curlMulti;
 
-	// Background thread
 	std::thread m_networkThread;
-	mutable std::mutex m_pendingMutex;
-
-	/// Buffered frames waiting to be consumed by the game thread.
-	std::list<LiveFrameData> m_pendingFrames;
-
-	/// Reconstructed game info from metadata.
-	ReplayGameInfo m_replayGameInfo;
-
-	/// Game options string (S=... format) from relay metadata.
-	/// Used by ParseAsciiStringToGameInfo() to populate player slots.
-	AsciiString m_gameOptionsStr;
-
-	/// Reconnection state
-	Int m_reconnectAttempts;
-	bool m_isReconnecting;
-	static const Int MAX_RECONNECT_ATTEMPTS = 10;
-	static const Int RECONNECT_DELAY_MS = 2000;
 };
 
 extern LiveObserver* TheLiveObserver;
 LiveObserver* createLiveObserver();
 
-/// Log a message to live_observer_debug.log (opens file on first call).
 void liveObserverLog(const char* fmt, ...);
-
-/// Write initial config header to live_observer_debug.log.
-/// Called at game start when observer mode is activated via the menu.
 void liveObserverInitLog(const char* watchUrl);
 
 #endif // GENERALS_ONLINE

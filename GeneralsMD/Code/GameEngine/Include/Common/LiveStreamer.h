@@ -20,27 +20,46 @@
 
 #include "Common/AsciiString.h"
 #include "Common/GameCommon.h"
+#include "Common/ReplayStreamSink.h"
 #include <thread>
 #include <mutex>
 #include <atomic>
 #include <vector>
 #include <queue>
 
-class GameMessage;
+/**
+ * Binary message types sent over WebSocket between streamer/observer and relay.
+ */
+enum LiveMsgType : unsigned char {
+	LIVE_MSG_REGISTER = 0,
+	LIVE_MSG_HEADER    = 1,
+	LIVE_MSG_PATCH     = 2,
+	LIVE_MSG_BODY      = 3,
+	LIVE_MSG_END       = 4,
+	LIVE_MSG_ROLE      = 5,
+	LIVE_MSG_ERROR     = 6,
+};
 
 /**
- * LiveStreamer streams game commands to a relay server via WebSocket.
- * Uses the same serialization format as .rep replay files so the relay
- * server can parse and forward frames to observers in real time.
+ * LiveStreamer implements IReplayStreamSink and forwards raw replay bytes
+ * to the relay server via WebSocket using a simple binary envelope.
  *
- * All network I/O happens on a background thread so the game loop is
- * never blocked.  If the connection fails the game continues normally.
+ * It has NO knowledge of the replay file format — it just receives raw
+ * header/body/patch bytes from the Recorder and sends them over the wire.
  */
-class LiveStreamer
+class LiveStreamer : public IReplayStreamSink
 {
 public:
 	LiveStreamer();
-	~LiveStreamer();
+	virtual ~LiveStreamer();
+
+	/// IReplayStreamSink — called by Recorder during recording
+	virtual void onHeaderBytes(const void* data, Int size) override;
+	virtual void onHeaderComplete() override;
+	virtual void onHeaderPatch(Int offset, const void* data, Int size) override;
+	virtual void onBodyBytes(const void* data, Int size) override;
+	virtual void onBodyFlush() override;
+	virtual void onRecordingEnded() override;
 
 	/// Connect to the relay server (non-blocking, spawns background thread).
 	void init(const AsciiString& relayUrl);
@@ -57,64 +76,43 @@ public:
 		Bool canStream);
 
 	/// Called when the relay assigns a role ("streamer" or "backup" or "none").
-	void onRoleAssigned(const AsciiString& role, const AsciiString& gameId);
-
-	/// Buffer a single GameMessage for the relay (called from writeToFile path).
-	/// Serializes the message in the same binary format as the .rep file.
-	/// Must be followed by flushFrame() to send the accumulated data.
-	void bufferMessage(GameMessage* msg, UnsignedInt frame);
-
-	/// Send buffered frame data to the relay and clear the buffer.
-	/// Called at the end of each frame from Recorder::updateRecord().
-	void flushFrame(UnsignedInt frame, Int currentFps);
-
-	/// Send game metadata (map, players, CRC info, version, etc.).
-	void sendMetadata();
+	void onRoleAssigned(const AsciiString& role, const AsciiString& gameId, uint64_t bodyOffset);
 
 	/// Called when this client becomes the active streamer (takeover from backup).
-	void onTakeover();
+	/// NOTE: This is a UI-informational flag ONLY.  It does NOT gate any data flow —
+	/// the IReplayStreamSink callbacks (onHeaderBytes, onBodyBytes, etc.) always
+	/// send regardless of role.  Never add a role-guard to the sink methods.
+	void onTakeover(uint64_t bodyOffset);
 
-	/// Process incoming messages from the relay (called from background thread).
-	void tick();
-
-	Bool isStreaming() const { return m_isStreaming; }
-	Bool isBackup() const { return m_isBackup; }
-	Bool isConnected() const { return m_connected; }
+	/// UI-informational ONLY — do not use to gate data flow.
+	Bool isStreaming() const { return m_isStreaming.load(); }
+	Bool isBackup() const { return m_isBackup.load(); }
+	Bool isConnected() const { return m_connected.load(); }
 	AsciiString getGameId() const { return m_gameId; }
 
-	/// Compute a deterministic game hash from game parameters.
 	static AsciiString computeGameHash(
 		const AsciiString& mapName,
 		const AsciiString& gameMode,
 		UnsignedInt startTime,
 		const AsciiString& sortedPlayerNames);
 
-	/// Escape special characters for JSON string values.
-	static AsciiString jsonEscape(const AsciiString& raw);
+	struct QueuedFrame
+	{
+		unsigned char type;
+		std::vector<char> data;
+	};
 
 private:
-	/// Background thread entry point.
 	void networkThreadFunc();
-
-	/// Connect to relay (called from background thread).
 	bool connectToRelay();
-
-	/// Send raw data over WebSocket (called from background thread).
-	bool wsSend(const void* data, size_t len);
-
-	/// Receive data from WebSocket (called from background thread).
+	bool wsSendBinary(const unsigned char* data, size_t len);
 	bool wsRecv(std::vector<char>& outBuffer);
+	bool sendBinaryFrame(LiveMsgType type, const void* payload, size_t payloadLen);
+	bool sendBinaryFrame(const QueuedFrame& frame);
+	bool sendJsonFrame(const char* jsonStr);
+	void queueFrame(LiveMsgType type, const void* data, size_t len);
 
-	/// Send a JSON message over WebSocket.
-	bool sendJsonMessage(const AsciiString& jsonMsg);
-
-	/// Serialize a single GameMessage into a binary buffer (same format as .rep writeToFile).
-	void serializeMessage(GameMessage* msg, UnsignedInt frame, std::vector<char>& outBuffer);
-
-	/// Serialize a single GameMessage argument.
-	void serializeArgument(Int argType, const void* argData, std::vector<char>& outBuffer);
-
-	// --- State ---
+	// UI-informational only — never gate data flow with these
 	std::atomic<Bool> m_isStreaming;
 	std::atomic<Bool> m_isBackup;
 	std::atomic<Bool> m_connected;
@@ -125,37 +123,25 @@ private:
 	AsciiString m_gameHash;
 	AsciiString m_playerName;
 
-	// CURL WebSocket handles (owned by the background thread)
 	void* m_curlEasy;
 	void* m_curlMulti;
 
-	// Background thread
 	std::thread m_networkThread;
 	mutable std::mutex m_sendMutex;
 
-	// Outgoing message queue (game thread pushes, network thread pops)
-	struct QueuedMessage
-	{
-		std::vector<char> data;
-		Bool isBinary;
-	};
-	std::queue<QueuedMessage> m_outgoingQueue;
+	std::queue<QueuedFrame> m_outgoingQueue;
 
-	// Frame counter for throttling metadata sends
-	UnsignedInt m_lastMetadataFrame;
+	// Header accumulation — buffered until onHeaderComplete()
+	std::vector<char> m_headerBuffer;
 
-	// Per-frame buffer: accumulates messages during a game tick,
-	// flushed to the relay at the end of the frame.  This mirrors
-	// the exact data that writeToFile() writes to the .rep file.
-	std::vector<char> m_frameBuffer;
+	// Body accumulation — buffered until onBodyFlush() or threshold
+	std::vector<char> m_bodyBuffer;
+	static const size_t BODY_FLUSH_THRESHOLD = 4096;
+	uint64_t m_bodySentOffset;   // absolute file offset for next BODY chunk
 };
 
 extern LiveStreamer* TheLiveStreamer;
 LiveStreamer* createLiveStreamer();
 
-/// Log a message to live_streamer_debug.log (opens file on first call).
 void liveStreamLog(const char* fmt, ...);
-
-/// Write initial config header to live_streamer_debug.log.
-/// Should be called at game start, BEFORE any streaming decision is made.
 void liveStreamerInitLog();

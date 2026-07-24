@@ -423,6 +423,8 @@ void LiveObserver::networkThreadFunc()
     // Persistent buffer for incoming data — multiple frames may arrive in
     // one wsRecv call, or a frame may be split across multiple calls.
     std::vector<char> buf;
+    size_t totalBytesReceived = 0;
+    size_t totalFramesProcessed = 0;
 
     while (m_shouldRun.load() && m_connected.load())
     {
@@ -443,7 +445,13 @@ void LiveObserver::networkThreadFunc()
         {
             std::vector<char> tmp;
             if (wsRecv(tmp) && !tmp.empty())
+            {
+                totalBytesReceived += tmp.size();
+                if (totalBytesReceived % 10240 < tmp.size() || totalBytesReceived < 1024)
+                    liveObserverLog("LiveObserver: received %zu bytes from relay (total=%zu, queued=%zu)\n",
+                        tmp.size(), totalBytesReceived, buf.size() + tmp.size());
                 buf.insert(buf.end(), tmp.begin(), tmp.end());
+            }
         }
 
         // Process as many complete frames as possible from the buffer
@@ -460,6 +468,7 @@ void LiveObserver::networkThreadFunc()
 
             const char* payload = (msgLen > 0) ? buf.data() + 5 : nullptr;
             handleFrame(msgType, payload, msgLen);
+            ++totalFramesProcessed;
 
             // Remove the processed frame from the buffer
             buf.erase(buf.begin(), buf.begin() + 5 + msgLen);
@@ -485,7 +494,7 @@ void LiveObserver::networkThreadFunc()
         m_curlEasy = nullptr;
     }
     m_connected.store(false);
-    liveObserverLog("LiveObserver::networkThreadFunc ended\n");
+    liveObserverLog("LiveObserver::networkThreadFunc ended — totalBytes=%zu totalFrames=%zu\n", totalBytesReceived, totalFramesProcessed);
 }
 
 #endif // GENERALS_ONLINE

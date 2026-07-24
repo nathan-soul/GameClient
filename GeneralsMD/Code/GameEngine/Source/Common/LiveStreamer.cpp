@@ -19,29 +19,17 @@
 #include "PreRTS.h"
 
 #include "Common/LiveStreamer.h"
-#include "Common/MessageStream.h"
 #include "Common/GlobalData.h"
-#include "Common/PlayerList.h"
-#include "Common/Player.h"
-#include "Common/GameEngine.h"
-#include "GameLogic/GameLogic.h"
-#include "Common/AsciiString.h"
-#include "Common/CRCDebug.h"
-#include "Common/Recorder.h"
-
-#include "GameNetwork/GameMessageParser.h"
-#include "GameNetwork/GameInfo.h"
 
 #include "GameNetwork/GeneralsOnline/Vendor/libcurl/curl.h"
 #include "GameNetwork/GeneralsOnline/Vendor/libcurl/multi.h"
 #include "GameNetwork/GeneralsOnline/Vendor/libcurl/websockets.h"
 
-#include <algorithm>
 #include <cstdio>
 #include <cstdarg>
-
-extern GameLogic* TheGameLogic;
-extern CommandList* TheCommandList;
+#include <cstring>
+#include <cstdlib>
+#include <algorithm>
 
 // ============================================================================
 // liveStreamLog — write diagnostic messages to live_streamer_debug.log
@@ -60,11 +48,6 @@ void liveStreamLog(const char* fmt, ...) {
     }
 }
 
-// ============================================================================
-// liveStreamerInitLog — write initial config header to live_streamer_debug.log
-// Called at game start BEFORE the streaming decision, so the log is ALWAYS
-// created even if LiveStreamEnabled is false.
-// ============================================================================
 void liveStreamerInitLog() {
     liveStreamLog("=== Live Stream Init ===\n");
     if (TheGlobalData) {
@@ -77,1006 +60,560 @@ void liveStreamerInitLog() {
 }
 
 // ============================================================================
-// findSubstring — wrapper around strstr() for AsciiString (AsciiString::find
-// only takes a single char, not a string pattern)
+// LiveStreamer
 // ============================================================================
-static Int findSubstring(const AsciiString& haystack, const char* needle, Int startPos = 0)
-{
-	const char* str = haystack.str();
-	if (!str || !needle || startPos < 0)
-		return -1;
-	Int len = (Int)strlen(str);
-	if (startPos >= len)
-		return -1;
-	const char* found = strstr(str + startPos, needle);
-	if (!found)
-		return -1;
-	return (Int)(found - str);
-}
-
-// ============================================================================
-// base64Encode — encode binary data to base64 string
-// ============================================================================
-
-static void base64Encode(const char* data, size_t len, AsciiString& out)
-{
-	static const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-	out.clear();
-	unsigned char input[3];
-	unsigned char output[4];
-	int inputIdx = 0;
-
-	for (size_t i = 0; i < len; i++)
-	{
-		input[inputIdx++] = (unsigned char)data[i];
-		if (inputIdx == 3)
-		{
-			output[0] = (input[0] & 0xfc) >> 2;
-			output[1] = ((input[0] & 0x03) << 4) | ((input[1] & 0xf0) >> 4);
-			output[2] = ((input[1] & 0x0f) << 2) | ((input[2] & 0xc0) >> 6);
-			output[3] = input[2] & 0x3f;
-			char buf[5] = { table[output[0]], table[output[1]], table[output[2]], table[output[3]], 0 };
-			out.concat(buf);
-			inputIdx = 0;
-		}
-	}
-	if (inputIdx > 0)
-	{
-		for (int j = inputIdx; j < 3; j++)
-			input[j] = 0;
-		output[0] = (input[0] & 0xfc) >> 2;
-		output[1] = ((input[0] & 0x03) << 4) | ((input[1] & 0xf0) >> 4);
-		output[2] = ((input[1] & 0x0f) << 2) | ((input[2] & 0xc0) >> 6);
-		char buf[5] = { table[output[0]], table[output[1]], '=', '=', 0 };
-		if (inputIdx >= 2) buf[2] = table[output[2]];
-		out.concat(buf);
-	}
-}
-
-/**
- * The singleton live streamer instance.
- */
 LiveStreamer* TheLiveStreamer = nullptr;
 
-LiveStreamer* createLiveStreamer()
-{
-	return MSGNEW("LiveStreamer") LiveStreamer();
-}
-
-// ============================================================================
-// Constructor / Destructor
-// ============================================================================
-
 LiveStreamer::LiveStreamer()
-	: m_isStreaming(FALSE)
-	, m_isBackup(FALSE)
-	, m_connected(FALSE)
-	, m_shouldRun(FALSE)
-	, m_curlEasy(nullptr)
-	, m_curlMulti(nullptr)
-	, m_lastMetadataFrame(0)
+    : m_isStreaming(false)
+    , m_isBackup(false)
+    , m_connected(false)
+    , m_shouldRun(false)
+    , m_curlEasy(nullptr)
+    , m_curlMulti(nullptr)
+    , m_bodySentOffset(0)
 {
+    m_headerBuffer.reserve(4096);
+    m_bodyBuffer.reserve(4096);
 }
 
 LiveStreamer::~LiveStreamer()
 {
-	close();
+    close();
 }
 
-// ============================================================================
-// computeGameHash — deterministic hash from game parameters
-// ============================================================================
-
-AsciiString LiveStreamer::computeGameHash(
-	const AsciiString& mapName,
-	const AsciiString& gameMode,
-	UnsignedInt startTime,
-	const AsciiString& sortedPlayerNames)
+LiveStreamer* createLiveStreamer()
 {
-	// Simple FNV-1a hash — deterministic, fast, good enough for game identification.
-	// All clients in the same game produce the same hash.
-	AsciiString input;
-	input.format("%s|%s|%u|%s", mapName.str(), gameMode.str(), startTime, sortedPlayerNames.str());
-
-	UnsignedInt hash = 2166136261u; // FNV offset basis
-	const char* p = input.str();
-	while (*p)
-	{
-		hash ^= (UnsignedInt)(UnsignedByte)(*p);
-		hash *= 16777619u; // FNV prime
-		++p;
-	}
-
-	AsciiString result;
-	result.format("%08X", hash);
-	return result;
+    return new LiveStreamer();
 }
 
 // ============================================================================
-// jsonEscape — escape special characters for safe JSON string values
+// IReplayStreamSink implementation
 // ============================================================================
 
-AsciiString LiveStreamer::jsonEscape(const AsciiString& raw)
+void LiveStreamer::onHeaderBytes(const void* data, Int size)
 {
-	AsciiString result;
-	const char* src = raw.str();
-	
-	while (*src)
-	{
-		switch (*src)
-		{
-			case '\\': result.concat('\\'); result.concat('\\'); break;
-			case '"':  result.concat('\\'); result.concat('"');  break;
-			case '\n': result.concat('\\'); result.concat('n');  break;
-			case '\r': result.concat('\\'); result.concat('r');  break;
-			case '	': result.concat('\\'); result.concat('t');  break;
-			default:   result.concat(*src); break;
-		}
-		src++;
-	}
-	
-	return result;
+    if (size <= 0)
+        return;
+
+    const char* p = static_cast<const char*>(data);
+    m_headerBuffer.insert(m_headerBuffer.end(), p, p + size);
+}
+
+void LiveStreamer::onHeaderComplete()
+{
+    if (m_headerBuffer.empty())
+        return;
+
+    queueFrame(LIVE_MSG_HEADER, m_headerBuffer.data(), m_headerBuffer.size());
+    m_headerBuffer.clear();
+}
+
+void LiveStreamer::onHeaderPatch(Int offset, const void* data, Int size)
+{
+    if (size <= 0)
+        return;
+
+    // Encode: 4 bytes offset (LE) + 4 bytes length (LE) + data
+    unsigned char patchBuf[8];
+    patchBuf[0] = (unsigned char)(offset & 0xFF);
+    patchBuf[1] = (unsigned char)((offset >> 8) & 0xFF);
+    patchBuf[2] = (unsigned char)((offset >> 16) & 0xFF);
+    patchBuf[3] = (unsigned char)((offset >> 24) & 0xFF);
+    patchBuf[4] = (unsigned char)(size & 0xFF);
+    patchBuf[5] = (unsigned char)((size >> 8) & 0xFF);
+    patchBuf[6] = (unsigned char)((size >> 16) & 0xFF);
+    patchBuf[7] = (unsigned char)((size >> 24) & 0xFF);
+
+    std::vector<char> payload;
+    payload.reserve(8 + size);
+    payload.insert(payload.end(), patchBuf, patchBuf + 8);
+    payload.insert(payload.end(), static_cast<const char*>(data), static_cast<const char*>(data) + size);
+
+    queueFrame(LIVE_MSG_PATCH, payload.data(), payload.size());
+}
+
+void LiveStreamer::onBodyBytes(const void* data, Int size)
+{
+    if (size <= 0)
+        return;
+
+    const char* p = static_cast<const char*>(data);
+    m_bodyBuffer.insert(m_bodyBuffer.end(), p, p + size);
+}
+
+void LiveStreamer::onBodyFlush()
+{
+    if (m_bodyBuffer.empty())
+        return;
+
+    // Build framed BODY: [8B offset LE][data]
+    uint64_t off = m_bodySentOffset;
+    unsigned char offBuf[8];
+    offBuf[0] = (unsigned char)(off & 0xFF);
+    offBuf[1] = (unsigned char)((off >> 8) & 0xFF);
+    offBuf[2] = (unsigned char)((off >> 16) & 0xFF);
+    offBuf[3] = (unsigned char)((off >> 24) & 0xFF);
+    offBuf[4] = (unsigned char)((off >> 32) & 0xFF);
+    offBuf[5] = (unsigned char)((off >> 40) & 0xFF);
+    offBuf[6] = (unsigned char)((off >> 48) & 0xFF);
+    offBuf[7] = (unsigned char)((off >> 56) & 0xFF);
+
+    std::vector<char> framed;
+    framed.reserve(8 + m_bodyBuffer.size());
+    framed.insert(framed.end(), offBuf, offBuf + 8);
+    framed.insert(framed.end(), m_bodyBuffer.begin(), m_bodyBuffer.end());
+
+    queueFrame(LIVE_MSG_BODY, framed.data(), framed.size());
+    m_bodySentOffset += m_bodyBuffer.size();
+    m_bodyBuffer.clear();
+}
+
+void LiveStreamer::onRecordingEnded()
+{
+    // Flush any remaining body data
+    onBodyFlush();
+
+    // Send END signal
+    queueFrame(LIVE_MSG_END, nullptr, 0);
 }
 
 // ============================================================================
-// init — set relay URL and start the background network thread
+// Network setup
 // ============================================================================
 
 void LiveStreamer::init(const AsciiString& relayUrl)
 {
-	if (m_shouldRun)
-	{
-		liveStreamLog("LiveStreamer::init: already running, skipping\n");
-		return;
-	}
+    m_relayUrl = relayUrl;
+    m_shouldRun.store(true);
 
-	m_relayUrl = relayUrl;
-	m_shouldRun = TRUE;
-	m_connected = FALSE;
-	m_isStreaming = FALSE;
-	m_isBackup = FALSE;
+    liveStreamLog("LiveStreamer::init connecting to %s\n", relayUrl.str());
 
-	DEBUG_LOG(("LiveStreamer::init() - connecting to %s", relayUrl.str()));
-	liveStreamLog("LiveStreamer::init: relayUrl=%s\n", relayUrl.str());
-	liveStreamLog("LiveStreamer::init: m_shouldRun=%d, m_connected=%d\n", m_shouldRun.load(), m_connected.load());
-
-	// Start the background network thread
-	m_networkThread = std::thread(&LiveStreamer::networkThreadFunc, this);
-	liveStreamLog("LiveStreamer::init: network thread launched (id=%lu)\n",
-		(unsigned long)m_networkThread.native_handle());
+    m_networkThread = std::thread(&LiveStreamer::networkThreadFunc, this);
 }
-
-// ============================================================================
-// close — shut down the background thread
-// ============================================================================
 
 void LiveStreamer::close()
 {
-	if (!m_shouldRun)
-	{
-		liveStreamLog("LiveStreamer::close: not running, skipping\n");
-		return;
-	}
+    m_shouldRun.store(false);
 
-	liveStreamLog("LiveStreamer::close: shutting down (connected=%d, isStreaming=%d, isBackup=%d)\n",
-		m_connected.load(), m_isStreaming.load(), m_isBackup.load());
-	m_shouldRun = FALSE;
-	m_isStreaming = FALSE;
-	m_isBackup = FALSE;
+    if (m_networkThread.joinable())
+        m_networkThread.join();
 
-	if (m_networkThread.joinable())
-	{
-		liveStreamLog("LiveStreamer::close: joining network thread...\n");
-		m_networkThread.join();
-		liveStreamLog("LiveStreamer::close: network thread joined\n");
-	}
-
-	m_connected = FALSE;
-	DEBUG_LOG(("LiveStreamer::close() - shut down"));
-	liveStreamLog("LiveStreamer::close: done\n");
+    m_connected.store(false);
+    m_isStreaming.store(false);
+    m_isBackup.store(false);
 }
 
 // ============================================================================
-// registerForGame — tell the relay server about this game
+// Registration
 // ============================================================================
 
 void LiveStreamer::registerForGame(
-	const AsciiString& gameHash,
-	const AsciiString& playerName,
-	const AsciiString& mapName,
-	const AsciiString& gameMode,
-	Bool canStream)
+    const AsciiString& gameHash,
+    const AsciiString& playerName,
+    const AsciiString& mapName,
+    const AsciiString& gameMode,
+    Bool canStream)
 {
-	m_gameHash = gameHash;
-	m_playerName = playerName;
+    m_gameHash = gameHash;
+    m_playerName = playerName;
 
-	// Build JSON registration message
-	AsciiString json;
-	json.format(
-		"{\"type\":\"register\",\"game_hash\":\"%s\",\"player_name\":\"%s\","
-		"\"map_name\":\"%s\",\"gameMode\":\"%s\",\"can_stream\":%s}",
-		jsonEscape(gameHash).str(),
-		jsonEscape(playerName).str(),
-		jsonEscape(mapName).str(),
-		jsonEscape(gameMode).str(),
-		canStream ? "true" : "false");
+    liveStreamLog("LiveStreamer::registerForGame hash=%s player=%s canStream=%d\n",
+        gameHash.str(), playerName.str(), (int)canStream);
 
-	// Log registration details
-	liveStreamLog("LiveStreamer::registerForGame: game_hash=%.200s\n", gameHash.str());
-	liveStreamLog("LiveStreamer::registerForGame: player=%.200s can_stream=%d\n", playerName.str(), canStream);
-	liveStreamLog("LiveStreamer::registerForGame: registration JSON=%.200s\n", json.str());
+    // Build JSON registration payload
+    char regJson[1024];
+    snprintf(regJson, sizeof(regJson),
+        "{\"type\":\"register\",\"game_hash\":\"%s\",\"player_name\":\"%s\","
+        "\"map_name\":\"%s\",\"game_mode\":\"%s\",\"can_stream\":%s}",
+        gameHash.str(), playerName.str(), mapName.str(), gameMode.str(),
+        canStream ? "true" : "false");
 
-	// Queue for sending on the network thread
-	QueuedMessage msg;
-	msg.isBinary = FALSE;
-	const char* jsonStr = json.str();
-	msg.data.assign(jsonStr, jsonStr + strlen(jsonStr) + 1);  // +1 for null terminator
+    // Queue the REGISTER message — the network thread will send it once connected.
+    // (Must NOT call sendBinaryFrame directly here because m_connected may still be false.)
+    queueFrame(LIVE_MSG_REGISTER, regJson, strlen(regJson));
+}
 
-	std::lock_guard<std::mutex> lock(m_sendMutex);
-	m_outgoingQueue.push(msg);
+void LiveStreamer::onRoleAssigned(const AsciiString& role, const AsciiString& gameId, uint64_t bodyOffset)
+{
+    m_gameId = gameId;
+    m_isStreaming.store(role == "streamer");
+    m_isBackup.store(role == "backup");
 
-	liveStreamLog("LiveStreamer::registerForGame: queued %d bytes\n", (int)msg.data.size());
-	DEBUG_LOG(("LiveStreamer::registerForGame() - hash=%s player=%s", gameHash.str(), playerName.str()));
+    // Track the body offset reported by the relay. For the primary streamer
+    // this is 0. For a backup taking over, this is the current body length.
+    m_bodySentOffset = bodyOffset;
+
+    liveStreamLog("LiveStreamer::onRoleAssigned role=%s gameId=%s streaming=%d bodyOff=%llu\n",
+        role.str(), gameId.str(), (int)m_isStreaming.load(), (unsigned long long)bodyOffset);
+}
+
+void LiveStreamer::onTakeover(uint64_t bodyOffset)
+{
+    m_isStreaming.store(true);
+    m_isBackup.store(false);
+    m_bodySentOffset = bodyOffset;
+    liveStreamLog("LiveStreamer::onTakeover promoted to streamer, bodyOff=%llu\n",
+        (unsigned long long)bodyOffset);
 }
 
 // ============================================================================
-// onRoleAssigned — relay tells us our role
+// Compute game hash
 // ============================================================================
 
-void LiveStreamer::onRoleAssigned(const AsciiString& role, const AsciiString& gameId)
+AsciiString LiveStreamer::computeGameHash(
+    const AsciiString& mapName,
+    const AsciiString& gameMode,
+    UnsignedInt startTime,
+    const AsciiString& sortedPlayerNames)
 {
-	m_gameId = gameId;
-	liveStreamLog("LiveStreamer::onRoleAssigned: role=%.100s gameId=%.100s\n", role.str(), gameId.str());
+    AsciiString raw;
+    raw.format("%s|%s|%u|%s", mapName.str(), gameMode.str(), startTime, sortedPlayerNames.str());
 
-	if (role == "streamer")
-	{
-		m_isStreaming = TRUE;
-		m_isBackup = FALSE;
-		DEBUG_LOG(("LiveStreamer::onRoleAssigned() - STREAMER for game %s", gameId.str()));
-		liveStreamLog("onRoleAssigned() - STREAMER for game %s\n", gameId.str());
-	}
-	else if (role == "backup")
-	{
-		m_isStreaming = FALSE;
-		m_isBackup = TRUE;
-		DEBUG_LOG(("LiveStreamer::onRoleAssigned() - BACKUP for game %s", gameId.str()));
-		liveStreamLog("onRoleAssigned() - BACKUP for game %s\n", gameId.str());
-	}
-	else
-	{
-		m_isStreaming = FALSE;
-		m_isBackup = FALSE;
-		DEBUG_LOG(("LiveStreamer::onRoleAssigned() - OBSERVER for game %s", gameId.str()));
-		liveStreamLog("onRoleAssigned() - OBSERVER for game %s\n", gameId.str());
-	}
+    // Simple FNV-1a hash
+    unsigned int hash = 2166136261u;
+    for (const char* pc = raw.str(); *pc; ++pc)
+    {
+        hash ^= (unsigned char)(*pc);
+        hash *= 16777619u;
+    }
+
+    AsciiString result;
+    result.format("%08X", hash);
+    return result;
 }
 
 // ============================================================================
-// onTakeover — backup becomes the active streamer
+// Binary frame helpers
 // ============================================================================
 
-void LiveStreamer::onTakeover()
+void LiveStreamer::queueFrame(LiveMsgType type, const void* data, size_t len)
 {
-	m_isStreaming = TRUE;
-	m_isBackup = FALSE;
-	DEBUG_LOG(("LiveStreamer::onTakeover() - now STREAMER for game %s", m_gameId.str()));
-	liveStreamLog("onTakeover() - now STREAMER for game %s\n", m_gameId.str());
+    QueuedFrame frame;
+    frame.type = (unsigned char)type;
+    if (data && len > 0)
+    {
+        frame.data.assign(static_cast<const char*>(data), static_cast<const char*>(data) + len);
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_sendMutex);
+        m_outgoingQueue.push(std::move(frame));
+    }
+}
+
+bool LiveStreamer::sendBinaryFrame(LiveMsgType type, const void* payload, size_t payloadLen)
+{
+    if (!m_connected.load())
+        return false;
+
+    // Envelope: 1 byte type + 4 bytes length (LE) + payload
+    // Must be sent as ONE WebSocket frame — curl_ws_send writes a frame per call.
+    unsigned int len = (unsigned int)payloadLen;
+    size_t totalSize = 5 + (payload ? len : 0);
+    std::vector<unsigned char> buf(totalSize);
+    buf[0] = (unsigned char)type;
+    buf[1] = (unsigned char)(len & 0xFF);
+    buf[2] = (unsigned char)((len >> 8) & 0xFF);
+    buf[3] = (unsigned char)((len >> 16) & 0xFF);
+    buf[4] = (unsigned char)((len >> 24) & 0xFF);
+    if (payload && len > 0)
+        memcpy(buf.data() + 5, payload, len);
+
+    return wsSendBinary(buf.data(), totalSize);
+}
+
+bool LiveStreamer::sendBinaryFrame(const QueuedFrame& frame)
+{
+    return sendBinaryFrame((LiveMsgType)frame.type,
+        frame.data.empty() ? nullptr : frame.data.data(),
+        frame.data.size());
+}
+
+bool LiveStreamer::sendJsonFrame(const char* jsonStr)
+{
+    return sendBinaryFrame(LIVE_MSG_REGISTER, jsonStr, strlen(jsonStr));
 }
 
 // ============================================================================
-// sendMetadata — send game info to relay server
+// WebSocket I/O (libcurl, background thread)
 // ============================================================================
 
-void LiveStreamer::sendMetadata()
+bool LiveStreamer::wsSendBinary(const unsigned char* data, size_t len)
 {
-	if (!m_connected || !m_isStreaming)
-	{
-		liveStreamLog("LiveStreamer::sendMetadata: skipped (connected=%d, isStreaming=%d)\n",
-			m_connected.load(), m_isStreaming.load());
-		return;
-	}
+    if (!m_curlEasy)
+        return false;
 
-	// Build metadata JSON
-	AsciiString mapName;
-	AsciiString gameMode;
-	if (TheGlobalData)
-	{
-		mapName = TheGlobalData->m_mapName;
-	}
+    size_t sent = 0;
+    CURLcode rc = curl_ws_send(m_curlEasy, data, len, &sent, 0, CURLWS_BINARY);
+    if (rc != CURLE_OK)
+    {
+        liveStreamLog("LiveStreamer::wsSendBinary failed: %d\n", (int)rc);
+        return false;
+    }
+    return (sent == len);
+}
 
-	// Gather player info
-	AsciiString playersJson;
-	if (ThePlayerList)
-	{
-		playersJson = "[";
-		Bool first = TRUE;
-		for (Int i = 0; i < MAX_SLOTS; ++i)
-		{
-			Player* p = ThePlayerList->getNthPlayer(i);
-			if (p && p->isPlayerActive())
-			{
-				if (!first)
-					playersJson.concat(",");
-				first = FALSE;
+bool LiveStreamer::wsRecv(std::vector<char>& outBuffer)
+{
+    if (!m_curlEasy)
+        return false;
 
-				UnicodeString displayName = p->getPlayerDisplayName();
-				AsciiString nameAscii;
-				nameAscii.translate(displayName);
+    outBuffer.clear();
+    outBuffer.resize(65536);
 
-				AsciiString playerEntry;
-				playerEntry.format("{\"slot\":%d,\"name\":\"%s\",\"team\":%d}",
-					i, jsonEscape(nameAscii).str(), p->getPlayerIndex());
-				playersJson.concat(playerEntry);
-			}
-		}
-		playersJson.concat("]");
-	}
-	else
-	{
-		playersJson = "[]";
-	}
+    const struct curl_ws_frame* meta = nullptr;
+    size_t nread = 0;
+    CURLcode rc = curl_ws_recv(m_curlEasy, outBuffer.data(), outBuffer.size(), &nread, &meta);
+    if (rc == CURLE_AGAIN)
+    {
+        outBuffer.clear();
+        return false;
+    }
+    if (rc != CURLE_OK)
+    {
+        liveStreamLog("LiveStreamer::wsRecv error: %d\n", (int)rc);
+        outBuffer.clear();
+        return false;
+    }
 
-	UnsignedInt exeCRC = TheGlobalData ? TheGlobalData->m_exeCRC : 0;
-	UnsignedInt iniCRC = TheGlobalData ? TheGlobalData->m_iniCRC : 0;
-	UnsignedInt currentFrame = TheGameLogic ? TheGameLogic->getFrame() : 0;
+    outBuffer.resize(nread);
+    return nread > 0;
+}
 
-	// Get the full game options string so observers can reconstruct the game state.
-	// This includes player slots, teams, map, seed — everything needed to call
-	// ParseAsciiStringToGameInfo() on the observer side.
-	// During live play, the active game info is in TheGameInfo (set by network layer).
-	// TheRecorder->getGameInfo() is only populated during replay playback.
-	AsciiString gameOptions;
-	if (TheGameInfo)
-	{
-		gameOptions = GameInfoToAsciiString(TheGameInfo);
-	}
-	else if (TheRecorder)
-	{
-		gameOptions = GameInfoToAsciiString(TheRecorder->getGameInfo());
-	}
+bool LiveStreamer::connectToRelay()
+{
+    if (m_curlEasy)
+    {
+        curl_easy_cleanup((CURL*)m_curlEasy);
+        m_curlEasy = nullptr;
+    }
+    if (m_curlMulti)
+    {
+        curl_multi_cleanup((CURLM*)m_curlMulti);
+        m_curlMulti = nullptr;
+    }
 
-	AsciiString json;
-	json.format(
-		"{\"type\":\"metadata\",\"game_hash\":\"%s\",\"game_id\":\"%s\","
-		"\"map_name\":\"%s\",\"players\":%s,"
-		"\"game_options\":\"%s\","
-		"\"exe_crc\":%u,\"ini_crc\":%u,\"current_frame\":%u}",
-		jsonEscape(m_gameHash).str(),
-		jsonEscape(m_gameId).str(),
-		jsonEscape(mapName).str(),
-		playersJson.str(),
-		jsonEscape(gameOptions).str(),
-		exeCRC,
-		iniCRC,
-		currentFrame);
+    CURL* easy = curl_easy_init();
+    if (!easy)
+    {
+        liveStreamLog("LiveStreamer::connectToRelay curl_easy_init failed\n");
+        return false;
+    }
 
-	QueuedMessage msg;
-	msg.isBinary = FALSE;
-	const char* jsonStr = json.str();
-	msg.data.assign(jsonStr, jsonStr + strlen(jsonStr) + 1);  // +1 for null terminator
+    // Append /register if not already in the URL
+    AsciiString url = m_relayUrl;
+    {
+        Int len = (Int)strlen(url.str());
+        if (len < 9 || strcmp(url.str() + len - 9, "/register") != 0)
+        {
+            if (len > 0 && url.str()[len - 1] == '/')
+                url.concat("register");
+            else
+                url.concat("/register");
+        }
+    }
 
-	std::lock_guard<std::mutex> lock(m_sendMutex);
-	m_outgoingQueue.push(msg);
+    curl_easy_setopt(easy, CURLOPT_URL, url.str());
+    curl_easy_setopt(easy, CURLOPT_CONNECT_ONLY, 2L);
 
-	DEBUG_LOG(("LiveStreamer::sendMetadata() - sent metadata for frame %u", currentFrame));
-	liveStreamLog("LiveStreamer::sendMetadata: map=%.100s frame=%u json_size=%d\n",
-		mapName.str(), currentFrame, (int)json.getLength());
+    CURLM* multi = curl_multi_init();
+    if (!multi)
+    {
+        curl_easy_cleanup(easy);
+        liveStreamLog("LiveStreamer::connectToRelay curl_multi_init failed\n");
+        return false;
+    }
+
+    curl_multi_add_handle(multi, easy);
+
+    int stillRunning = 0;
+    CURLMcode mc = curl_multi_perform(multi, &stillRunning);
+    while (mc == CURLM_OK && stillRunning > 0)
+    {
+        mc = curl_multi_poll(multi, NULL, 0, 1000, NULL);
+        if (mc == CURLM_OK)
+            mc = curl_multi_perform(multi, &stillRunning);
+    }
+
+    if (mc != CURLM_OK)
+    {
+        liveStreamLog("LiveStreamer::connectToRelay curl_multi_perform failed: %d\n", (int)mc);
+        curl_multi_remove_handle(multi, easy);
+        curl_multi_cleanup(multi);
+        curl_easy_cleanup(easy);
+        return false;
+    }
+
+    // Verify the HTTP upgrade (WebSocket handshake) actually succeeded.
+    // A 404 or other HTTP error still results in stillRunning==0, so we
+    // must explicitly check the transfer result via curl_multi_info_read.
+    int infoRunning = 0;
+    CURLMsg* infoMsg = curl_multi_info_read(multi, &infoRunning);
+    if (!infoMsg || infoMsg->data.result != CURLE_OK)
+    {
+        int result = infoMsg ? (int)infoMsg->data.result : -1;
+        liveStreamLog("LiveStreamer::connectToRelay: handshake failed (result=%d)\n", result);
+        curl_multi_remove_handle(multi, easy);
+        curl_multi_cleanup(multi);
+        curl_easy_cleanup(easy);
+        return false;
+    }
+
+    m_curlEasy = easy;
+    m_curlMulti = multi;
+    m_connected.store(true);
+    liveStreamLog("LiveStreamer::connectToRelay connected\n");
+    return true;
 }
 
 // ============================================================================
-// bufferMessage — serialize a single GameMessage into the per-frame buffer.
-// Called from Recorder::updateRecord() on the SAME messages that
-// writeToFile() writes to the .rep file.  This guarantees the relay
-// gets the exact same binary data.
-// ============================================================================
-
-void LiveStreamer::bufferMessage(GameMessage* msg, UnsignedInt frame)
-{
-	if (!m_connected || !m_isStreaming)
-		return;
-
-	if (!msg)
-		return;
-
-	// Only serialize network messages (same filter as writeToFile)
-	GameMessage::Type msgType = msg->getType();
-	if (msgType <= GameMessage::MSG_BEGIN_NETWORK_MESSAGES ||
-	    msgType >= GameMessage::MSG_END_NETWORK_MESSAGES)
-	{
-		// DEBUG: log filtered messages every 300 frames
-		static UnsignedInt s_lastFilteredLog = 0;
-		if (frame - s_lastFilteredLog >= 300)
-		{
-			liveStreamLog("LiveStreamer::bufferMessage: FILTERED msg type=%d frame=%u\n",
-				(int)msgType, frame);
-			s_lastFilteredLog = frame;
-		}
-		return;
-	}
-
-	// DEBUG: log every 300th buffered message
-	static UnsignedInt s_lastBufferLog = 0;
-	static Int s_bufferedCount = 0;
-	s_bufferedCount++;
-	if (frame - s_lastBufferLog >= 300)
-	{
-		liveStreamLog("LiveStreamer::bufferMessage: BUFFERED type=%d frame=%u count=%d bytes_before=%d\n",
-			(int)msgType, frame, s_bufferedCount, (int)m_frameBuffer.size());
-		s_lastBufferLog = frame;
-		s_bufferedCount = 0;
-	}
-
-	serializeMessage(msg, frame, m_frameBuffer);
-}
-
-// ============================================================================
-// serializeMessage — serialize a single GameMessage (same format as .rep)
-// ============================================================================
-
-void LiveStreamer::serializeMessage(GameMessage* msg, UnsignedInt frame, std::vector<char>& outBuffer)
-{
-	// Same format as RecorderClass::writeToFile():
-	//   [4-byte frame][4-byte msg type][4-byte player index]
-	//   [1-byte numTypes][type entries...][arguments...]
-
-	// Frame number
-	outBuffer.insert(outBuffer.end(), (const char*)&frame, (const char*)&frame + sizeof(frame));
-
-	// Message type
-	GameMessage::Type type = msg->getType();
-	outBuffer.insert(outBuffer.end(), (const char*)&type, (const char*)&type + sizeof(type));
-
-	// Player index
-	Int playerIndex = msg->getPlayerIndex();
-	outBuffer.insert(outBuffer.end(), (const char*)&playerIndex, (const char*)&playerIndex + sizeof(playerIndex));
-
-	// Argument type info (via GameMessageParser)
-	GameMessageParser* parser = newInstance(GameMessageParser)(msg);
-	UnsignedByte numTypes = (UnsignedByte)parser->getNumTypes();
-	outBuffer.push_back((char)numTypes);
-
-	GameMessageParserArgumentType* argType = parser->getFirstArgumentType();
-	while (argType != nullptr)
-	{
-		UnsignedByte t = (UnsignedByte)(argType->getType());
-		outBuffer.push_back((char)t);
-
-		UnsignedByte argCount = (UnsignedByte)(argType->getArgCount());
-		outBuffer.push_back((char)argCount);
-
-		argType = argType->getNext();
-	}
-
-	// Arguments
-	Int numArgs = msg->getArgumentCount();
-	for (Int i = 0; i < numArgs; ++i)
-	{
-		serializeArgument(msg->getArgumentDataType(i), msg->getArgument(i), outBuffer);
-	}
-
-	deleteInstance(parser);
-}
-
-// ============================================================================
-// flushFrame — send the accumulated per-frame buffer to the relay
-// ============================================================================
-
-void LiveStreamer::flushFrame(UnsignedInt frame, Int currentFps)
-{
-	if (!m_connected || !m_isStreaming)
-	{
-		m_frameBuffer.clear();
-		return;
-	}
-
-	// Debug: log buffer size periodically
-	static UnsignedInt s_lastLoggedFrame = 0;
-	if (frame - s_lastLoggedFrame >= 300 || !m_frameBuffer.empty())
-	{
-		liveStreamLog("LiveStreamer::flushFrame: frame=%u buffer_bytes=%d\n",
-			frame, (int)m_frameBuffer.size());
-		s_lastLoggedFrame = frame;
-	}
-
-	// Throttle metadata sends — once every 5 seconds
-	if (m_lastMetadataFrame == 0 || (frame - m_lastMetadataFrame) > (UnsignedInt)(currentFps * 5))
-	{
-		sendMetadata();
-		m_lastMetadataFrame = frame;
-	}
-
-	// Build a JSON frame message.  Empty frames (no commands this tick)
-	// are still sent so the observer can advance its frame counter.
-	AsciiString jsonFrame;
-	if (m_frameBuffer.empty())
-	{
-		jsonFrame.format(
-			"{\"type\":\"frame\",\"frame\":%u,\"fps\":%d,\"commands\":\"\"}",
-			frame, currentFps);
-	}
-	else
-	{
-		AsciiString b64Commands;
-		base64Encode(m_frameBuffer.data(), m_frameBuffer.size(), b64Commands);
-
-		jsonFrame.format(
-			"{\"type\":\"frame\",\"frame\":%u,\"fps\":%d,\"commands\":\"%s\"}",
-			frame, currentFps, b64Commands.str());
-	}
-
-	// Queue for background thread
-	QueuedMessage qmsg;
-	qmsg.isBinary = FALSE;
-	const char* jsonStr = jsonFrame.str();
-	qmsg.data.assign(jsonStr, jsonStr + strlen(jsonStr) + 1);
-
-	std::lock_guard<std::mutex> lock(m_sendMutex);
-	m_outgoingQueue.push(qmsg);
-
-	// Clear buffer for next frame
-	m_frameBuffer.clear();
-}
-
-// ============================================================================
-// serializeArgument — replicate writeArgument()
-// ============================================================================
-
-void LiveStreamer::serializeArgument(Int argType, const void* argData, std::vector<char>& outBuffer)
-{
-	switch (argType)
-	{
-	case ARGUMENTDATATYPE_INTEGER:
-		{
-			Int val = *((const Int*)argData);
-			outBuffer.insert(outBuffer.end(), (const char*)&val, (const char*)&val + sizeof(val));
-		}
-		break;
-	case ARGUMENTDATATYPE_REAL:
-		{
-			Real val = *((const Real*)argData);
-			outBuffer.insert(outBuffer.end(), (const char*)&val, (const char*)&val + sizeof(val));
-		}
-		break;
-	case ARGUMENTDATATYPE_BOOLEAN:
-		{
-			Bool val = *((const Bool*)argData);
-			outBuffer.insert(outBuffer.end(), (const char*)&val, (const char*)&val + sizeof(val));
-		}
-		break;
-	case ARGUMENTDATATYPE_OBJECTID:
-		{
-			ObjectID val = *((const ObjectID*)argData);
-			outBuffer.insert(outBuffer.end(), (const char*)&val, (const char*)&val + sizeof(val));
-		}
-		break;
-	case ARGUMENTDATATYPE_DRAWABLEID:
-		{
-			DrawableID val = *((const DrawableID*)argData);
-			outBuffer.insert(outBuffer.end(), (const char*)&val, (const char*)&val + sizeof(val));
-		}
-		break;
-	case ARGUMENTDATATYPE_TEAMID:
-		{
-			UnsignedInt val = *((const UnsignedInt*)argData);
-			outBuffer.insert(outBuffer.end(), (const char*)&val, (const char*)&val + sizeof(val));
-		}
-		break;
-	case ARGUMENTDATATYPE_LOCATION:
-		{
-			Coord3D val = *((const Coord3D*)argData);
-			outBuffer.insert(outBuffer.end(), (const char*)&val, (const char*)&val + sizeof(val));
-		}
-		break;
-	case ARGUMENTDATATYPE_PIXEL:
-		{
-			ICoord2D val = *((const ICoord2D*)argData);
-			outBuffer.insert(outBuffer.end(), (const char*)&val, (const char*)&val + sizeof(val));
-		}
-		break;
-	case ARGUMENTDATATYPE_PIXELREGION:
-		{
-			IRegion2D val = *((const IRegion2D*)argData);
-			outBuffer.insert(outBuffer.end(), (const char*)&val, (const char*)&val + sizeof(val));
-		}
-		break;
-	case ARGUMENTDATATYPE_TIMESTAMP:
-		{
-			UnsignedInt val = *((const UnsignedInt*)argData);
-			outBuffer.insert(outBuffer.end(), (const char*)&val, (const char*)&val + sizeof(val));
-		}
-		break;
-	case ARGUMENTDATATYPE_WIDECHAR:
-		{
-			WideChar val = *((const WideChar*)argData);
-			outBuffer.insert(outBuffer.end(), (const char*)&val, (const char*)&val + sizeof(val));
-		}
-		break;
-	default:
-		DEBUG_LOG(("LiveStreamer::serializeArgument - unknown type %d", argType));
-		liveStreamLog("LiveStreamer::serializeArgument: unknown type %d\n", argType);
-		break;
-	}
-}
-
-// ============================================================================
-// networkThreadFunc — background thread for all network I/O
+// Background network thread
 // ============================================================================
 
 void LiveStreamer::networkThreadFunc()
 {
-	DEBUG_LOG(("LiveStreamer::networkThreadFunc() - thread started"));
-	liveStreamLog("LiveStreamer: network thread started\n");
+    liveStreamLog("LiveStreamer::networkThreadFunc started\n");
 
-	// Initialize CURL
-	liveStreamLog("LiveStreamer: curl_global_init(CURL_GLOBAL_DEFAULT)\n");
-	curl_global_init(CURL_GLOBAL_DEFAULT);
+    if (!connectToRelay())
+    {
+        liveStreamLog("LiveStreamer::networkThreadFunc connectToRelay failed\n");
+        m_shouldRun.store(false);
+        return;
+    }
 
-	if (!connectToRelay())
-	{
-		DEBUG_LOG(("LiveStreamer::networkThreadFunc() - failed to connect to relay"));
-		liveStreamLog("LiveStreamer: network thread FAILED to connect to relay, exiting\n");
-		m_shouldRun = FALSE;
-		curl_global_cleanup();
-		return;
-	}
-	liveStreamLog("LiveStreamer: connected to relay, entering main loop\n");
+    m_connected.store(true);
 
-	// Main loop: send queued messages, receive responses
-	while (m_shouldRun)
-	{
-		// --- Send outgoing messages ---
-		{
-			std::lock_guard<std::mutex> lock(m_sendMutex);
-			while (!m_outgoingQueue.empty())
-			{
-				QueuedMessage& msg = m_outgoingQueue.front();
-				if (msg.isBinary)
-				{
-					wsSend(msg.data.data(), msg.data.size());
-				}
-				else
-				{
-					sendJsonMessage(AsciiString(msg.data.data(), (Int)msg.data.size()));
-				}
-				m_outgoingQueue.pop();
-			}
-		}
+    while (m_shouldRun.load())
+    {
+        // Drain outgoing queue
+        {
+            std::lock_guard<std::mutex> lock(m_sendMutex);
+            while (!m_outgoingQueue.empty() && m_connected.load())
+            {
+                QueuedFrame& frame = m_outgoingQueue.front();
+                if (!sendBinaryFrame(frame))
+                {
+                    liveStreamLog("LiveStreamer::networkThreadFunc send failed, type=%d\n", (int)frame.type);
+                    m_connected.store(false);
+                    break;
+                }
+                if (frame.type == LIVE_MSG_HEADER)
+                    liveStreamLog("LiveStreamer: sent HEADER (%zu bytes)\n", frame.data.size());
+                else if (frame.type == LIVE_MSG_BODY)
+                {
+                    // Log only periodically
+                    static int bodyCount = 0;
+                    if (++bodyCount % 60 == 0)
+                        liveStreamLog("LiveStreamer: sent BODY #%d (%zu bytes)\n", bodyCount, frame.data.size());
+                }
+                else if (frame.type == LIVE_MSG_END)
+                    liveStreamLog("LiveStreamer: sent END\n");
+                m_outgoingQueue.pop();
+            }
+        }
 
-		// --- Receive incoming messages ---
-	std::vector<char> recvBuffer;
-	//liveStreamLog("LiveStreamer: wsRecv called, buffer state: size=%d\n", (int)recvBuffer.size());
-	if (wsRecv(recvBuffer) && !recvBuffer.empty())
-	{
-		//liveStreamLog("LiveStreamer: received %d bytes from relay\n", (int)recvBuffer.size());
-		// Parse incoming JSON messages
-		AsciiString incoming(recvBuffer.data(), (Int)recvBuffer.size());
+        // Receive incoming messages
+        std::vector<char> recvBuf;
+        while (wsRecv(recvBuf) && m_shouldRun.load())
+        {
+            if (recvBuf.size() < 5)
+                continue;
 
-		if (findSubstring(incoming, "role") != -1)
-		{
-			//liveStreamLog("LiveStreamer: incoming message contains 'role'\n");
-			AsciiString role;
-			AsciiString gameId;
+            unsigned char msgType = (unsigned char)recvBuf[0];
+            unsigned int msgLen = (unsigned int)recvBuf[1]
+                | ((unsigned int)recvBuf[2] << 8)
+                | ((unsigned int)recvBuf[3] << 16)
+                | ((unsigned int)recvBuf[4] << 24);
 
-			Int rolePos = findSubstring(incoming, "\"role\":\"");
-			if (rolePos != -1)
-			{
-				Int start = rolePos + 8;
-				Int end = findSubstring(incoming, "\"", start);
-				if (end != -1)
-				{
-					role = AsciiString(incoming.str() + start, end - start);
-					//liveStreamLog("LiveStreamer: parsed role=%.50s\n", role.str());
-				}
-			}
+            if (msgType == LIVE_MSG_ROLE && msgLen > 0 && recvBuf.size() >= (size_t)(5 + msgLen))
+            {
+                // Parse JSON role assignment
+                std::string json(recvBuf.data() + 5, msgLen);
+                liveStreamLog("LiveStreamer: received role: %s\n", json.c_str());
 
-			Int idPos = findSubstring(incoming, "\"game_id\":\"");
-			if (idPos != -1)
-			{
-				Int start = idPos + 10;
-				Int end = findSubstring(incoming, "\"", start);
-				if (end != -1)
-				{
-					gameId = AsciiString(incoming.str() + start, end - start);
-					//liveStreamLog("LiveStreamer: parsed game_id=%.50s\n", gameId.str());
-				}
-			}
+                // Simple JSON parsing for role/action/game_id
+                const char* roleStart = strstr(json.c_str(), "\"role\":\"");
+                const char* actionStart = strstr(json.c_str(), "\"action\":\"");
+                const char* gameIdStart = strstr(json.c_str(), "\"game_id\":\"");
+                const char* bodyOffStart = strstr(json.c_str(), "\"body_offset\":");
 
-			if (!role.isEmpty())
-			{
-				liveStreamLog("LiveStreamer: onRoleAssigned(%.50s, %.50s)\n", role.str(), gameId.str());
-				onRoleAssigned(role, gameId);
-			}
-			else
-			{
-				//liveStreamLog("LiveStreamer: role string empty, skipping onRoleAssigned\n");
-			}
-		}
-		else
-		{
-			//liveStreamLog("LiveStreamer: incoming message does not contain 'role', ignoring\n");
-		}
-		}
+                AsciiString role("none");
+                AsciiString gameId;
+                uint64_t bodyOffset = 0;
 
-		// Small sleep to avoid busy-waiting (1ms)
-		Sleep(1);
-	}
+                if (roleStart)
+                {
+                    roleStart += 8;
+                    const char* roleEnd = strchr(roleStart, '"');
+                    if (roleEnd)
+                        role.set(roleStart, roleEnd - roleStart);
+                }
+                if (gameIdStart)
+                {
+                    gameIdStart += 12;
+                    const char* gidEnd = strchr(gameIdStart, '"');
+                    if (gidEnd)
+                        gameId.set(gameIdStart, gidEnd - gameIdStart);
+                }
+                if (bodyOffStart)
+                {
+                    bodyOffStart += 14; // skip "body_offset":
+                    bodyOffset = (uint64_t)strtoull(bodyOffStart, nullptr, 10);
+                }
+                if (actionStart && actionStart + 10)
+                {
+                    const char* actPtr = actionStart + 10;
+                    if (strncmp(actPtr, "takeover", 8) == 0)
+                        onTakeover(bodyOffset);
+                }
 
-	// Cleanup
-	liveStreamLog("LiveStreamer: cleaning up CURL handles\n");
-	if (m_curlEasy)
-	{
-		liveStreamLog("LiveStreamer: curl_easy_cleanup\n");
-		curl_easy_cleanup((CURL*)m_curlEasy);
-		m_curlEasy = nullptr;
-	}
-	if (m_curlMulti)
-	{
-		liveStreamLog("LiveStreamer: curl_multi_cleanup\n");
-		curl_multi_cleanup((CURLM*)m_curlMulti);
-		m_curlMulti = nullptr;
-	}
+                onRoleAssigned(role, gameId, bodyOffset);
+            }
+            else if (msgType == LIVE_MSG_ERROR)
+            {
+                liveStreamLog("LiveStreamer: received ERROR\n");
+            }
+        }
 
-	liveStreamLog("LiveStreamer: curl_global_cleanup\n");
-	curl_global_cleanup();
+        // Small sleep to avoid busy-looping
+        {
+            int stillRunning = 0;
+            curl_multi_poll(m_curlMulti, NULL, 0, 10, &stillRunning);
+            if (stillRunning)
+                curl_multi_perform((CURLM*)m_curlMulti, &stillRunning);
+        }
+    }
 
-	m_connected = FALSE;
-	DEBUG_LOG(("LiveStreamer::networkThreadFunc() - thread exiting"));
-	liveStreamLog("LiveStreamer: network thread exiting\n");
-}
+    // Final drain — frames queued after the last loop iteration
+    // (e.g. PATCH + END from stopRecording) must still be sent.
+    {
+        std::lock_guard<std::mutex> lock(m_sendMutex);
+        while (!m_outgoingQueue.empty() && m_connected.load())
+        {
+            QueuedFrame& frame = m_outgoingQueue.front();
+            if (!sendBinaryFrame(frame))
+            {
+                liveStreamLog("LiveStreamer: final drain send failed, type=%d\n", (int)frame.type);
+                break;
+            }
+            liveStreamLog("LiveStreamer: final drain sent type=%d (%zu bytes)\n", (int)frame.type, frame.data.size());
+            m_outgoingQueue.pop();
+        }
+    }
 
-// ============================================================================
-// connectToRelay — establish WebSocket connection (called from network thread)
-// ============================================================================
-
-bool LiveStreamer::connectToRelay()
-{
-	liveStreamLog("LiveStreamer::connectToRelay: connecting to %.200s...\n", m_relayUrl.str());
-	CURL* easy = curl_easy_init();
-	if (!easy)
-	{
-		DEBUG_LOG(("LiveStreamer::connectToRelay() - curl_easy_init failed"));
-		liveStreamLog("LiveStreamer::connectToRelay: curl_easy_init FAILED\n");
-		return false;
-	}
-	liveStreamLog("LiveStreamer::connectToRelay: curl_easy_init=%p (success)\n", (void*)easy);
-
-	CURLM* multi = curl_multi_init();
-	if (!multi)
-	{
-		DEBUG_LOG(("LiveStreamer::connectToRelay() - curl_multi_init failed"));
-		liveStreamLog("LiveStreamer::connectToRelay: curl_multi_init FAILED\n");
-		curl_easy_cleanup(easy);
-		return false;
-	}
-	liveStreamLog("LiveStreamer::connectToRelay: curl_multi_init=%p (success)\n", (void*)multi);
-
-	// Ensure the URL always ends with /register — the relay server only
-	// accepts WebSocket connections on that path.  If the user supplied a
-	// bare host:port (e.g. "ws://192.168.2.108:8765") we append "/register".
-	{
-		AsciiString effectiveUrl = m_relayUrl;
-		const char* urlStr = m_relayUrl.str();
-		Int schemeEnd = findSubstring(m_relayUrl, "://");
-		if (schemeEnd != -1)
-		{
-			Int pathStart = findSubstring(m_relayUrl, "/", schemeEnd + 3);
-			AsciiString pathPart;
-			if (pathStart != -1)
-			{
-				pathPart = AsciiString(urlStr + pathStart);
-			}
-
-			if (pathPart != "/register")
-			{
-				// Rebuild: scheme://host[:port]/register
-				effectiveUrl.clear();
-				effectiveUrl.concat(AsciiString(urlStr, pathStart != -1 ? pathStart : (Int)strlen(urlStr)));
-				effectiveUrl.concat("/register");
-				liveStreamLog("LiveStreamer::connectToRelay: URL had no /register path, rewritten to %.200s\n",
-					effectiveUrl.str());
-			}
-		}
-		else
-		{
-			// No :// found — malformed but try appending anyway
-			effectiveUrl.concat("/register");
-			liveStreamLog("LiveStreamer::connectToRelay: no scheme found, appended /register: %.200s\n",
-				effectiveUrl.str());
-		}
-
-		liveStreamLog("LiveStreamer::connectToRelay: curl_easy_setopt CURLOPT_URL=%.200s\n", effectiveUrl.str());
-		curl_easy_setopt(easy, CURLOPT_URL, effectiveUrl.str());
-	}
-	liveStreamLog("LiveStreamer::connectToRelay: curl_easy_setopt CURLOPT_CONNECT_ONLY=2L\n");
-	curl_easy_setopt(easy, CURLOPT_CONNECT_ONLY, 2L); // 2 = use WebSocket protocol
-	curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 0L);
-	curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 0L);
-	liveStreamLog("LiveStreamer::connectToRelay: SSL verification disabled\n");
-
-	// Add to multi handle
-	liveStreamLog("LiveStreamer::connectToRelay: curl_multi_add_handle\n");
-	curl_multi_add_handle(multi, easy);
-
-	// Perform the connection — loop until the WebSocket handshake completes
-	// or we time out.  The correct curl_multi pattern requires repeated
-	// perform→wait cycles; a single cycle is not sufficient because the
-	// WebSocket upgrade may not finish within the first 1 s wait.
-	int runningHandles = 0;
-	liveStreamLog("LiveStreamer::connectToRelay: curl_multi_perform (loop)\n");
-	CURLMcode mc = curl_multi_perform(multi, &runningHandles);
-	liveStreamLog("LiveStreamer::connectToRelay: curl_multi_perform returned mc=%d, runningHandles=%d\n", (int)mc, runningHandles);
-
-	int numfds = 0;
-	const int kConnectTimeoutMs = 10000; // 10 second total connect timeout
-	int elapsedMs = 0;
-	const int kPollIntervalMs = 250;
-
-	while (runningHandles > 0 && mc == CURLM_OK && elapsedMs < kConnectTimeoutMs)
-	{
-		mc = curl_multi_wait(multi, nullptr, 0, kPollIntervalMs, &numfds);
-		liveStreamLog("LiveStreamer::connectToRelay: curl_multi_wait returned mc=%d, numfds=%d (elapsed %dms)\n",
-			(int)mc, numfds, elapsedMs);
-		elapsedMs += kPollIntervalMs;
-		if (mc != CURLM_OK)
-			break;
-		mc = curl_multi_perform(multi, &runningHandles);
-		liveStreamLog("LiveStreamer::connectToRelay: curl_multi_perform returned mc=%d, runningHandles=%d\n",
-			(int)mc, runningHandles);
-	}
-
-	// Check if connected
-	CURLMsg* infoMsg = curl_multi_info_read(multi, &runningHandles);
-	if (infoMsg)
-	{
-		CURLcode res = infoMsg->data.result;
-		if (res != CURLE_OK)
-		{
-			DEBUG_LOG(("LiveStreamer::connectToRelay() - connection failed: %s", curl_easy_strerror(res)));
-			liveStreamLog("LiveStreamer::connectToRelay: FAILED: %s (curl code %d)\n",
-				curl_easy_strerror(res), (int)res);
-			curl_multi_remove_handle(multi, easy);
-			curl_easy_cleanup(easy);
-			curl_multi_cleanup(multi);
-			return false;
-		}
-	}
-	else
-	{
-		// curl_multi_info_read returned NULL — the connection did NOT complete.
-		// Do NOT set m_connected = TRUE; treat this as a timeout / failure.
-		liveStreamLog("LiveStreamer::connectToRelay: connection timed out (no info message after %dms, runningHandles=%d)\n",
-			elapsedMs, runningHandles);
-		curl_multi_remove_handle(multi, easy);
-		curl_easy_cleanup(easy);
-		curl_multi_cleanup(multi);
-		return false;
-	}
-
-	m_curlEasy = easy;
-	m_curlMulti = multi;
-	m_connected = TRUE;
-
-	DEBUG_LOG(("LiveStreamer::connectToRelay() - connected to %s", m_relayUrl.str()));
-	liveStreamLog("LiveStreamer::connectToRelay: connected! easy=%p multi=%p\n", (void*)easy, (void*)multi);
-	return true;
-}
-
-// ============================================================================
-// wsSend — send data over WebSocket
-// ============================================================================
-
-bool LiveStreamer::wsSend(const void* data, size_t len)
-{
-	if (!m_curlEasy || !m_connected)
-	{
-		liveStreamLog("LiveStreamer::wsSend: skipped (curlEasy=%p, connected=%d)\n",
-			m_curlEasy, m_connected.load());
-		return false;
-	}
-
-	liveStreamLog("LiveStreamer::wsSend: sending %d bytes (binary)\n", (int)len);
-	size_t sent = 0;
-	CURLcode res = curl_ws_send((CURL*)m_curlEasy, data, len, &sent, 0, CURLWS_BINARY);
-	liveStreamLog("LiveStreamer::wsSend: curl_ws_send returned %d, sent=%d\n", (int)res, (int)sent);
-
-	if (res == CURLE_OK)
-		return true;
-
-	// CURLE_AGAIN means the socket would block — retry later
-	if (res == CURLE_AGAIN)
-	{
-		liveStreamLog("LiveStreamer::wsSend: CURLE_AGAIN, will retry next tick\n");
-		return true; // not a real error, will retry next tick
-	}
-
-	DEBUG_LOG(("LiveStreamer::wsSend() - error: %s", curl_easy_strerror(res)));
-	liveStreamLog("LiveStreamer::wsSend: ERROR: %s (curl code %d)\n", curl_easy_strerror(res), (int)res);
-	m_connected = FALSE;
-	return false;
-}
-
-// ============================================================================
-// wsRecv — receive data from WebSocket (non-blocking)
-// ============================================================================
-
-bool LiveStreamer::wsRecv(std::vector<char>& outBuffer)
-{
-	if (!m_curlEasy || !m_connected)
-	{
-		//liveStreamLog("LiveStreamer::wsRecv: skipped (curlEasy=%p, connected=%d)\n",
-		//	m_curlEasy, m_connected.load());
-		return false;
-	}
-
-	//liveStreamLog("LiveStreamer::wsRecv called, buffer state: size=%d\n", (int)outBuffer.size());
-	char buf[4096];
-	size_t nread = 0;
-	const struct curl_ws_frame* meta = nullptr;
-
-	CURLcode res = curl_ws_recv((CURL*)m_curlEasy, buf, sizeof(buf), &nread, &meta);
-	//liveStreamLog("LiveStreamer::wsRecv: curl_ws_recv returned %d, nread=%d\n", (int)res, (int)nread);
-
-	if (res == CURLE_OK && nread > 0)
-	{
-		//liveStreamLog("LiveStreamer::wsRecv: received %d bytes, first 100 chars: %.100s\n",
-		//	(int)nread, buf);
-		outBuffer.assign(buf, buf + nread);
-		return true;
-	}
-
-	if (res == CURLE_AGAIN)
-	{
-		//liveStreamLog("LiveStreamer::wsRecv: CURLE_AGAIN (no data available)\n");
-		return false; // no data available
-	}
-
-	if (res != CURLE_OK)
-	{
-		DEBUG_LOG(("LiveStreamer::wsRecv() - error: %s", curl_easy_strerror(res)));
-		liveStreamLog("LiveStreamer::wsRecv: ERROR: %s (curl code %d)\n", curl_easy_strerror(res), (int)res);
-		m_connected = FALSE;
-	}
-
-	return false;
-}
-
-// ============================================================================
-// sendJsonMessage — convenience wrapper
-// ============================================================================
-
-bool LiveStreamer::sendJsonMessage(const AsciiString& jsonMsg)
-{
-	if (!m_curlEasy || !m_connected)
-	{
-		//liveStreamLog("LiveStreamer::sendJsonMessage: skipped (curlEasy=%p, connected=%d)\n",
-		//	m_curlEasy, m_connected.load());
-		return false;
-	}
-	//liveStreamLog("LiveStreamer::sendJsonMessage: sending %d bytes: %.200s\n",
-	//	(int)strlen(jsonMsg.str()), jsonMsg.str());
-	size_t sent = 0;
-	CURLcode res = curl_ws_send((CURL*)m_curlEasy, jsonMsg.str(), strlen(jsonMsg.str()), &sent, 0, CURLWS_TEXT);
-	//liveStreamLog("LiveStreamer::sendJsonMessage: curl_ws_send result=%d, sent=%d\n", (int)res, (int)sent);
-	if (res == CURLE_OK)
-		return true;
-	if (res == CURLE_AGAIN)
-	{
-		liveStreamLog("LiveStreamer::sendJsonMessage: CURLE_AGAIN, will retry\n");
-		return true;
-	}
-	DEBUG_LOG(("LiveStreamer::sendJsonMessage() - error: %s", curl_easy_strerror(res)));
-	liveStreamLog("LiveStreamer::sendJsonMessage: ERROR: %s (curl code %d)\n", curl_easy_strerror(res), (int)res);
-	m_connected = FALSE;
-	return false;
-}
-
-// ============================================================================
-// tick — called periodically to process incoming messages
-// ============================================================================
-
-void LiveStreamer::tick()
-{
-	// The background thread handles all network I/O.
-	// This method is available for any game-thread-side housekeeping
-	// if needed in the future.
+    // Cleanup
+    if (m_curlMulti)
+    {
+        if (m_curlEasy)
+            curl_multi_remove_handle((CURLM*)m_curlMulti, (CURL*)m_curlEasy);
+        curl_multi_cleanup((CURLM*)m_curlMulti);
+        m_curlMulti = nullptr;
+    }
+    if (m_curlEasy)
+    {
+        curl_easy_cleanup((CURL*)m_curlEasy);
+        m_curlEasy = nullptr;
+    }
+    m_connected.store(false);
+    liveStreamLog("LiveStreamer::networkThreadFunc ended\n");
 }

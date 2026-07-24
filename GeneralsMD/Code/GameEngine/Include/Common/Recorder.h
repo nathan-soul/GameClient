@@ -168,6 +168,8 @@ public:
 	void setLiveStream(Bool live) { m_isLiveStream = live; }
 	void setStreamEnded(Bool ended) { m_streamEnded = ended; }
 	Bool isLiveStream() const { return m_isLiveStream; }
+	UnsignedInt getNextFrame() const { return m_nextFrame; }	///< Next frame to execute (used for live gap check).
+	UnsignedInt getCachedLiveEdge() const { return m_cachedLiveEdge; }
 
 protected:
 	void startRecording(GameDifficulty diff, Int originalGameMode, Int rankPoints, Int maxFPS);					///< Start recording to m_file.
@@ -181,6 +183,7 @@ protected:
 	UnicodeString readUnicodeString();								///< Read the next string from m_file using unicode characters.
 	void readNextFrame();															///< Read the next frame number to execute a command on.
 	void appendNextCommand();													///< Read the next GameMessage and append it to TheCommandList.
+	UnsignedInt probeLiveEdge();												///< Scan forward from current file-position to find the highest frame — then restore position.
 	void writeArgument(GameMessageArgumentDataType type, const GameMessageArgumentType arg);
 	void readArgument(GameMessageArgumentDataType type, GameMessage *msg);
 
@@ -213,6 +216,8 @@ protected:
 	IReplayStreamSink* m_streamSink;
 	Bool m_isLiveStream;
 	Bool m_streamEnded;
+	UnsignedInt m_cachedLiveEdge;											///< cached result from probeLiveEdge()
+	Int m_liveEdgeProbeFrame;													///< frame on which we last probed
 };
 
 extern RecorderClass *TheRecorder;

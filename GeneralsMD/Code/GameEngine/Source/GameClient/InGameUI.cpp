@@ -9118,8 +9118,6 @@ void InGameUI::drawPlayerInfoList()
 				observerStatus->setFont(TheFontLibrary->getFont("ArialFont", Int(14 * baseScale), false));
 
 				UnicodeString statusText;
-				Int bufferDelay = TheLiveObserver->getBufferDelay();
-				Real bufferSeconds = (Real)bufferDelay / 30.0f; // approximate at 30 logic fps
 
 				if (!TheLiveObserver->isReady())
 				{
@@ -9130,36 +9128,23 @@ void InGameUI::drawPlayerInfoList()
 					Int statusY = Int(10 * baseScale);
 					observerStatus->draw(statusX, statusY, 0xFFFFFF00, 0); // yellow
 				}
-				else if (!TheLiveObserver->isConnected())
+				else if (TheLiveObserver->isStreamEnded())
 				{
-					statusText.translate(AsciiString("DISCONNECTED"));
+					statusText.translate(AsciiString("LIVE - ENDED"));
 					observerStatus->setText(statusText);
 					Int statusW = observerStatus->getWidth();
 					Int statusX = (TheDisplay->getWidth() - statusW) / 2;
 					Int statusY = Int(10 * baseScale);
-					observerStatus->draw(statusX, statusY, 0xFF0000FF, 0); // red
+					observerStatus->draw(statusX, statusY, 0xFF00FF00, 0); // green
 				}
 				else
 				{
-					// Show buffer delay in seconds
-					AsciiString delayStr;
-					delayStr.format("LIVE  -%.0fs", bufferSeconds);
-					statusText.translate(delayStr);
+					statusText.translate(AsciiString("LIVE"));
 					observerStatus->setText(statusText);
 					Int statusW = observerStatus->getWidth();
 					Int statusX = (TheDisplay->getWidth() - statusW) / 2;
 					Int statusY = Int(10 * baseScale);
-
-					// Color based on buffer health
-					UnsignedInt color;
-					if (bufferSeconds < 3.0f)
-						color = 0xFF0000FF; // red — low buffer
-					else if (bufferSeconds < 10.0f)
-						color = 0xFF00FFFF; // yellow — moderate
-					else
-						color = 0xFF00FF00; // green — healthy
-
-					observerStatus->draw(statusX, statusY, color, 0);
+					observerStatus->draw(statusX, statusY, 0xFF00FF00, 0); // green
 				}
 				TheDisplayStringManager->freeDisplayString(observerStatus);
 			}
