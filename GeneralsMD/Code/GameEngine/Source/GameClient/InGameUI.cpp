@@ -8908,7 +8908,7 @@ void InGameUI::drawPlayerInfoList()
 					// Show up to maxPerBuilding entries in a 3-column grid
 					size_t showCount = entries.size();
 					if (showCount > (size_t)maxPerBuilding) showCount = (size_t)maxPerBuilding;
-					Int cellH = buildingIconSize + Int(buildingIconSize * 0.4f);  // extra space for ObjectID label
+					Int cellH = buildingIconSize + iconSpacing;
 					Int totalW = gridCols * buildingIconSize + (gridCols - 1) * iconSpacing;
 
 					// The health bar is drawn centered on screenPos (3px bar, centered vertically)
@@ -8957,22 +8957,6 @@ void InGameUI::drawPlayerInfoList()
 							GameMakeColor(0, 0, 0, 160));
 					}
 
-					// Sort index label below the icon (1-based position after ordering)
-					UnicodeString idLabel;
-					idLabel.format(L"%d", (Int)(i + 1));
-					DisplayString* ds = TheDisplayStringManager->newDisplayString();
-					if (ds)
-					{
-					ds->setFont(TheFontLibrary->getFont(
-						m_messageFont, 6, false));
-					ds->setText(idLabel);
-					Int labelX = ix + buildingIconSize / 2 - ds->getWidth() / 2;
-					Int labelY = iy + buildingIconSize + 1;
-					ds->draw(labelX, labelY,
-						GameMakeColor(180, 180, 180, 220),
-						GameMakeColor(0, 0, 0, 220));
-					TheDisplayStringManager->freeDisplayString(ds);
-					}
 					}
 				}
 			}
@@ -9074,16 +9058,17 @@ void InGameUI::drawPlayerInfoList()
 			// TheSuperHackers @feature 17/07/2026 Per-element visibility toggles (F8 powers / F9 queues).
 			// Data gathering above always runs so re-showing is instant; only draw + click handling is gated.
 			// TheSuperHackers @feature 28/07/2026 F4 master disable gates all custom features below.
+
+			// TheSuperHackers @feature 19/07/2026 Per-building queues (Ctrl+Q cycles modes, independent of F9)
+			// Drawn first so overlay elements render on top.
+			if (m_perBuildingQueueMode != QUEUE_DISPLAY_HIDDEN && !m_overlayCustomDisabled)
+			{
+				safeDrawPerBuildingQueues(this);
+			}
 			if (m_overlayQueuesVisible && !m_overlayCustomDisabled)
 			{
 				safeDrawUnitQueues(this, Int(10 * baseScale), queueBaseY, queueLineH, queueScale);
 				safeDrawUnitQueueClicks(this);
-			}
-
-			// TheSuperHackers @feature 19/07/2026 Per-building queues (Ctrl+Q cycles modes, independent of F9)
-			if (m_perBuildingQueueMode != QUEUE_DISPLAY_HIDDEN && !m_overlayCustomDisabled)
-			{
-				safeDrawPerBuildingQueues(this);
 			}
 			if (m_overlayPowersVisible && !m_overlayCustomDisabled)
 			{
