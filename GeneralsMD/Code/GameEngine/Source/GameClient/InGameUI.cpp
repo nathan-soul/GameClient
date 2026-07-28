@@ -8830,8 +8830,6 @@ void InGameUI::drawPlayerInfoList()
 			Real productionQueueScale = TheGlobalData ? TheGlobalData->m_productionQueueScale : 2.0f;
 			queueScale *= productionQueueScale;
 
-			Real zoom = TheTacticalView->getZoom();
-			if (zoom < 0.01f) zoom = 0.01f;
 			Int maxPerBuilding = 15;
 			Int gridCols = 3;
 
@@ -8898,15 +8896,8 @@ void InGameUI::drawPlayerInfoList()
 							continue;
 					}
 
-					// PER-BUILDING icon size: match health bar width (same computation as Drawable::computeHealthRegion)
-					Int buildingIconSize;
-					Real hbHeight, hbWidth;
-					if (first->producer->getHealthBoxDimensions(hbHeight, hbWidth)) {
-						Real buildingScreenWidth = hbWidth / zoom;  // screen-space pixels matching health bar
-						buildingIconSize = Int(buildingScreenWidth * 0.12f); // 12% of health bar width per icon
-					} else {
-						buildingIconSize = Int(16 * queueScale);  // fallback for objects without health box
-					}
+					// PER-BUILDING icon size: fixed pixel size independent of camera zoom
+					Int buildingIconSize = Int(20 * queueScale);
 					if (buildingIconSize < 8) buildingIconSize = 8;
 					if (buildingIconSize > 64) buildingIconSize = 64;
 
