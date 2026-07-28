@@ -922,13 +922,13 @@ void MetaMap::generateMetaMap()
 		}
 	}
 	{
-		// TheSuperHackers @feature 28/07/2026 CTRL+ArrowLeft/Right moves overlay horizontally
+		// TheSuperHackers @feature 28/07/2026 SHIFT+ArrowLeft/Right moves overlay horizontally
 		MetaMapRec* map = TheMetaMap->getMetaMapRec(GameMessage::MSG_META_MOVE_OVERLAY_LEFT);
 		if (map->m_key == MK_NONE)
 		{
 			map->m_key = MK_LEFT;
 			map->m_transition = DOWN;
-			map->m_modState = CTRL;
+			map->m_modState = SHIFT;
 			map->m_usableIn = COMMANDUSABLE_GAME;
 		}
 	}
@@ -938,7 +938,7 @@ void MetaMap::generateMetaMap()
 		{
 			map->m_key = MK_RIGHT;
 			map->m_transition = DOWN;
-			map->m_modState = CTRL;
+			map->m_modState = SHIFT;
 			map->m_usableIn = COMMANDUSABLE_GAME;
 		}
 	}
