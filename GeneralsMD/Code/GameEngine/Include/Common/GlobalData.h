@@ -441,6 +441,10 @@ public:
 	// TheSuperHackers @feature 28/07/2026 Multiplier for unit queue icon size on overlay and production buildings
 	Real m_unitQueueScale;
 
+	// TheSuperHackers @feature 28/07/2026 Multiplier for generals power icon size and flash duration (seconds)
+	Real m_generalsPowerScale;
+	Int m_generalsPowerFlashDuration;
+
 	// Generals Online @feature 16/1/2025 allow the observer notification font size to be set, a size of zero disables it
 	Int m_observerNotificationFontSize;
 	Bool m_observerNotificationSpecialPowerUsage;

@@ -8060,7 +8060,8 @@ void InGameUI::drawPlayerInfoList()
 			}
 
 			UnsignedInt currentFrame = TheGameLogic ? TheGameLogic->getFrame() : 0;
-			UnsignedInt flashWindow = (UnsignedInt)(LOGICFRAMES_PER_SECOND * 3); // 3 seconds
+			Int flashDurationSec = TheGlobalData ? TheGlobalData->m_generalsPowerFlashDuration : 10;
+			UnsignedInt flashWindow = (UnsignedInt)(LOGICFRAMES_PER_SECOND * flashDurationSec);
 
 			// Resolve the two 1v1 player slots
 			resolveOverlayPlayers();
@@ -8397,9 +8398,16 @@ void InGameUI::drawPlayerInfoList()
 			if (!TheGameLogic || !m_isValid1v1) return;
 
 			UnsignedInt currentFrame = TheGameLogic->getFrame();
-			Int ringSize = Int(44 * scale);
-			Int ringSpacing = Int(6 * scale);
-			UnsignedInt flashWindow = (UnsignedInt)(LOGICFRAMES_PER_SECOND * 3);
+			Real baseScale = scale;
+			Int fontSize = TheGlobalData ? TheGlobalData->m_observerStatsFontSize : 8;
+			Real uiMultiplier = 1.0f + (fontSize - 8) * 0.125f;
+			if (uiMultiplier < 0.25f) uiMultiplier = 0.25f;
+			Real generalsPowerScale = TheGlobalData ? TheGlobalData->m_generalsPowerScale : 2.0f;
+			Real powerScale = baseScale * uiMultiplier * generalsPowerScale;
+			Int ringSize = Int(24 * powerScale);
+			Int ringSpacing = Int(3 * powerScale);
+			Int flashDurationSec = TheGlobalData ? TheGlobalData->m_generalsPowerFlashDuration : 10;
+			UnsignedInt flashWindow = (UnsignedInt)(LOGICFRAMES_PER_SECOND * flashDurationSec);
 
 			Int screenW = TheDisplay ? TheDisplay->getWidth() : 1920;
 			Int screenH = TheDisplay ? TheDisplay->getHeight() : 1080;
@@ -8523,10 +8531,15 @@ void InGameUI::drawPlayerInfoList()
 
 			Int screenW = TheDisplay->getWidth();
 			Int screenH = TheDisplay->getHeight();
-			Real scale = (Real)screenW / 1920.0f;
-			scale = (scale < 0.7f) ? 0.7f : (scale > 2.0f) ? 2.0f : scale;
-			Int ringSize = Int(44 * scale);
-			Int ringSpacing = Int(6 * scale);
+			Real baseScale = (Real)screenW / 1920.0f;
+			baseScale = (baseScale < 0.7f) ? 0.7f : (baseScale > 2.0f) ? 2.0f : baseScale;
+			Int fontSize = TheGlobalData ? TheGlobalData->m_observerStatsFontSize : 8;
+			Real uiMultiplier = 1.0f + (fontSize - 8) * 0.125f;
+			if (uiMultiplier < 0.25f) uiMultiplier = 0.25f;
+			Real generalsPowerScale = TheGlobalData ? TheGlobalData->m_generalsPowerScale : 2.0f;
+			Real powerScale = baseScale * uiMultiplier * generalsPowerScale;
+			Int ringSize = Int(24 * powerScale);
+			Int ringSpacing = Int(3 * powerScale);
 
 			for (Int ovIdx = 0; ovIdx < 2; ++ovIdx)
 			{
@@ -8538,9 +8551,9 @@ void InGameUI::drawPlayerInfoList()
 				// Must match drawPowerCooldowns layout
 				Int panelX;
 				if (ovIdx == 0)
-					panelX = Int(12 * scale);
+					panelX = Int(12 * baseScale);
 				else
-					panelX = screenW - Int(12 * scale) - ringSize;
+					panelX = screenW - Int(12 * baseScale) - ringSize;
 
 					Int totalPanelH = m_playerOverlayExt[slot].powerCount * (ringSize + ringSpacing) - ringSpacing;
 				Int panelY = (screenH - totalPanelH) / 2;
@@ -8865,11 +8878,12 @@ void InGameUI::drawPlayerInfoList()
 					const QueueEntry* first = entries[0];
 					if (!first->producer) continue;
 
-					const Coord3D* worldPos = first->producer->getPosition();
-					if (!worldPos) continue;
+					// Use health box position (top of building + 10 world units) to align with the health bar
+					Coord3D healthBoxPos;
+					first->producer->getHealthBoxPosition(healthBoxPos);
 
 					ICoord2D screenPos;
-					if (TheTacticalView->worldToScreen(worldPos, &screenPos) != TRUE)
+					if (TheTacticalView->worldToScreen(&healthBoxPos, &screenPos) != TRUE)
 						continue;  // building not visible on screen
 
 					// ON_HOVER filter
@@ -8878,10 +8892,6 @@ void InGameUI::drawPlayerInfoList()
 						if (!hoveredObj || first->producer != hoveredObj)
 							continue;
 					}
-
-					// Offset above building
-					screenPos.y -= Int(40 * baseScale);
-					if (screenPos.y < 0) screenPos.y = 0;
 
 					// PER-BUILDING icon size: match health bar width (same computation as Drawable::computeHealthRegion)
 					Int buildingIconSize;
@@ -8895,16 +8905,25 @@ void InGameUI::drawPlayerInfoList()
 					if (buildingIconSize < 8) buildingIconSize = 8;
 					if (buildingIconSize > 64) buildingIconSize = 64;
 
-					Int iconSpacing = Int(2 * queueScale);
+					// Scale spacing and label gutter proportionally to icon size
+					Int iconSpacing = Int(buildingIconSize * 0.15f);
 					if (iconSpacing < 1) iconSpacing = 1;
 
 					// Show up to maxPerBuilding entries in a 3-column grid
 					size_t showCount = entries.size();
 					if (showCount > (size_t)maxPerBuilding) showCount = (size_t)maxPerBuilding;
 					Int gridRows = (Int)((showCount + gridCols - 1) / gridCols);
-					Int cellH = buildingIconSize + Int(8 * queueScale);  // extra space for ObjectID label
+					Int cellH = buildingIconSize + Int(buildingIconSize * 0.4f);  // extra space for ObjectID label
 					Int totalW = gridCols * buildingIconSize + (gridCols - 1) * iconSpacing;
 					Int totalH = gridRows * cellH;
+
+					// The health bar is drawn centered on screenPos (3px bar, centered vertically)
+					// Position queue grid above the health bar with a small gap
+					Int gapAboveHealthBar = Int(buildingIconSize * 0.3f);
+					if (gapAboveHealthBar < 2) gapAboveHealthBar = 2;
+					screenPos.y -= gapAboveHealthBar;
+					if (screenPos.y < 0) screenPos.y = 0;
+
 					Int startX = screenPos.x - totalW / 2;
 					Int startY = screenPos.y - totalH;
 
