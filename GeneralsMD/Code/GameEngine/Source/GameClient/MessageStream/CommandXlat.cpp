@@ -266,6 +266,45 @@ bool changeObserverStatsFontSize(ObserverStatsFontChange change)
 	return true;
 }
 
+enum ScaleChange
+{
+	ScaleChange_Increase,
+	ScaleChange_Decrease
+};
+
+static bool changeScale(Real& scale, ScaleChange change, const char* iniKey)
+{
+	const Real step = 0.5f;
+	const Real minVal = 0.25f;
+	const Real maxVal = 8.0f;
+
+	Real newScale = scale;
+	switch (change)
+	{
+	case ScaleChange_Increase:
+		newScale += step;
+		if (newScale > maxVal) newScale = maxVal;
+		break;
+	case ScaleChange_Decrease:
+		newScale -= step;
+		if (newScale < minVal) newScale = minVal;
+		break;
+	}
+
+	if (newScale == scale)
+		return false;
+
+	scale = newScale;
+
+	OptionPreferences optPref;
+	AsciiString prefString;
+	prefString.format("%.2f", newScale);
+	optPref[iniKey] = prefString;
+	optPref.write();
+
+	return true;
+}
+
 bool changeMaxRenderFps(FpsValueChange change)
 {
 	UnsignedInt maxRenderFps = TheFramePacer->getFramesPerSecondLimit();
@@ -3407,6 +3446,44 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 		{
 			disp = DESTROY_MESSAGE;
 		}
+		break;
+	}
+
+	//-----------------------------------------------------------------------------------------
+	case GameMessage::MSG_META_INCREASE_PRODUCTION_QUEUE_SCALE:
+	{
+		if (changeScale(TheWritableGlobalData->m_productionQueueScale, ScaleChange_Increase, "ProductionQueueScale"))
+			disp = DESTROY_MESSAGE;
+		break;
+	}
+	case GameMessage::MSG_META_DECREASE_PRODUCTION_QUEUE_SCALE:
+	{
+		if (changeScale(TheWritableGlobalData->m_productionQueueScale, ScaleChange_Decrease, "ProductionQueueScale"))
+			disp = DESTROY_MESSAGE;
+		break;
+	}
+	case GameMessage::MSG_META_INCREASE_UNIT_QUEUE_SCALE:
+	{
+		if (changeScale(TheWritableGlobalData->m_unitQueueScale, ScaleChange_Increase, "UnitQueueScale"))
+			disp = DESTROY_MESSAGE;
+		break;
+	}
+	case GameMessage::MSG_META_DECREASE_UNIT_QUEUE_SCALE:
+	{
+		if (changeScale(TheWritableGlobalData->m_unitQueueScale, ScaleChange_Decrease, "UnitQueueScale"))
+			disp = DESTROY_MESSAGE;
+		break;
+	}
+	case GameMessage::MSG_META_INCREASE_GENERALS_POWER_SCALE:
+	{
+		if (changeScale(TheWritableGlobalData->m_generalsPowerScale, ScaleChange_Increase, "GeneralsPowerScale"))
+			disp = DESTROY_MESSAGE;
+		break;
+	}
+	case GameMessage::MSG_META_DECREASE_GENERALS_POWER_SCALE:
+	{
+		if (changeScale(TheWritableGlobalData->m_generalsPowerScale, ScaleChange_Decrease, "GeneralsPowerScale"))
+			disp = DESTROY_MESSAGE;
 		break;
 	}
 
