@@ -708,6 +708,16 @@ public: // TheSuperHackers: overlay methods must be public for file-scope safe* 
 	void toggleOverlayCustomDisabled() { m_overlayCustomDisabled = !m_overlayCustomDisabled; }
 	Bool isOverlayCustomDisabled() const { return m_overlayCustomDisabled; }
 
+	void adjustOverlayOffsetX(Int delta)
+	{
+		m_overlayOffsetX += delta;
+		OptionPreferences optPref;
+		AsciiString prefString;
+		prefString.format("%d", m_overlayOffsetX);
+		optPref["OverlayOffsetX"] = prefString;
+		optPref.write();
+	}
+
 	static void collectQueueEntries(Object* obj, void* userData);
 	static void findPowerModule(Object* obj, void* userData);
 

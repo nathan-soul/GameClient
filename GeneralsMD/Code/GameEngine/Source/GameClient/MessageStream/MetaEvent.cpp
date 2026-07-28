@@ -169,6 +169,8 @@ static const LookupListRec GameMessageMetaTypeNames[] =
 	{ "DECREASE_UNIT_QUEUE_SCALE",                              GameMessage::MSG_META_DECREASE_UNIT_QUEUE_SCALE },
 	{ "INCREASE_GENERALS_POWER_SCALE",                          GameMessage::MSG_META_INCREASE_GENERALS_POWER_SCALE },
 	{ "DECREASE_GENERALS_POWER_SCALE",                          GameMessage::MSG_META_DECREASE_GENERALS_POWER_SCALE },
+	{ "MOVE_OVERLAY_LEFT",                                      GameMessage::MSG_META_MOVE_OVERLAY_LEFT },
+	{ "MOVE_OVERLAY_RIGHT",                                     GameMessage::MSG_META_MOVE_OVERLAY_RIGHT },
 	{ "BEGIN_PATH_BUILD",													GameMessage::MSG_META_BEGIN_PATH_BUILD },
 	{ "END_PATH_BUILD",														GameMessage::MSG_META_END_PATH_BUILD },
 	{ "BEGIN_FORCEATTACK",												GameMessage::MSG_META_BEGIN_FORCEATTACK },
@@ -916,6 +918,27 @@ void MetaMap::generateMetaMap()
 			map->m_key = MK_DOWN;
 			map->m_transition = DOWN;
 			map->m_modState = SHIFT_CTRL;
+			map->m_usableIn = COMMANDUSABLE_GAME;
+		}
+	}
+	{
+		// TheSuperHackers @feature 28/07/2026 CTRL+ArrowLeft/Right moves overlay horizontally
+		MetaMapRec* map = TheMetaMap->getMetaMapRec(GameMessage::MSG_META_MOVE_OVERLAY_LEFT);
+		if (map->m_key == MK_NONE)
+		{
+			map->m_key = MK_LEFT;
+			map->m_transition = DOWN;
+			map->m_modState = CTRL;
+			map->m_usableIn = COMMANDUSABLE_GAME;
+		}
+	}
+	{
+		MetaMapRec* map = TheMetaMap->getMetaMapRec(GameMessage::MSG_META_MOVE_OVERLAY_RIGHT);
+		if (map->m_key == MK_NONE)
+		{
+			map->m_key = MK_RIGHT;
+			map->m_transition = DOWN;
+			map->m_modState = CTRL;
 			map->m_usableIn = COMMANDUSABLE_GAME;
 		}
 	}

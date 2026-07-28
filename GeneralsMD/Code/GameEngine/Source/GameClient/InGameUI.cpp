@@ -8317,7 +8317,6 @@ void InGameUI::drawPlayerInfoList()
 				// Compute panel X: position queue relative to the stats/score bar
 				// P1 goes LEFT of the score bar, P2 goes RIGHT of the score bar
 				Int panelX;
-				Int bottomY = m_queuePanelBottomY[0];
 				Int gridWidth = MAX_COLS * iconSize + (MAX_COLS - 1) * iconSpacing;
 
 				if (m_scoreBarLeft > 0)
@@ -8347,11 +8346,10 @@ void InGameUI::drawPlayerInfoList()
 				panelX += m_overlayOffsetX;
 
 				// Fallback if reference edges weren't captured
-				if (bottomY <= 0) bottomY = screenH;
 				if (panelX < 0) panelX = 0;
 
-				// Shift grid down by one row height (user feedback: was sitting too high)
-				bottomY += step;
+				// Pin bottom row to screen bottom, grid grows upward
+				Int bottomY = screenH + iconSpacing;
 
 				// Show the OLDEST items first (row 0 at top of visible area)
 				for (size_t ei = 0; ei < q.size(); ++ei)
@@ -8637,7 +8635,6 @@ void InGameUI::drawPlayerInfoList()
 				// Compute panel X: position queue relative to the stats/score bar (matches drawUnitQueuesImpl)
 				// P1 goes LEFT of the score bar, P2 goes RIGHT of the score bar
 				Int panelX;
-				Int bottomY = m_queuePanelBottomY[0];
 				Int gridWidth = MAX_COLS * iconSize + (MAX_COLS - 1) * iconSpacing;
 
 				if (m_scoreBarLeft > 0)
@@ -8659,13 +8656,12 @@ void InGameUI::drawPlayerInfoList()
 				// TheSuperHackers @feature 19/07/2026 Overlay repositioning
 				panelX += m_overlayOffsetX;
 
-				if (bottomY <= 0) bottomY = screenH;
 				if (panelX < 0) panelX = 0;
 
 				Int step = iconSize + iconSpacing;
 
-				// Shift grid down by one row height (matches drawUnitQueuesImpl)
-				bottomY += step;
+				// Pin bottom row to screen bottom (matches drawUnitQueuesImpl)
+				Int bottomY = screenH + iconSpacing;
 
 				for (size_t ei = 0; ei < q.size(); ++ei)
 				{
@@ -8899,7 +8895,7 @@ void InGameUI::drawPlayerInfoList()
 					// PER-BUILDING icon size: fixed pixel size independent of camera zoom
 					Int buildingIconSize = Int(20 * queueScale);
 					if (buildingIconSize < 8) buildingIconSize = 8;
-					if (buildingIconSize > 64) buildingIconSize = 64;
+					if (buildingIconSize > 128) buildingIconSize = 128;
 
 					// Scale spacing and label gutter proportionally to icon size
 					Int iconSpacing = Int(buildingIconSize * 0.15f);

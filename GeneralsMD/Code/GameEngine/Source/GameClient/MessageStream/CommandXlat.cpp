@@ -3488,6 +3488,20 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 	}
 
 	//-----------------------------------------------------------------------------------------
+	case GameMessage::MSG_META_MOVE_OVERLAY_LEFT:
+	{
+		if (TheInGameUI) TheInGameUI->adjustOverlayOffsetX(-10);
+		disp = DESTROY_MESSAGE;
+		break;
+	}
+	case GameMessage::MSG_META_MOVE_OVERLAY_RIGHT:
+	{
+		if (TheInGameUI) TheInGameUI->adjustOverlayOffsetX(10);
+		disp = DESTROY_MESSAGE;
+		break;
+	}
+
+	//-----------------------------------------------------------------------------------------
 	case GameMessage::MSG_META_INCREASE_LOGIC_TIME_SCALE:
 	{
 		if (changeLogicTimeScale(FpsValueChange_Increase))

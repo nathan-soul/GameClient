@@ -256,6 +256,8 @@ public:
 		MSG_META_DECREASE_UNIT_QUEUE_SCALE,                   ///< TheSuperHackers @feature Decrease bottom unit queue scale
 		MSG_META_INCREASE_GENERALS_POWER_SCALE,               ///< TheSuperHackers @feature Increase generals power scale
 		MSG_META_DECREASE_GENERALS_POWER_SCALE,               ///< TheSuperHackers @feature Decrease generals power scale
+		MSG_META_MOVE_OVERLAY_LEFT,                           ///< TheSuperHackers @feature Move overlay left
+		MSG_META_MOVE_OVERLAY_RIGHT,                          ///< TheSuperHackers @feature Move overlay right
 
 		MSG_META_BEGIN_PATH_BUILD,									///< enter path-building mode
 		MSG_META_END_PATH_BUILD,										///< exit path-building mode
