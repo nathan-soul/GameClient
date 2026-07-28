@@ -8351,16 +8351,19 @@ void InGameUI::drawPlayerInfoList()
 				// Pin bottom row to screen bottom, grid grows upward
 				Int bottomY = screenH + iconSpacing;
 
+				// Compute visible rows dynamically so grid compacts to bottom when fewer entries
+				size_t visibleCount = q.size();
+				if (visibleCount > (size_t)(MAX_COLS * MAX_VISIBLE_ROWS)) visibleCount = MAX_COLS * MAX_VISIBLE_ROWS;
+				Int visibleRows = (Int)((visibleCount + MAX_COLS - 1) / MAX_COLS);
+
 				// Show the OLDEST items first (row 0 at top of visible area)
-				for (size_t ei = 0; ei < q.size(); ++ei)
+				for (size_t ei = 0; ei < visibleCount; ++ei)
 				{
 					Int row = (Int)(ei / MAX_COLS);
-					if (row >= MAX_VISIBLE_ROWS) continue;  // below viewport → skip
-
 					Int col = (Int)(ei % MAX_COLS);
 					Int ix = panelX + col * step;
-					// row 0 = top visible row, row 2 = bottom (against screen edge)
-					Int iy = bottomY - (MAX_VISIBLE_ROWS - row) * step;
+					// row 0 = top row, bottom row = against screen edge
+					Int iy = bottomY - (visibleRows - row) * step;
 
 					// Try drawing the button image (unit or upgrade)
 					const Image* img = nullptr;
@@ -8663,14 +8666,16 @@ void InGameUI::drawPlayerInfoList()
 				// Pin bottom row to screen bottom (matches drawUnitQueuesImpl)
 				Int bottomY = screenH + iconSpacing;
 
-				for (size_t ei = 0; ei < q.size(); ++ei)
+				size_t visibleCount = q.size();
+				if (visibleCount > (size_t)(MAX_COLS * MAX_VISIBLE_ROWS)) visibleCount = MAX_COLS * MAX_VISIBLE_ROWS;
+				Int visibleRows = (Int)((visibleCount + MAX_COLS - 1) / MAX_COLS);
+
+				for (size_t ei = 0; ei < visibleCount; ++ei)
 				{
 					Int row = (Int)(ei / MAX_COLS);
-					if (row >= MAX_VISIBLE_ROWS) continue;
-
 					Int col = (Int)(ei % MAX_COLS);
 					Int ix = panelX + col * step;
-					Int iy = bottomY - (MAX_VISIBLE_ROWS - row) * step;
+					Int iy = bottomY - (visibleRows - row) * step;
 
 					if (mx >= ix && mx <= ix + iconSize &&
 						my >= iy && my <= iy + iconSize)
