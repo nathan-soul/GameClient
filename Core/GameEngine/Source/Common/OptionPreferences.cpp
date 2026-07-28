@@ -199,6 +199,19 @@ Real OptionPreferences::getUnitQueueScale(void)
     return scale;
 }
 
+Real OptionPreferences::getProductionQueueScale(void)
+{
+    OptionPreferences::const_iterator it = find("ProductionQueueScale");
+    if (it == end())
+        return 2.0f;
+    Real scale = (Real)atof(it->second.str());
+    if (scale < 0.25f)
+        scale = 0.25f;
+    if (scale > 8.0f)
+        scale = 8.0f;
+    return scale;
+}
+
 Real OptionPreferences::getGeneralsPowerScale(void)
 {
     OptionPreferences::const_iterator it = find("GeneralsPowerScale");

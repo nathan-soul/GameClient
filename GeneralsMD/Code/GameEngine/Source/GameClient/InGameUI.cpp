@@ -8822,8 +8822,8 @@ void InGameUI::drawPlayerInfoList()
 			if (uiMultiplier < 0.25f) uiMultiplier = 0.25f;
 			Real queueScale = baseScale * uiMultiplier;
 			queueScale = (queueScale < 0.35f) ? 0.35f : (queueScale > 4.0f) ? 4.0f : queueScale;
-			Real unitQueueScale = TheGlobalData ? TheGlobalData->m_unitQueueScale : 2.0f;
-			queueScale *= unitQueueScale;
+			Real productionQueueScale = TheGlobalData ? TheGlobalData->m_productionQueueScale : 2.0f;
+			queueScale *= productionQueueScale;
 
 			Real zoom = TheTacticalView->getZoom();
 			if (zoom < 0.01f) zoom = 0.01f;
@@ -8912,20 +8912,15 @@ void InGameUI::drawPlayerInfoList()
 					// Show up to maxPerBuilding entries in a 3-column grid
 					size_t showCount = entries.size();
 					if (showCount > (size_t)maxPerBuilding) showCount = (size_t)maxPerBuilding;
-					Int gridRows = (Int)((showCount + gridCols - 1) / gridCols);
 					Int cellH = buildingIconSize + Int(buildingIconSize * 0.4f);  // extra space for ObjectID label
 					Int totalW = gridCols * buildingIconSize + (gridCols - 1) * iconSpacing;
-					Int totalH = gridRows * cellH;
 
 					// The health bar is drawn centered on screenPos (3px bar, centered vertically)
-					// Position queue grid above the health bar with a small gap
-					Int gapAboveHealthBar = Int(buildingIconSize * 0.3f);
-					if (gapAboveHealthBar < 2) gapAboveHealthBar = 2;
-					screenPos.y -= gapAboveHealthBar;
-					if (screenPos.y < 0) screenPos.y = 0;
+					// Position queue grid below the health bar with a 25px offset
+					screenPos.y += Int(25 * baseScale);
 
 					Int startX = screenPos.x - totalW / 2;
-					Int startY = screenPos.y - totalH;
+					Int startY = screenPos.y;
 
 					for (size_t i = 0; i < showCount; ++i)
 					{

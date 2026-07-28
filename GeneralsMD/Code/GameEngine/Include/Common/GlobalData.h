@@ -441,6 +441,9 @@ public:
 	// TheSuperHackers @feature 28/07/2026 Multiplier for unit queue icon size on overlay and production buildings
 	Real m_unitQueueScale;
 
+	// TheSuperHackers @feature 28/07/2026 Multiplier for per-building production queue icon size
+	Real m_productionQueueScale;
+
 	// TheSuperHackers @feature 28/07/2026 Multiplier for generals power icon size and flash duration (seconds)
 	Real m_generalsPowerScale;
 	Int m_generalsPowerFlashDuration;

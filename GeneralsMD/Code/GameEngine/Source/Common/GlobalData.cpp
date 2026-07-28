@@ -967,6 +967,7 @@ GlobalData::GlobalData()
 
 	m_observerStatsFontSize = 7;
 	m_unitQueueScale = 2.0f;
+	m_productionQueueScale = 2.0f;
 	m_generalsPowerScale = 2.0f;
 	m_generalsPowerFlashDuration = 10;
 	m_observerNotificationFontSize = 10;
@@ -1268,6 +1269,7 @@ void GlobalData::parseGameDataDefinition( INI* ini )
 	TheWritableGlobalData->m_showMoneyPerMinute = optionPref.getShowMoneyPerMinute();
 	TheWritableGlobalData->m_observerStatsFontSize = optionPref.getObserverStatsFontSize();
 	TheWritableGlobalData->m_unitQueueScale = optionPref.getUnitQueueScale();
+	TheWritableGlobalData->m_productionQueueScale = optionPref.getProductionQueueScale();
 	TheWritableGlobalData->m_generalsPowerScale = optionPref.getGeneralsPowerScale();
 	TheWritableGlobalData->m_generalsPowerFlashDuration = optionPref.getGeneralsPowerFlashDuration();
 	TheWritableGlobalData->m_observerNotificationFontSize = optionPref.getObserverNotificationFontSize();
