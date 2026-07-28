@@ -131,6 +131,7 @@ public:
 
     Int getObserverStatsFontSize(void);
     Int getObserverNotificationFontSize(void);
+    Real getUnitQueueScale(void);
 	Bool getObserverNotificationSpecialPowerUsage(void);
 	Bool getObserverNotificationSpecialPowerPurchase(void);
 	Bool getObserverNotificationMilestone(void);

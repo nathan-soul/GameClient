@@ -966,6 +966,7 @@ GlobalData::GlobalData()
 	m_playerInfoListFontSize = 8;
 
 	m_observerStatsFontSize = 7;
+	m_unitQueueScale = 2.0f;
 	m_observerNotificationFontSize = 10;
 	m_observerNotificationSpecialPowerUsage = TRUE;
 	m_observerNotificationSpecialPowerPurchase = TRUE;
@@ -1264,6 +1265,7 @@ void GlobalData::parseGameDataDefinition( INI* ini )
 	TheWritableGlobalData->m_playerInfoListFontSize = optionPref.getPlayerInfoListFontSize();
 	TheWritableGlobalData->m_showMoneyPerMinute = optionPref.getShowMoneyPerMinute();
 	TheWritableGlobalData->m_observerStatsFontSize = optionPref.getObserverStatsFontSize();
+	TheWritableGlobalData->m_unitQueueScale = optionPref.getUnitQueueScale();
 	TheWritableGlobalData->m_observerNotificationFontSize = optionPref.getObserverNotificationFontSize();
 	TheWritableGlobalData->m_observerNotificationSpecialPowerUsage = optionPref.getObserverNotificationSpecialPowerUsage();
 	TheWritableGlobalData->m_observerNotificationSpecialPowerPurchase = optionPref.getObserverNotificationSpecialPowerPurchase();

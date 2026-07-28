@@ -438,6 +438,9 @@ public:
 	// Generals Online @feature 11/01/2026 allow the observer stats font size to be set, a size of zero disables it
 	Int m_observerStatsFontSize;
 
+	// TheSuperHackers @feature 28/07/2026 Multiplier for unit queue icon size on overlay and production buildings
+	Real m_unitQueueScale;
+
 	// Generals Online @feature 16/1/2025 allow the observer notification font size to be set, a size of zero disables it
 	Int m_observerNotificationFontSize;
 	Bool m_observerNotificationSpecialPowerUsage;

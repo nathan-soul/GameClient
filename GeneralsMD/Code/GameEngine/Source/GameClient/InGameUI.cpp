@@ -8599,6 +8599,8 @@ void InGameUI::drawPlayerInfoList()
 			if (uiMultiplier < 0.25f) uiMultiplier = 0.25f;
 			Real scale = baseScale * uiMultiplier;
 			scale = (scale < 0.35f) ? 0.35f : (scale > 4.0f) ? 4.0f : scale;
+			Real unitQueueScale = TheGlobalData ? TheGlobalData->m_unitQueueScale : 2.0f;
+			scale *= unitQueueScale;
 			Int iconSize = Int(24 * scale);
 			Int iconSpacing = Int(3 * scale);
 
@@ -8807,6 +8809,8 @@ void InGameUI::drawPlayerInfoList()
 			if (uiMultiplier < 0.25f) uiMultiplier = 0.25f;
 			Real queueScale = baseScale * uiMultiplier;
 			queueScale = (queueScale < 0.35f) ? 0.35f : (queueScale > 4.0f) ? 4.0f : queueScale;
+			Real unitQueueScale = TheGlobalData ? TheGlobalData->m_unitQueueScale : 2.0f;
+			queueScale *= unitQueueScale;
 
 			Real zoom = TheTacticalView->getZoom();
 			if (zoom < 0.01f) zoom = 0.01f;
@@ -9049,6 +9053,8 @@ void InGameUI::drawPlayerInfoList()
 			// Queue scale: combine resolution + UI scale (powers use resolution-only)
 			Real queueScale = baseScale * uiMultiplier;
 			queueScale = (queueScale < 0.35f) ? 0.35f : (queueScale > 4.0f) ? 4.0f : queueScale;
+			Real unitQueueScale = TheGlobalData ? TheGlobalData->m_unitQueueScale : 2.0f;
+			queueScale *= unitQueueScale;
 
 			Int queueBaseY = screenH - Int(80 * baseScale);
 			if (queueBaseY < 0) queueBaseY = 0;
