@@ -1442,6 +1442,7 @@ InGameUI::InGameUI()
 				m_overlayOffsetX = atoi(it->second.str());
 		}
 		m_repositionMode = false;
+		m_overlayCustomDisabled = false;
 		m_repositionClickedBtn = -1;
 		m_repositionClickFrame = 0;
 		for (Int s = 0; s < MAX_SLOTS; ++s)
@@ -4775,7 +4776,11 @@ void InGameUI::resetCamera()
 	TheTacticalView->userResetPivotToGround();
 	TheTacticalView->userSetAngleToDefault();
 	TheTacticalView->userSetPitchToDefault();
-	TheTacticalView->userSetZoomToDefault();
+	// TheSuperHackers @fix 28/07/2026 Use a moderate zoom level instead of max.
+	// Generals Online overrides max zoom to 1000 for observers, causing setZoomToDefault
+	// to zoom out fully. Use 0.3 (~300 height at observer max 1000) to match the
+	// original m_maxCameraHeight of 300.
+	TheTacticalView->userSetZoom(0.3f);
 }
 
 void InGameUI::initObserverOverlay()
@@ -9077,24 +9082,25 @@ void InGameUI::drawPlayerInfoList()
 
 			// TheSuperHackers @feature 17/07/2026 Per-element visibility toggles (F8 powers / F9 queues).
 			// Data gathering above always runs so re-showing is instant; only draw + click handling is gated.
-			if (m_overlayQueuesVisible)
+			// TheSuperHackers @feature 28/07/2026 F4 master disable gates all custom features below.
+			if (m_overlayQueuesVisible && !m_overlayCustomDisabled)
 			{
 				safeDrawUnitQueues(this, Int(10 * baseScale), queueBaseY, queueLineH, queueScale);
 				safeDrawUnitQueueClicks(this);
 			}
 
 			// TheSuperHackers @feature 19/07/2026 Per-building queues (Ctrl+Q cycles modes, independent of F9)
-			if (m_perBuildingQueueMode != QUEUE_DISPLAY_HIDDEN)
+			if (m_perBuildingQueueMode != QUEUE_DISPLAY_HIDDEN && !m_overlayCustomDisabled)
 			{
 				safeDrawPerBuildingQueues(this);
 			}
-			if (m_overlayPowersVisible)
+			if (m_overlayPowersVisible && !m_overlayCustomDisabled)
 			{
 				safeDrawPowerCooldowns(this, Int(10 * baseScale), queueBaseY, queueLineH, baseScale);
 				safeDrawPowerFlashes(this);
 			}
 			// TheSuperHackers @feature 19/07/2026 Reposition panel (F7 toggle).
-			if (m_repositionMode)
+			if (m_repositionMode && !m_overlayCustomDisabled)
 			{
 				safeDrawRepositionPanel(this, baseScale);
 				safeHandleRepositionClicks(this, baseScale);

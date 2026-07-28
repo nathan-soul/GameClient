@@ -4007,8 +4007,21 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
                         : TheGameText->FETCH_OR_SUBSTITUTE("GUI:RepositionOff", L"Reposition mode OFF (F7)"));
             }
             disp = DESTROY_MESSAGE;
-        }
-        // TheSuperHackers @feature 19/07/2026 Ctrl+Q cycles per-building queue display mode.
+		}
+		// TheSuperHackers @feature 28/07/2026 F4 master toggle — disable all custom overlay features.
+		else if (key == KEY_F4)
+		{
+			if (TheInGameUI)
+			{
+				TheInGameUI->toggleOverlayCustomDisabled();
+				if (TheControlBar && TheControlBar->isObserverControlBarOn())
+					TheInGameUI->messageNoFormat(TheInGameUI->isOverlayCustomDisabled()
+						? L"Overlay: custom features OFF (F4)"
+						: L"Overlay: custom features ON (F4)");
+			}
+			disp = DESTROY_MESSAGE;
+		}
+		// TheSuperHackers @feature 19/07/2026 Ctrl+Q cycles per-building queue display mode.
         else if (key == KEY_Q && TheKeyboard && TheKeyboard->isCtrl())
         {
             if (TheInGameUI)

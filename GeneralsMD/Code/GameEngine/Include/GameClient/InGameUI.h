@@ -704,6 +704,10 @@ public: // TheSuperHackers: overlay methods must be public for file-scope safe* 
 		}
 	Bool isRepositionMode() const { return m_repositionMode; }
 
+	// TheSuperHackers @feature 28/07/2026 F4 master toggle — hides all custom overlay features.
+	void toggleOverlayCustomDisabled() { m_overlayCustomDisabled = !m_overlayCustomDisabled; }
+	Bool isOverlayCustomDisabled() const { return m_overlayCustomDisabled; }
+
 	static void collectQueueEntries(Object* obj, void* userData);
 	static void findPowerModule(Object* obj, void* userData);
 
@@ -1213,6 +1217,7 @@ protected:
 	UnsignedInt m_queueSequenceCounter;       // monotonic counter for stable entry ordering
 	Int m_overlayOffsetX;           // Horizontal offset in pixels for overlay repositioning
 	Bool m_repositionMode;          // F7 toggle for overlay reposition panel
+	Bool m_overlayCustomDisabled;   // F4: master disable for all custom overlay features
 	Int m_repositionClickedBtn;     // Which button was clicked (-1 = none), for flash feedback
 	UnsignedInt m_repositionClickFrame; // Frame when button was clicked
 
