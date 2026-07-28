@@ -8826,7 +8826,13 @@ void InGameUI::drawPlayerInfoList()
 			Real productionQueueScale = TheGlobalData ? TheGlobalData->m_productionQueueScale : 2.0f;
 			queueScale *= productionQueueScale;
 
-			Int maxPerBuilding = 15;
+			Real zoom = TheTacticalView->getZoom();
+			if (zoom < 0.01f) zoom = 0.01f;
+
+			// Scale visible entries by zoom: fewer when zoomed out, more when zoomed in
+			Int maxPerBuilding = (Int)(36.0f / zoom);
+			if (maxPerBuilding < 3) maxPerBuilding = 3;
+			if (maxPerBuilding > 15) maxPerBuilding = 15;
 			Int gridCols = 3;
 
 			// For ON_HOVER mode, find the building under the mouse
@@ -8892,8 +8898,8 @@ void InGameUI::drawPlayerInfoList()
 							continue;
 					}
 
-					// PER-BUILDING icon size: fixed pixel size independent of camera zoom
-					Int buildingIconSize = Int(20 * queueScale);
+					// PER-BUILDING icon size: scale with camera zoom (smaller when zoomed out)
+					Int buildingIconSize = Int(20 * queueScale / zoom);
 					if (buildingIconSize < 8) buildingIconSize = 8;
 					if (buildingIconSize > 128) buildingIconSize = 128;
 
