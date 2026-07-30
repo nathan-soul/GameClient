@@ -1215,6 +1215,7 @@ protected:
 	PlayerOverlayExt m_playerOverlayExt[MAX_SLOTS];
 
 	Int m_overlayPlayerSlots[2];    // Game slot indices for the two 1v1 players
+	Color m_overlayPlayerColors[2]; // Cached player colors for border rendering
 	Int m_queuePanelX[2];           // Reference X edges: radar hi.x (P1), hud lo.x (P2) — frame 2
 	Int m_queuePanelBottomY[2];    // Reference bottom Y edges: radar/hud hi.y — frame 2
 	Bool m_isValid1v1;              // Whether we have exactly 2 active non-observer players

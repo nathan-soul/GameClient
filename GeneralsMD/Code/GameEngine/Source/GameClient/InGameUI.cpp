@@ -50,6 +50,7 @@
 #include "Common/ThingTemplate.h"
 #include "Common/BuildAssistant.h"
 #include "Common/Recorder.h"
+#include "Common/Upgrade.h"
 #include "Common/SpecialPower.h"
 #include "Common/OptionPreferences.h"
 #include "GameClient/Anim2D.h"
@@ -7643,6 +7644,8 @@ void InGameUI::drawPlayerInfoList()
 			m_isValid1v1 = false;
 			m_overlayPlayerSlots[0] = -1;
 			m_overlayPlayerSlots[1] = -1;
+			m_overlayPlayerColors[0] = GameMakeColor(255, 255, 255, 200);
+			m_overlayPlayerColors[1] = GameMakeColor(255, 255, 255, 200);
 
 			if (!ThePlayerList || !TheNameKeyGenerator)
 				return;
@@ -7661,7 +7664,10 @@ void InGameUI::drawPlayerInfoList()
 					continue;
 
 				if (count < 2)
+				{
 					found[count] = slotIndex;
+					m_overlayPlayerColors[count] = p->getPlayerColor();
+				}
 				++count;
 			}
 
@@ -8121,10 +8127,6 @@ void InGameUI::drawPlayerInfoList()
 
 					const SpecialPowerTemplate* sp = btn->getSpecialPowerTemplate();
 
-					// Skip non-shortcut powers (super weapons like Particle Cannon, Nuke, SCUD Storm
-					// have ShortcutPower=No in INI — they belong to the superweapon panel, not general powers)
-					if (!sp->isShortcutPower()) continue;
-
 					PlayerPowerInfo& ppi = m_playerOverlayExt[slot].powers[numPowers];
 					ppi.button = btn;
 					ppi.hasModule = false;
@@ -8351,8 +8353,19 @@ void InGameUI::drawPlayerInfoList()
 				// Pin bottom row to screen bottom, grid grows upward
 				Int bottomY = screenH + iconSpacing;
 
-				// Compute visible rows dynamically so grid compacts to bottom when fewer entries
-				size_t visibleCount = q.size();
+				// Filter visible entries: units + PLAYER upgrades only (exclude OBJECT upgrades)
+				// OBJECT upgrades (e.g. Recon Drone on Humvee, Overlord Gattling) are shown
+				// only in per-building queues (Ctrl+Q) at 0.4 scale, not in this bottom panel.
+				std::vector<size_t> visibleIndices;
+				for (size_t i = 0; i < q.size(); ++i)
+				{
+					if (q[i].tmpl)
+						visibleIndices.push_back(i);
+					else if (q[i].upgradeTmpl && q[i].upgradeTmpl->getUpgradeType() == UPGRADE_TYPE_PLAYER)
+						visibleIndices.push_back(i);
+				}
+
+				size_t visibleCount = visibleIndices.size();
 				if (visibleCount > (size_t)(MAX_COLS * MAX_VISIBLE_ROWS)) visibleCount = MAX_COLS * MAX_VISIBLE_ROWS;
 				Int visibleRows = (Int)((visibleCount + MAX_COLS - 1) / MAX_COLS);
 
@@ -8365,29 +8378,44 @@ void InGameUI::drawPlayerInfoList()
 					// row 0 = top row, bottom row = against screen edge
 					Int iy = bottomY - (visibleRows - row) * step;
 
+					const QueueEntry& entry = q[visibleIndices[ei]];
+
 					// Try drawing the button image (unit or upgrade)
 					const Image* img = nullptr;
-					if (q[ei].tmpl)
-						img = q[ei].tmpl->getButtonImage();
-					else if (q[ei].upgradeTmpl)
-						img = q[ei].upgradeTmpl->getButtonImage();
+					if (entry.tmpl)
+						img = entry.tmpl->getButtonImage();
+					else if (entry.upgradeTmpl)
+						img = entry.upgradeTmpl->getButtonImage();
 
-					if (img)
-					{
-						TheDisplay->drawImage(img, ix, iy,
-							ix + iconSize, iy + iconSize);
-					}
-					else
-					{
-						// Fallback: gray rectangle placeholder
-						TheWindowManager->winFillRect(
-							TheWindowManager->winMakeColor(60, 60, 60, 200), 1,
-							ix, iy,
-							ix + iconSize, iy + iconSize);
-					}
+				if (img)
+				{
+					TheDisplay->drawImage(img, ix, iy,
+						ix + iconSize, iy + iconSize);
+				}
+				else
+				{
+					// Fallback: gray rectangle placeholder
+					TheWindowManager->winFillRect(
+						TheWindowManager->winMakeColor(60, 60, 60, 200), 1,
+						ix, iy,
+						ix + iconSize, iy + iconSize);
+				}
+
+				// Player-colored border around each unit queue icon
+				{
+					Color borderColor = m_overlayPlayerColors[ovIdx];
+					TheWindowManager->winFillRect(borderColor, 1,
+						ix, iy, ix + iconSize, iy + 2);
+					TheWindowManager->winFillRect(borderColor, 1,
+						ix, iy + iconSize - 2, ix + iconSize, iy + iconSize);
+					TheWindowManager->winFillRect(borderColor, 1,
+						ix, iy, ix + 2, iy + iconSize);
+					TheWindowManager->winFillRect(borderColor, 1,
+						ix + iconSize - 2, iy, ix + iconSize, iy + iconSize);
+				}
 
 					// Clock wedge: clearing grows clockwise as unit builds
-					Int pct = (Int)(q[ei].percentComplete);
+					Int pct = (Int)(entry.percentComplete);
 					if (pct >= 0 && pct <= 100)
 					{
 						TheDisplay->drawRemainingRectClock(
@@ -8483,22 +8511,18 @@ void InGameUI::drawPlayerInfoList()
 								GameMakeColor(0, 0, 0, 140));
 						}
 					}
-					if (isReady)
-					{
-						// Green border = ready
-						TheWindowManager->winFillRect(
-							TheWindowManager->winMakeColor(0, 255, 0, 200), 1,
-							panelX, curY, panelX + ringSize, curY + 2);
-						TheWindowManager->winFillRect(
-							TheWindowManager->winMakeColor(0, 255, 0, 200), 1,
-							panelX, curY + ringSize - 2, panelX + ringSize, curY + ringSize);
-						TheWindowManager->winFillRect(
-							TheWindowManager->winMakeColor(0, 255, 0, 200), 1,
-							panelX, curY, panelX + 2, curY + ringSize);
-						TheWindowManager->winFillRect(
-							TheWindowManager->winMakeColor(0, 255, 0, 200), 1,
-							panelX + ringSize - 2, curY, panelX + ringSize, curY + ringSize);
-					}
+				// Player-colored border = always visible (identifies player ownership)
+				{
+					Color borderColor = m_overlayPlayerColors[ovIdx];
+					TheWindowManager->winFillRect(borderColor, 1,
+						panelX, curY, panelX + ringSize, curY + 2);
+					TheWindowManager->winFillRect(borderColor, 1,
+						panelX, curY + ringSize - 2, panelX + ringSize, curY + ringSize);
+					TheWindowManager->winFillRect(borderColor, 1,
+						panelX, curY, panelX + 2, curY + ringSize);
+					TheWindowManager->winFillRect(borderColor, 1,
+						panelX + ringSize - 2, curY, panelX + ringSize, curY + ringSize);
+				}
 
 					// Flash effect on recently used — green overlay over entire icon
 					if (isFlashing)
@@ -8934,6 +8958,16 @@ void InGameUI::drawPlayerInfoList()
 
 					const QueueEntry* qe = entries[i];
 
+					// Scale OBJECT upgrades (e.g. Recon Drone, Overlord Gattling) to 0.4 factor.
+					// Global PLAYER upgrades and regular units keep the full buildingIconSize.
+					Bool isObjectUpgrade = (qe->upgradeTmpl && qe->upgradeTmpl->getUpgradeType() == UPGRADE_TYPE_OBJECT);
+					Int entryIconSize = isObjectUpgrade ? Int(buildingIconSize * 0.4f) : buildingIconSize;
+					if (entryIconSize < 4) entryIconSize = 4;
+
+					// Center the entry icon within the cell
+					Int entryIx = ix + (buildingIconSize - entryIconSize) / 2;
+					Int entryIy = iy + (buildingIconSize - entryIconSize) / 2;
+
 					// Try drawing the button image
 					const Image* img = nullptr;
 					if (qe->tmpl)
@@ -8943,15 +8977,28 @@ void InGameUI::drawPlayerInfoList()
 
 					if (img)
 					{
-						TheDisplay->drawImage(img, ix, iy,
-							ix + buildingIconSize, iy + buildingIconSize);
+						TheDisplay->drawImage(img, entryIx, entryIy,
+							entryIx + entryIconSize, entryIy + entryIconSize);
 					}
 					else
 					{
 						TheWindowManager->winFillRect(
 							TheWindowManager->winMakeColor(60, 60, 60, 200), 1,
-							ix, iy,
-							ix + buildingIconSize, iy + buildingIconSize);
+							entryIx, entryIy,
+							entryIx + entryIconSize, entryIy + entryIconSize);
+					}
+
+					// Player-colored border around each per-building queue icon
+					{
+						Color borderColor = m_overlayPlayerColors[ovIdx];
+						TheWindowManager->winFillRect(borderColor, 1,
+							entryIx, entryIy, entryIx + entryIconSize, entryIy + 2);
+						TheWindowManager->winFillRect(borderColor, 1,
+							entryIx, entryIy + entryIconSize - 2, entryIx + entryIconSize, entryIy + entryIconSize);
+						TheWindowManager->winFillRect(borderColor, 1,
+							entryIx, entryIy, entryIx + 2, entryIy + entryIconSize);
+						TheWindowManager->winFillRect(borderColor, 1,
+							entryIx + entryIconSize - 2, entryIy, entryIx + entryIconSize, entryIy + entryIconSize);
 					}
 
 					// Clock wedge
@@ -8959,7 +9006,7 @@ void InGameUI::drawPlayerInfoList()
 					if (pct >= 0 && pct <= 100)
 					{
 						TheDisplay->drawRemainingRectClock(
-							ix, iy, buildingIconSize, buildingIconSize,
+							entryIx, entryIy, entryIconSize, entryIconSize,
 							pct,
 							GameMakeColor(0, 0, 0, 160));
 					}
