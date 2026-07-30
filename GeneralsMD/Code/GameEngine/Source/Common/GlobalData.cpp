@@ -1323,11 +1323,16 @@ UnsignedInt GlobalData::generateExeCRC()
 	File *fp;
 	// TheSuperHackers @tweak SkyAero/xezon 27/05/2025
 	// Simulate the EXE's CRC value to force Network and Replay compatibility with another build.
-#if (defined(_MSC_VER) && _MSC_VER < 1300) && RETAIL_COMPATIBLE_CRC
+	static const UnsignedInt GENERALSMD_104_CD_EXE_CRC     = 0x3b6fb2cfu;
+	static const UnsignedInt GENERALSMD_104_STEAM_EXE_CRC  = 0xf6a4221bu;
+	static const UnsignedInt GENERALSMD_104_EAAPP_EXE_CRC  = 0xc4181eb9u;
 
-#define GENERALSMD_104_CD_EXE_CRC    0x3b6fb2cfu
-#define GENERALSMD_104_STEAM_EXE_CRC 0xf6a4221bu
-#define GENERALSMD_104_EAAPP_EXE_CRC 0xc4181eb9u
+#if defined(GENERALS_ONLINE)
+	{
+		exeCRC.set(GENERALSMD_104_CD_EXE_CRC);
+		DEBUG_LOG(("Using retail CD EXE CRC for online compatibility: 0x%8.8X", exeCRC.get()));
+	}
+#elif (defined(_MSC_VER) && _MSC_VER < 1300) && RETAIL_COMPATIBLE_CRC
 
 	exeCRC.set(GENERALSMD_104_CD_EXE_CRC);
 	DEBUG_LOG(("Fake EXE CRC is 0x%8.8X", exeCRC.get()));

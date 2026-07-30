@@ -44,7 +44,7 @@ public:
 //	UnsignedInt get() { return htonl(crc); }	///< Get the combined CRC
 	UnsignedInt get();
 
-#if (defined(_MSC_VER) && _MSC_VER < 1300) && RETAIL_COMPATIBLE_CRC
+#if defined(GENERALS_ONLINE) || ((defined(_MSC_VER) && _MSC_VER < 1300) && RETAIL_COMPATIBLE_CRC)
   void set( UnsignedInt v )
   {
     crc = v;
@@ -124,7 +124,7 @@ public:
     return crc;
   }
 
-#if (defined(_MSC_VER) && _MSC_VER < 1300) && RETAIL_COMPATIBLE_CRC
+#if defined(GENERALS_ONLINE) || ((defined(_MSC_VER) && _MSC_VER < 1300) && RETAIL_COMPATIBLE_CRC)
   void set( UnsignedInt v )
   {
     crc = v;
