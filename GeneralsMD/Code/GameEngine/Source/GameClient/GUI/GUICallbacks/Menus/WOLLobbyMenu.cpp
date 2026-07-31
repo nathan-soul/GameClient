@@ -2417,6 +2417,7 @@ WindowMsgHandledType WOLLobbyMenuSystem( GameWindow *window, UnsignedInt msg,
 							}
 
 							// CRC Check
+#if !defined(GENERALS_ONLINE)
 							if (Lobby.exe_crc != TheGlobalData->m_exeCRC || Lobby.ini_crc != TheGlobalData->m_iniCRC)
 							{
 								if (TheGlobalData->m_iniCRC != VANILLA_INI_CRC)
@@ -2433,6 +2434,7 @@ WindowMsgHandledType WOLLobbyMenuSystem( GameWindow *window, UnsignedInt msg,
 								}
 								break;
 							}
+#endif
 
 							// TODO_NGMP: Enforce this on the host too, vanilla game did not...
 

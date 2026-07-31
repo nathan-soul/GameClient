@@ -710,6 +710,34 @@ void GameEngine::init()
 		TheWritableGlobalData->m_iniCRC = xferCRC.getCRC();
 		DEBUG_LOG(("INI CRC is 0x%8.8X", TheGlobalData->m_iniCRC));
 
+#if defined(GENERALS_ONLINE)
+		// Override INI CRC for online lobby compatibility
+		TheWritableGlobalData->m_iniCRC = VANILLA_INI_CRC;
+		DEBUG_LOG(("Overriding INI CRC for online compatibility: 0x%8.8X", VANILLA_INI_CRC));
+
+		{
+			// Override EXE CRC for online lobby compatibility
+			// Read target custom CRC from Data\execcrc.txt (hex), with hardcoded fallback
+			// matching the official GeneralsOnlineZH_60.exe CRC (0x48D67663).
+			UnsignedInt targetExeCRC = 0x48D67663;
+			AsciiString crcFilePath;
+			crcFilePath.format("%sData\\execcrc.txt", TheGlobalData->getPath_UserData().str());
+			FILE* crcFile = fopen(crcFilePath.str(), "r");
+			if (crcFile) {
+				char buf[32] = {0};
+				if (fgets(buf, sizeof(buf), crcFile)) {
+					UnsignedInt fileCRC = (UnsignedInt)strtoul(buf, NULL, 16);
+					if (fileCRC != 0) {
+						targetExeCRC = fileCRC;
+					}
+				}
+				fclose(crcFile);
+			}
+			TheWritableGlobalData->m_exeCRC = targetExeCRC;
+			DEBUG_LOG(("Overriding EXE CRC for online compatibility: 0x%8.8X", targetExeCRC));
+		}
+#endif
+
 		TheSubsystemList->postProcessLoadAll();
 
 		TheFramePacer->setFramesPerSecondLimit(TheGlobalData->m_framesPerSecondLimit);
