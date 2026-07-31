@@ -168,6 +168,7 @@ public:
 	void setLiveStream(Bool live) { m_isLiveStream = live; }
 	void setStreamEnded(Bool ended) { m_streamEnded = ended; }
 	Bool isLiveStream() const { return m_isLiveStream; }
+	Bool isLiveWaiting() const { return m_liveWaiting; }
 	UnsignedInt getNextFrame() const { return m_nextFrame; }	///< Next frame to execute (used for live gap check).
 	UnsignedInt getCachedLiveEdge() const { return m_cachedLiveEdge; }
 
@@ -216,9 +217,11 @@ protected:
 	IReplayStreamSink* m_streamSink;
 	Bool m_isLiveStream;
 	Bool m_streamEnded;
+	Bool m_liveWaiting;
 	UnsignedInt m_cachedLiveEdge;											///< cached result from probeLiveEdge()
 	Int m_liveEdgeProbeFrame;													///< frame on which we last probed
 };
 
 extern RecorderClass *TheRecorder;
 RecorderClass *createRecorder();
+void recorderLog(const char* fmt, ...);

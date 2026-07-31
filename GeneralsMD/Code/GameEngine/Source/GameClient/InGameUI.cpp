@@ -9137,6 +9137,15 @@ void InGameUI::drawPlayerInfoList()
 					Int statusY = Int(10 * baseScale);
 					observerStatus->draw(statusX, statusY, 0xFF00FF00, 0); // green
 				}
+				else if (TheRecorder && TheRecorder->isLiveWaiting())
+				{
+					statusText.translate(AsciiString("WAITING FOR FRAMES"));
+					observerStatus->setText(statusText);
+					Int statusW = observerStatus->getWidth();
+					Int statusX = (TheDisplay->getWidth() - statusW) / 2;
+					Int statusY = Int(10 * baseScale);
+					observerStatus->draw(statusX, statusY, 0xFF00FFFF, 0); // cyan
+				}
 				else
 				{
 					statusText.translate(AsciiString("LIVE"));

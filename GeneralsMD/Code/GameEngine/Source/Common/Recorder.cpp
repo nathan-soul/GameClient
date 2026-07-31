@@ -55,6 +55,21 @@
 
 extern NGMPGame* TheNGMPGame;
 
+void recorderLog(const char* fmt, ...)
+{
+	static FILE* logFile = NULL;
+	if (!logFile)
+		logFile = fopen("recorder_debug.log", "w");
+	if (logFile)
+	{
+		va_list args;
+		va_start(args, fmt);
+		vfprintf(logFile, fmt, args);
+		va_end(args);
+		fflush(logFile);
+	}
+}
+
 constexpr const char s_genrep[] = "GENREP";
 constexpr const UnsignedInt replayBufferBytes = 8192;
 
@@ -364,6 +379,7 @@ RecorderClass::RecorderClass()
 	m_archiveReplays = FALSE;
 	m_nextFrame = 0;
 	m_wasDesync = FALSE;
+	m_liveWaiting = FALSE;
 	m_streamSink = nullptr;
 	m_isLiveStream = FALSE;
 	m_streamEnded = FALSE;
@@ -477,6 +493,9 @@ void RecorderClass::updatePlayback() {
 		}
 	}
 
+	if (m_isLiveStream)
+		m_liveWaiting = TRUE;
+
 	// While there are commands to be queued up for this frame or a past frame (live observer may be behind), process them.
 	while (m_nextFrame != (UnsignedInt)-1 && m_nextFrame <= curFrame) {
 		if (m_isLiveStream)
@@ -487,6 +506,12 @@ void RecorderClass::updatePlayback() {
 		if (!m_isLiveStream)
 			readNextFrame();	// Read the next command's frame number for playback.
 	}
+
+	// Live stream: pause simulation when waiting for data
+	if (m_isLiveStream && m_liveWaiting && !m_streamEnded)
+		TheGameLogic->setGamePaused(TRUE, FALSE, FALSE);
+	else if (m_isLiveStream && !m_liveWaiting)
+		TheGameLogic->setGamePaused(FALSE, FALSE, FALSE);
 }
 
 /**
@@ -1537,19 +1562,9 @@ void RecorderClass::readNextFrame() {
 		Int savedPos = m_file->seek(0, File::CURRENT);
 		Int bytesRead = m_file->read(&m_nextFrame, sizeof(m_nextFrame));
 		if (bytesRead != sizeof(m_nextFrame)) {
-			if (!m_streamEnded) {
-				UnsignedInt curFrame = TheGameLogic->getFrame();
-				Int curPos = m_file->seek(0, File::CURRENT);
-				if (curPos != savedPos) {
-					liveObserverLog("readNextFrame: PARTIAL read bytesRead=%d savedPos=%d curPos=%d — seeking back\n",
-						bytesRead, savedPos, curPos);
-				}
-				m_file->seek(savedPos, File::START);
-				m_nextFrame = curFrame + 1;
-				if (curFrame % 60 == 0) {
-					liveObserverLog("readNextFrame: WAITING — fileSize=%d filePos=%d curFrame=%d streamEnded=%d\n",
-						m_file->size(), savedPos, curFrame, m_streamEnded);
-				}
+			if (m_isLiveStream && !m_streamEnded) {
+				m_nextFrame = TheGameLogic->getFrame();
+				recorderLog("readNextFrame: WAITING — EOF at frame=%u\n", m_nextFrame);
 				return;
 			}
 			liveObserverLog("readNextFrame: read FAILED (bytes=%d streamEnded=%d) — stopping playback, curFrame=%d\n",
@@ -1592,15 +1607,8 @@ void RecorderClass::appendNextCommand() {
 	GameMessage::Type type;
 	Int bytesRead = m_file->read(&type, sizeof(type));
 	if (bytesRead != sizeof(type)) {
-		if (m_isLiveStream && !m_streamEnded) {
-			Int curPos = m_file->seek(0, File::CURRENT);
-			if (curPos != savedPos) {
-				liveObserverLog("appendNextCommand: PARTIAL read bytesRead=%d savedPos=%d curPos=%d — seeking back\n",
-					bytesRead, savedPos, curPos);
-			}
-			m_file->seek(savedPos, File::START);
+		if (m_isLiveStream && !m_streamEnded)
 			return;
-		}
 		liveObserverLog("appendNextCommand: read FAILED (bytes=%d isLiveStream=%d streamEnded=%d) — abandoning, curFrame=%d nextFrame=%d\n",
 			bytesRead, m_isLiveStream, m_streamEnded, TheGameLogic->getFrame(), m_nextFrame);
 		DEBUG_LOG(("RecorderClass::appendNextCommand - read failed on frame %d", m_nextFrame/*TheGameLogic->getFrame()*/));
@@ -1682,6 +1690,7 @@ void RecorderClass::appendNextCommand() {
 	if (type != GameMessage::MSG_BEGIN_NETWORK_MESSAGES && type != GameMessage::MSG_CLEAR_GAME_DATA && !m_doingAnalysis)
 	{
 		TheCommandList->appendMessage(msg);
+		m_liveWaiting = FALSE;
 	}
 	else
 	{
