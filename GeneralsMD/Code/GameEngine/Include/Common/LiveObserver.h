@@ -153,6 +153,16 @@ Bool liveRelayPollFetch(AsciiString& outBody, Bool& outSuccess, Int& outStatusCo
 /// TRUE while a request is outstanding.
 Bool liveRelayFetchInFlight();
 
+/// Queue a live-observer session for the given watch URL (implemented in MainMenu.cpp).
+///
+/// The connection itself has to happen once the main menu is the active screen again — it
+/// waits for the relay's HEADER and then starts playback, which needs the shell settled. So
+/// this only records the intent; MainMenuUpdate performs it after the caller pops back.
+void StartLiveObserverSession(const AsciiString& watchUrl);
+
+/// Switch the replay menu into live-games mode before pushing it (ReplayMenu.cpp).
+void ReplayMenuEnterLiveGamesMode(void);
+
 // ---------------------------------------------------------------------------------------
 // TheSuperHackers @build 03/08/2026 Live observer/streamer file logging.
 //

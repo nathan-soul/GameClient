@@ -33,10 +33,15 @@
 
 #include "Lib/BaseType.h"
 #include "Common/FileSystem.h"
+#include "Common/GameCommon.h"		// LIVE_DEFAULT_RELAY_URL, LIVE_DELAY_SECONDS_DEFAULT
 #include "Common/GameEngine.h"
 #include "Common/GameState.h"
+#include "Common/GlobalData.h"		// m_liveStreamRelayUrl
+#include "Common/LiveObserver.h"	// liveRelayBeginFetch / PollFetch / FetchInFlight
 #include "Common/Recorder.h"
 #include "Common/version.h"
+#include "GameNetwork/GeneralsOnline/json.hpp"	// parses the relay's /games reply
+#include <vector>
 #include "GameClient/WindowLayout.h"
 #include "GameClient/Gadget.h"
 #include "GameClient/GadgetListBox.h"
@@ -74,6 +79,252 @@ static GameWindow *buttonDelete = nullptr;
 static GameWindow *buttonCopy = nullptr;
 static Int	initialGadgetDelay = 2;
 static Bool justEntered = FALSE;
+
+#if defined(GENERALS_ONLINE)
+// TheSuperHackers @feature 03/08/2026 Live games browser.
+//
+// This screen is reused rather than duplicated. A separate .wnd layout would be the tidier
+// separation, but the layouts live inside an archive we cannot read to copy one from, and
+// building the list out of code-created gadgets meant hand-matching the theme by eye — the
+// listbox especially, since no styled listbox exists on the main menu to copy from.
+// Borrowing this layout gives the real frame, listbox, scrollbar and hover states for free.
+//
+// The cost is that the two modes share a control set: four buttons and one list, which
+// happens to be exactly what a browser needs. Everything below is guarded by s_liveGamesMode
+// so the replay behaviour is untouched when it is off.
+static Bool s_liveGamesMode = FALSE;
+static std::vector<AsciiString> s_liveGameIds;	///< game id per listbox row
+static UnsignedInt s_lastLiveFetchMs = 0;
+static GameWindow *s_liveTitleWindow = nullptr;
+static UnicodeString s_savedTitleText;
+static UnicodeString s_savedLoadText;
+static UnicodeString s_savedDeleteText;
+
+enum { LIVE_GAMES_REFRESH_INTERVAL_MS = 5000 };
+
+void ReplayMenuEnterLiveGamesMode(void) { s_liveGamesMode = TRUE; }
+Bool ReplayMenuIsLiveGamesMode(void) { return s_liveGamesMode; }
+
+static void liveGamesRequestList(void);
+static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiString& body);
+
+/// Find the screen's heading without knowing its control name.
+///
+/// The layout is inside an archive, so the name cannot be looked up; guessing it and
+/// silently getting nullptr would leave the screen titled LOAD REPLAY. Instead take the
+/// first static-text child that carries text — on this layout that is the heading.
+static GameWindow* findTitleWindow(GameWindow* parent)
+{
+	if (parent == nullptr)
+		return nullptr;
+
+	for (GameWindow* child = parent->winGetChild(); child != nullptr; child = child->winGetNext())
+	{
+		WinInstanceData* data = child->winGetInstanceData();
+		if (data == nullptr)
+			continue;
+		if ((data->m_style & GWS_STATIC_TEXT) == 0)
+			continue;
+		if (child->winGetText().isEmpty())
+			continue;
+		return child;
+	}
+	return nullptr;
+}
+
+/// Turn the relay's WebSocket URL into its HTTP origin: wss://host/ -> https://host
+/// Derived rather than configured separately so the two cannot drift apart.
+static AsciiString liveGamesHttpBase(void)
+{
+	AsciiString relay = TheGlobalData ? TheGlobalData->m_liveStreamRelayUrl : AsciiString::TheEmptyString;
+	if (relay.isEmpty())
+		relay = LIVE_DEFAULT_RELAY_URL;
+
+	AsciiString scheme, remainder;
+	const char* str = relay.str();
+	const char* sep = strstr(str, "://");
+	if (sep)
+	{
+		AsciiString rawScheme(str, (Int)(sep - str));
+		remainder = sep + 3;
+		// wss is TLS and ws is not, so they cannot share a mapping.
+		scheme = (stricmp(rawScheme.str(), "wss") == 0 || stricmp(rawScheme.str(), "https") == 0)
+			? "https" : "http";
+	}
+	else
+	{
+		scheme = "http";
+		remainder = str;
+	}
+
+	const char* slash = strchr(remainder.str(), '/');
+	if (slash)
+		remainder = AsciiString(remainder.str(), (Int)(slash - remainder.str()));
+
+	AsciiString base;
+	base.format("%s://%s", scheme.str(), remainder.str());
+	return base;
+}
+
+static void liveGamesRequestList(void)
+{
+	if (liveRelayFetchInFlight())
+		return;
+
+	AsciiString uri;
+	uri.format("%s/games", liveGamesHttpBase().str());
+	s_lastLiveFetchMs = timeGetTime();
+	liveRelayBeginFetch(uri);
+}
+
+static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiString& body)
+{
+	if (listboxReplayFiles == nullptr || !s_liveGamesMode)
+		return;
+
+	// Repopulating clears the selection, so remember it and restore by game id afterwards —
+	// by id and not row, since a game ending shifts every row beneath it.
+	AsciiString previouslySelected;
+	{
+		Int wasSelected = -1;
+		GadgetListBoxGetSelected(listboxReplayFiles, &wasSelected);
+		if (wasSelected >= 0 && wasSelected < (Int)s_liveGameIds.size())
+			previouslySelected = s_liveGameIds[wasSelected];
+	}
+
+	GadgetListBoxReset(listboxReplayFiles);
+	s_liveGameIds.clear();
+
+	if (!success || statusCode != 200)
+	{
+		GadgetListBoxAddEntryText(listboxReplayFiles,
+			UnicodeString(L"Could not reach the relay server"),
+			GameMakeColor(255, 120, 120, 255), -1);
+		return;
+	}
+
+	try
+	{
+		nlohmann::json games = nlohmann::json::parse(body.str());
+		if (!games.is_array() || games.empty())
+		{
+			GadgetListBoxAddEntryText(listboxReplayFiles,
+				UnicodeString(L"No live games right now"),
+				GameMakeColor(200, 200, 200, 255), -1);
+			return;
+		}
+
+		for (const auto& game : games)
+		{
+			AsciiString gameId = game.value("game_id", std::string("")).c_str();
+			if (gameId.isEmpty())
+				continue;
+
+			// An older relay omits map/players/delay. Fall back rather than dropping the
+			// row — the game is still perfectly watchable.
+			std::string mapName = game.value("map", std::string(""));
+			if (mapName.empty())
+				mapName = "(unknown map)";
+
+			std::string playerList;
+			if (game.contains("players") && game["players"].is_array())
+			{
+				for (const auto& p : game["players"])
+				{
+					if (!playerList.empty())
+						playerList += ", ";
+					playerList += p.get<std::string>();
+				}
+			}
+			if (playerList.empty())
+				playerList = "?";
+
+			Int viewers = game.value("viewers", 0);
+			Int delaySeconds = game.value("delay_seconds", (Int)LIVE_DELAY_SECONDS_DEFAULT);
+			Int ageSeconds = game.value("age_seconds", 0);
+
+			const Int row = (Int)s_liveGameIds.size();
+			UnicodeString text;
+
+			// This listbox has four columns, laid out for the replay list. Reuse them:
+			// name / time / version / map becomes map / running-for / delay / players.
+			text.translate(AsciiString(mapName.c_str()));
+			GadgetListBoxAddEntryText(listboxReplayFiles, text, GameMakeColor(255,255,255,255), row, 0);
+
+			AsciiString tmp;
+			tmp.format("%dm in", ageSeconds / 60);
+			text.translate(tmp);
+			GadgetListBoxAddEntryText(listboxReplayFiles, text, GameMakeColor(255,255,255,255), row, 1);
+
+			tmp.format("%ds delay", delaySeconds);
+			text.translate(tmp);
+			GadgetListBoxAddEntryText(listboxReplayFiles, text, GameMakeColor(255,255,255,255), row, 2);
+
+			tmp.format("%s (%d watching)", playerList.c_str(), viewers);
+			text.translate(tmp);
+			GadgetListBoxAddEntryText(listboxReplayFiles, text, GameMakeColor(255,255,255,255), row, 3);
+
+			s_liveGameIds.push_back(gameId);
+		}
+
+		if (!previouslySelected.isEmpty())
+		{
+			for (Int i = 0; i < (Int)s_liveGameIds.size(); ++i)
+			{
+				if (s_liveGameIds[i] == previouslySelected)
+				{
+					GadgetListBoxSetSelected(listboxReplayFiles, i);
+					break;
+				}
+			}
+		}
+	}
+	catch (...)
+	{
+		// Malformed JSON degrades to an explanatory row; it must never take the menu down.
+		GadgetListBoxReset(listboxReplayFiles);
+		s_liveGameIds.clear();
+		GadgetListBoxAddEntryText(listboxReplayFiles,
+			UnicodeString(L"Unexpected reply from relay server"),
+			GameMakeColor(255, 120, 120, 255), -1);
+	}
+}
+
+/// Connect to the selected game. Returns TRUE if a connection was started.
+static Bool liveGamesConnectSelected(void)
+{
+	Int selected = -1;
+	GadgetListBoxGetSelected(listboxReplayFiles, &selected);
+	if (selected < 0 || selected >= (Int)s_liveGameIds.size())
+		return FALSE;
+
+	AsciiString base = TheGlobalData ? TheGlobalData->m_liveStreamRelayUrl : AsciiString::TheEmptyString;
+	if (base.isEmpty())
+		base = LIVE_DEFAULT_RELAY_URL;
+
+	// Strip any path so /watch/<id> hangs off the origin.
+	{
+		const char* str = base.str();
+		const char* sep = strstr(str, "://");
+		if (sep)
+		{
+			const char* slash = strchr(sep + 3, '/');
+			if (slash)
+				base = AsciiString(str, (Int)(slash - str));
+		}
+	}
+
+	AsciiString watchUrl;
+	watchUrl.format("%s/watch/%s", base.str(), s_liveGameIds[selected].str());
+
+	// Record the intent, then return to the main menu, which performs the connection once it
+	// is the active screen again. Connecting from here would run while this layout is being
+	// torn down, and the start path expects a settled shell.
+	StartLiveObserverSession(watchUrl);
+	TheShell->pop();
+	return TRUE;
+}
+#endif
 
 
 #if defined(RTS_DEBUG)
@@ -409,6 +660,35 @@ void ReplayMenuInit( WindowLayout *layout, void *userData )
 	buttonDelete = TheWindowManager->winGetWindowFromId( parentReplayMenu, buttonDeleteID );
 	buttonCopy = TheWindowManager->winGetWindowFromId( parentReplayMenu, buttonCopyID );
 
+#if defined(GENERALS_ONLINE)
+	if (s_liveGamesMode)
+	{
+		// Retitle and repurpose the action buttons. Copy is hidden rather than relabelled:
+		// a browser has no sensible third action, and a dead button is worse than a gap.
+		s_liveTitleWindow = findTitleWindow(parentReplayMenu);
+		if (s_liveTitleWindow)
+		{
+			s_savedTitleText = s_liveTitleWindow->winGetText();
+			s_liveTitleWindow->winSetText(UnicodeString(L"LIVE GAMES"));
+		}
+		if (buttonLoad)
+		{
+			s_savedLoadText = buttonLoad->winGetText();
+			buttonLoad->winSetText(UnicodeString(L"CONNECT"));
+		}
+		if (buttonDelete)
+		{
+			s_savedDeleteText = buttonDelete->winGetText();
+			buttonDelete->winSetText(UnicodeString(L"REFRESH"));
+		}
+		if (buttonCopy)
+			buttonCopy->winHide(TRUE);
+
+		// The replay tooltip reads the hovered file off disk; these rows are not files.
+		listboxReplayFiles->winSetTooltipFunc(nullptr);
+	}
+#endif
+
 #if ENABLE_GUI_HACKS
 	// TheSuperHackers @tweak Caball009 07/02/2026 The version column is wider than the time / date column.
 	// Switch them so that there's enough space to show both time and date without a line break.
@@ -420,6 +700,15 @@ void ReplayMenuInit( WindowLayout *layout, void *userData )
 
 	//Load the listbox shiznit
 	GadgetListBoxReset(listboxReplayFiles);
+#if defined(GENERALS_ONLINE)
+	if (s_liveGamesMode)
+	{
+		GadgetListBoxAddEntryText(listboxReplayFiles,
+			UnicodeString(L"Loading live games..."), GameMakeColor(200, 200, 200, 255), -1);
+		liveGamesRequestList();
+	}
+	else
+#endif
 	PopulateReplayFileListbox(listboxReplayFiles);
 
 #if defined(RTS_DEBUG)
@@ -454,6 +743,25 @@ void ReplayMenuInit( WindowLayout *layout, void *userData )
 //-------------------------------------------------------------------------------------------------
 void ReplayMenuShutdown( WindowLayout *layout, void *userData )
 {
+#if defined(GENERALS_ONLINE)
+	// Leave the screen as we found it. The controls belong to the shared layout, so a
+	// retitled heading or a hidden Copy button would otherwise persist into the next visit
+	// to the real replay menu.
+	if (s_liveGamesMode)
+	{
+		if (s_liveTitleWindow)
+			s_liveTitleWindow->winSetText(s_savedTitleText);
+		if (buttonLoad && !s_savedLoadText.isEmpty())
+			buttonLoad->winSetText(s_savedLoadText);
+		if (buttonDelete && !s_savedDeleteText.isEmpty())
+			buttonDelete->winSetText(s_savedDeleteText);
+		if (buttonCopy)
+			buttonCopy->winHide(FALSE);
+		s_liveTitleWindow = nullptr;
+		s_liveGameIds.clear();
+		s_liveGamesMode = FALSE;
+	}
+#endif
 
 	Bool popImmediate = *(Bool *)userData;
 	if( popImmediate )
@@ -475,6 +783,27 @@ void ReplayMenuShutdown( WindowLayout *layout, void *userData )
 //-------------------------------------------------------------------------------------------------
 void ReplayMenuUpdate( WindowLayout *layout, void *userData )
 {
+#if defined(GENERALS_ONLINE)
+	if (s_liveGamesMode)
+	{
+		// The relay fetch runs on its own thread, so collect its result here rather than via
+		// a callback — nothing off the main thread may touch gadget state.
+		AsciiString body;
+		Bool fetchOk = FALSE;
+		Int statusCode = 0;
+		if (liveRelayPollFetch(body, fetchOk, statusCode))
+			liveGamesApplyResponse(fetchOk, statusCode, body);
+
+		// Keep the list current while it is open, so games starting and ending appear on
+		// their own without the user thinking about refreshing.
+		if (!liveRelayFetchInFlight() &&
+			timeGetTime() - s_lastLiveFetchMs >= LIVE_GAMES_REFRESH_INTERVAL_MS)
+		{
+			liveGamesRequestList();
+		}
+	}
+#endif
+
 	if(justEntered)
 	{
 		if(initialGadgetDelay == 1)
@@ -665,6 +994,13 @@ WindowMsgHandledType ReplayMenuSystem( GameWindow *window, UnsignedInt msg,
 
 					if (rowSelected >= 0)
 					{
+#if defined(GENERALS_ONLINE)
+						if (s_liveGamesMode)
+						{
+							liveGamesConnectSelected();
+							break;
+						}
+#endif
 						UnicodeString filename = GetReplayFilenameFromListbox(listboxReplayFiles, rowSelected);
 						loadReplay(filename);
 					}
@@ -708,6 +1044,15 @@ WindowMsgHandledType ReplayMenuSystem( GameWindow *window, UnsignedInt msg,
 #endif
 			if( controlID == buttonLoadID )
 			{
+#if defined(GENERALS_ONLINE)
+				if (s_liveGamesMode)
+				{
+					if (!liveGamesConnectSelected())
+						MessageBoxOk(UnicodeString(L"No game selected"),
+							UnicodeString(L"Please select a live game to watch."), nullptr);
+					break;
+				}
+#endif
 				if(listboxReplayFiles)
 				{
 					Int selected;
@@ -731,6 +1076,13 @@ WindowMsgHandledType ReplayMenuSystem( GameWindow *window, UnsignedInt msg,
 			}
 			else if( controlID == buttonDeleteID )
 			{
+#if defined(GENERALS_ONLINE)
+				if (s_liveGamesMode)
+				{
+					liveGamesRequestList();		// this button is REFRESH here
+					break;
+				}
+#endif
 				Int selected;
 				GadgetListBoxGetSelected( listboxReplayFiles,  &selected );
 				if(selected < 0)
@@ -743,6 +1095,10 @@ WindowMsgHandledType ReplayMenuSystem( GameWindow *window, UnsignedInt msg,
 			}
 			else if( controlID == buttonCopyID )
 			{
+#if defined(GENERALS_ONLINE)
+				if (s_liveGamesMode)
+					break;		// hidden in this mode; nothing to copy
+#endif
 				Int selected;
 				GadgetListBoxGetSelected( listboxReplayFiles,  &selected );
 				if(selected < 0)
