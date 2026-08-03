@@ -35,6 +35,7 @@
 #include "Common/MessageStream.h"
 #include "Common/Player.h"
 #include "Common/PlayerList.h"
+#include "Common/Recorder.h"
 #include "Common/Team.h"
 #include "Common/ThingTemplate.h"
 
@@ -643,6 +644,19 @@ void MetaEventTranslator::onKeyPressed(GameMessageDisposition &disp, Int systemK
 				if( TheGlobalData && TheGameLogic->isInReplayGame())
 			#endif
 					{
+						// Live observer: block fast-forward when within 900 frames of live.
+						if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER) {
+							UnsignedInt liveEdge = TheRecorder->getCachedLiveEdge();
+							UnsignedInt gap = (liveEdge > TheGameLogic->getFrame()) ? (liveEdge - TheGameLogic->getFrame()) : 0;
+							if (gap <= 900) {
+								if (TheInGameUI)
+									TheInGameUI->messageNoFormat(
+										TheGameText->FETCH_OR_SUBSTITUTE("GUI:FF_DISABLED_LIVE", L"Fast Forward is disabled in live mode"));
+								disp = KEEP_MESSAGE;
+								break;
+							}
+						}
+
 						if ( TheWritableGlobalData )
 							TheWritableGlobalData->m_TiVOFastMode = 1 - TheGlobalData->m_TiVOFastMode;
 

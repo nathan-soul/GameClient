@@ -609,6 +609,8 @@ set(GAMEENGINE_SRC
     Source/Common/PerfTimer.cpp
 #    Source/Common/RandomValue.cpp
     Source/Common/Recorder.cpp
+    Source/Common/LiveStreamer.cpp
+    Source/Common/LiveObserver.cpp
 #    Source/Common/ReplaySimulation.cpp
     Source/Common/RTS/AcademyStats.cpp
     Source/Common/RTS/ActionManager.cpp

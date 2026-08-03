@@ -1,0 +1,500 @@
+/*
+**	Command & Conquer Generals Zero Hour(tm)
+**	Copyright 2025 Electronic Arts Inc.
+**
+**	This program is free software: you can redistribute it and/or modify
+**	it under the terms of the GNU General Public License as published by
+**	the Free Software Foundation, either version 3 of the License, or
+**	(at your option) any later version.
+**
+**	This program is distributed in the hope that it will be useful,
+**	but WITHOUT ANY WARRANTY; without even the implied warranty of
+**	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+**	GNU General Public License for more details.
+**
+**	You should have received a copy of the GNU General Public License
+**	along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+#include "PreRTS.h"
+
+#if defined(GENERALS_ONLINE)
+
+#include "Common/LiveObserver.h"
+#include "Common/Recorder.h"
+#include "Common/GlobalData.h"
+#include "Common/FileSystem.h"
+#include "Common/file.h"
+
+#include "GameNetwork/GeneralsOnline/Vendor/libcurl/curl.h"
+#include "GameNetwork/GeneralsOnline/Vendor/libcurl/multi.h"
+#include "GameNetwork/GeneralsOnline/Vendor/libcurl/websockets.h"
+
+#include <cstdio>
+#include <cstdarg>
+#include <cstring>
+
+// ============================================================================
+// liveObserverLog
+// ============================================================================
+void liveObserverLog(const char* fmt, ...) {
+    static FILE* logFile = NULL;
+    if (!logFile) {
+        logFile = fopen("live_observer_debug.log", "w");
+    }
+    if (logFile) {
+        va_list args;
+        va_start(args, fmt);
+        vfprintf(logFile, fmt, args);
+        va_end(args);
+        fflush(logFile);
+    }
+}
+
+void liveObserverInitLog(const char* watchUrl) {
+    liveObserverLog("=== Live Observer Init ===\n");
+    liveObserverLog("LiveWatchUrl: %s\n", watchUrl ? watchUrl : "(empty)");
+    liveObserverLog("Observer mode activated\n");
+}
+
+// ============================================================================
+// LiveObserver
+// ============================================================================
+LiveObserver* TheLiveObserver = nullptr;
+
+LiveObserver::LiveObserver()
+    : m_connected(false)
+    , m_shouldRun(false)
+    , m_headerReceived(false)
+    , m_streamEnded(false)
+    , m_liveFile(nullptr)
+    , m_curlEasy(nullptr)
+    , m_curlMulti(nullptr)
+{
+}
+
+LiveObserver::~LiveObserver()
+{
+    close();
+}
+
+LiveObserver* createLiveObserver()
+{
+    return new LiveObserver();
+}
+
+// ============================================================================
+// Network setup
+// ============================================================================
+
+void LiveObserver::connect(const AsciiString& watchUrl)
+{
+    m_relayUrl = watchUrl;
+    m_shouldRun.store(true);
+
+    // Extract game ID from the watch URL (everything after "/watch/")
+    {
+        const char* urlStr = watchUrl.str();
+        const char* watchPos = strstr(urlStr, "/watch/");
+        if (watchPos)
+        {
+            const char* gameIdStart = watchPos + 7; // skip "/watch/"
+            m_gameId.set(gameIdStart);
+            m_liveFilename.format("%s_live.rep", m_gameId.str());
+        }
+        else
+        {
+            m_gameId = "unknown";
+            m_liveFilename = "_live.rep";
+        }
+    }
+
+    liveObserverLog("LiveObserver::connect to %s (game=%s, file=%s)\n",
+        watchUrl.str(), m_gameId.str(), m_liveFilename.str());
+
+    m_networkThread = std::thread(&LiveObserver::networkThreadFunc, this);
+}
+
+void LiveObserver::close()
+{
+    m_shouldRun.store(false);
+
+    if (m_networkThread.joinable())
+        m_networkThread.join();
+
+    if (m_liveFile)
+    {
+        m_liveFile->close();
+        m_liveFile = nullptr;
+    }
+
+    m_connected.store(false);
+    m_headerReceived.store(false);
+    m_streamEnded.store(false);
+}
+
+// ============================================================================
+// Live file management
+// ============================================================================
+
+bool LiveObserver::openLiveFile()
+{
+    AsciiString filepath = RecorderClass::getReplayDir();
+    filepath.concat(m_liveFilename);
+
+    m_liveFilePath = filepath;
+    m_liveFile = TheFileSystem->openFile(filepath.str(), File::WRITE | File::BINARY);
+    if (!m_liveFile)
+    {
+        liveObserverLog("LiveObserver::openLiveFile FAILED for %s\n", filepath.str());
+        return false;
+    }
+
+    liveObserverLog("LiveObserver::openLiveFile opened %s\n", filepath.str());
+    return true;
+}
+
+// ============================================================================
+// Frame handler
+// ============================================================================
+
+void LiveObserver::handleFrame(unsigned char type, const char* payload, size_t len)
+{
+    switch (type)
+    {
+    case 1: // LIVE_MSG_HEADER
+    {
+        if (!openLiveFile())
+            return;
+
+        // Write header bytes
+        if (len > 0)
+            m_liveFile->write(payload, len);
+        m_liveFile->flush();
+
+        // Close write handle so the Recorder can open the file for reading.
+        // Do NOT reopen here — the Recorder needs exclusive access to read
+        // the header during playbackFile().  Reopen lazily when the first
+        // BODY or PATCH frame arrives.
+        m_liveFile->close();
+        m_liveFile = nullptr;
+
+		m_headerReceived.store(true);
+		liveObserverLog("LiveObserver: HEADER received (%zu bytes), ready for playback\n", len);
+        break;
+    }
+
+    case 2: // LIVE_MSG_PATCH
+    {
+        if (len < 8)
+            return;
+
+        // Lazy-open the file for read/write (no truncation)
+        if (!m_liveFile)
+        {
+            m_liveFile = TheFileSystem->openFile(m_liveFilePath.str(), File::READWRITE | File::BINARY);
+        }
+        if (!m_liveFile)
+            return;
+
+        // Parse offset and data length from payload
+        const unsigned char* p = (const unsigned char*)payload;
+        Int offset = (Int)p[0] | ((Int)p[1] << 8) | ((Int)p[2] << 16) | ((Int)p[3] << 24);
+        Int dataLen = (Int)p[4] | ((Int)p[5] << 8) | ((Int)p[6] << 16) | ((Int)p[7] << 24);
+
+        if (dataLen <= 0 || (size_t)(8 + dataLen) > len)
+            return;
+
+        Int fileSize = (Int)m_liveFile->size();
+        Int seekRes = m_liveFile->seek(offset, File::seekMode::START);
+        if (seekRes == offset)
+        {
+            m_liveFile->write(payload + 8, dataLen);
+            m_liveFile->seek(fileSize, File::seekMode::START);
+        }
+
+		liveObserverLog("LiveObserver: PATCH offset=%d size=%d fileSize=%d\n", offset, dataLen, (int)m_liveFile->size());
+        break;
+    }
+
+    case 3: // LIVE_MSG_BODY
+    {
+        // BODY payload: [8B offset uint64 LE][data]
+        if (len < 8)
+        {
+            liveObserverLog("LiveObserver: BODY frame too short (len=%d)\n", (int)len);
+            return;
+        }
+
+        const unsigned char* p = (const unsigned char*)payload;
+        // Read 8-byte absolute file offset (little-endian)
+        Int offset = (Int)(p[0] | ((unsigned long long)p[1] << 8)
+            | ((unsigned long long)p[2] << 16) | ((unsigned long long)p[3] << 24)
+            | ((unsigned long long)p[4] << 32) | ((unsigned long long)p[5] << 40)
+            | ((unsigned long long)p[6] << 48) | ((unsigned long long)p[7] << 56));
+        size_t dataLen = len - 8;
+        if (dataLen == 0)
+        {
+            liveObserverLog("LiveObserver: BODY frame with zero dataLen at offset=%d\n", offset);
+            return;
+        }
+
+        // Lazy-open the file for read/write (no truncation, file exists from HEADER handler)
+        if (!m_liveFile)
+        {
+            m_liveFile = TheFileSystem->openFile(m_liveFilePath.str(), File::READWRITE | File::BINARY);
+        }
+        if (!m_liveFile)
+        {
+            liveObserverLog("LiveObserver: BODY openFile FAILED for %s\n", m_liveFilePath.str());
+            return;
+        }
+
+        // Seek to the specified offset and write the data
+        m_liveFile->seek(offset, File::seekMode::START);
+        m_liveFile->write(payload + 8, (Int)dataLen);
+        m_liveFile->flush();
+        liveObserverLog("LiveObserver: BODY written offset=%d dataLen=%d fileSize=%d\n", offset, (int)dataLen, (int)m_liveFile->size());
+        break;
+    }
+
+    case 4: // LIVE_MSG_END
+    {
+        liveObserverLog("LiveObserver: END received\n");
+        m_streamEnded.store(true);
+
+        if (TheRecorder)
+            TheRecorder->setStreamEnded(TRUE);
+
+        if (m_liveFile)
+        {
+            m_liveFile->flush();
+            m_liveFile->close();
+            m_liveFile = nullptr;
+        }
+        break;
+    }
+
+    case 6: // LIVE_MSG_ERROR
+    {
+        AsciiString errMsg;
+        if (len > 0)
+            errMsg.set(payload, len);
+        liveObserverLog("LiveObserver: ERROR from relay: %s\n", errMsg.str());
+        m_streamEnded.store(true);
+        if (TheRecorder)
+            TheRecorder->setStreamEnded(TRUE);
+        break;
+    }
+
+    default:
+        break;
+    }
+}
+
+// ============================================================================
+// WebSocket I/O
+// ============================================================================
+
+bool LiveObserver::wsSendBinary(const unsigned char* data, size_t len)
+{
+    if (!m_curlEasy)
+        return false;
+
+    size_t sent = 0;
+    CURLcode rc = curl_ws_send(m_curlEasy, data, len, &sent, 0, CURLWS_BINARY);
+    return (rc == CURLE_OK && sent == len);
+}
+
+bool LiveObserver::wsRecv(std::vector<char>& outBuffer)
+{
+    if (!m_curlEasy)
+        return false;
+
+    outBuffer.clear();
+    outBuffer.resize(65536);
+
+    const struct curl_ws_frame* meta = nullptr;
+    size_t nread = 0;
+    CURLcode rc = curl_ws_recv(m_curlEasy, outBuffer.data(), outBuffer.size(), &nread, &meta);
+    if (rc == CURLE_AGAIN)
+    {
+        outBuffer.clear();
+        return false;
+    }
+    if (rc != CURLE_OK)
+    {
+        liveObserverLog("LiveObserver::wsRecv error: %d\n", (int)rc);
+        outBuffer.clear();
+        return false;
+    }
+
+    outBuffer.resize(nread);
+    return nread > 0;
+}
+
+bool LiveObserver::connectToRelay()
+{
+    if (m_curlEasy)
+    {
+        curl_easy_cleanup((CURL*)m_curlEasy);
+        m_curlEasy = nullptr;
+    }
+    if (m_curlMulti)
+    {
+        curl_multi_cleanup((CURLM*)m_curlMulti);
+        m_curlMulti = nullptr;
+    }
+
+    CURL* easy = curl_easy_init();
+    if (!easy)
+    {
+        liveObserverLog("LiveObserver::connectToRelay curl_easy_init failed\n");
+        return false;
+    }
+
+    curl_easy_setopt(easy, CURLOPT_URL, m_relayUrl.str());
+    curl_easy_setopt(easy, CURLOPT_CONNECT_ONLY, 2L);
+
+    CURLM* multi = curl_multi_init();
+    if (!multi)
+    {
+        curl_easy_cleanup(easy);
+        liveObserverLog("LiveObserver::connectToRelay curl_multi_init failed\n");
+        return false;
+    }
+
+    curl_multi_add_handle(multi, easy);
+
+    int stillRunning = 0;
+    CURLMcode mc = curl_multi_perform(multi, &stillRunning);
+    while (mc == CURLM_OK && stillRunning > 0)
+    {
+        mc = curl_multi_poll(multi, NULL, 0, 1000, NULL);
+        if (mc == CURLM_OK)
+            mc = curl_multi_perform(multi, &stillRunning);
+    }
+
+    if (mc != CURLM_OK)
+    {
+        liveObserverLog("LiveObserver::connectToRelay failed: %d\n", (int)mc);
+        curl_multi_remove_handle(multi, easy);
+        curl_multi_cleanup(multi);
+        curl_easy_cleanup(easy);
+        return false;
+    }
+
+    int infoRunning = 0;
+    CURLMsg* infoMsg = curl_multi_info_read(multi, &infoRunning);
+    if (!infoMsg || infoMsg->data.result != CURLE_OK)
+    {
+        int result = infoMsg ? (int)infoMsg->data.result : -1;
+        liveObserverLog("LiveObserver::connectToRelay: handshake failed (result=%d)\n", result);
+        curl_multi_remove_handle(multi, easy);
+        curl_multi_cleanup(multi);
+        curl_easy_cleanup(easy);
+        return false;
+    }
+
+    m_curlEasy = easy;
+    m_curlMulti = multi;
+    m_connected.store(true);
+    liveObserverLog("LiveObserver::connectToRelay connected to %s\n", m_relayUrl.str());
+    return true;
+}
+
+// ============================================================================
+// Background network thread
+// ============================================================================
+
+void LiveObserver::networkThreadFunc()
+{
+    liveObserverLog("LiveObserver::networkThreadFunc started\n");
+
+    if (!connectToRelay())
+    {
+        liveObserverLog("LiveObserver::networkThreadFunc connectToRelay failed\n");
+        m_shouldRun.store(false);
+        return;
+    }
+
+    m_connected.store(true);
+
+    // Persistent buffer for incoming data — multiple frames may arrive in
+    // one wsRecv call, or a frame may be split across multiple calls.
+    std::vector<char> buf;
+    size_t totalBytesReceived = 0;
+    size_t totalFramesProcessed = 0;
+
+    while (m_shouldRun.load() && m_connected.load())
+    {
+        {
+            int stillRunning = 0;
+            CURLMcode mpoll = curl_multi_poll(m_curlMulti, NULL, 0, 50, &stillRunning);
+            if (stillRunning)
+                curl_multi_perform((CURLM*)m_curlMulti, &stillRunning);
+            if (mpoll != CURLM_OK)
+            {
+                liveObserverLog("LiveObserver: curl_multi_poll failed (%d), connection lost\n", (int)mpoll);
+                m_connected.store(false);
+                break;
+            }
+        }
+
+        // Append any newly received data to our persistent buffer
+        {
+            std::vector<char> tmp;
+            if (wsRecv(tmp) && !tmp.empty())
+            {
+                totalBytesReceived += tmp.size();
+                if (totalBytesReceived % 10240 < tmp.size() || totalBytesReceived < 1024)
+                    liveObserverLog("LiveObserver: received %zu bytes from relay (total=%zu, queued=%zu)\n",
+                        tmp.size(), totalBytesReceived, buf.size() + tmp.size());
+                buf.insert(buf.end(), tmp.begin(), tmp.end());
+            }
+        }
+
+        // Process as many complete frames as possible from the buffer
+        while (buf.size() >= 5)
+        {
+            unsigned char msgType = (unsigned char)buf[0];
+            unsigned int msgLen = (unsigned int)buf[1]
+                | ((unsigned int)buf[2] << 8)
+                | ((unsigned int)buf[3] << 16)
+                | ((unsigned int)buf[4] << 24);
+
+            if (buf.size() < (size_t)(5 + msgLen))
+                break; // Partial frame — wait for more data
+
+            const char* payload = (msgLen > 0) ? buf.data() + 5 : nullptr;
+            handleFrame(msgType, payload, msgLen);
+            ++totalFramesProcessed;
+
+            // Remove the processed frame from the buffer
+            buf.erase(buf.begin(), buf.begin() + 5 + msgLen);
+        }
+    }
+
+    // Cleanup
+    if (m_liveFile)
+    {
+        m_liveFile->close();
+        m_liveFile = nullptr;
+    }
+    if (m_curlMulti)
+    {
+        if (m_curlEasy)
+            curl_multi_remove_handle((CURLM*)m_curlMulti, (CURL*)m_curlEasy);
+        curl_multi_cleanup((CURLM*)m_curlMulti);
+        m_curlMulti = nullptr;
+    }
+    if (m_curlEasy)
+    {
+        curl_easy_cleanup((CURL*)m_curlEasy);
+        m_curlEasy = nullptr;
+    }
+    m_connected.store(false);
+    liveObserverLog("LiveObserver::networkThreadFunc ended — totalBytes=%zu totalFrames=%zu\n", totalBytesReceived, totalFramesProcessed);
+}
+
+#endif // GENERALS_ONLINE

@@ -539,10 +539,13 @@ GlobalData* GlobalData::m_theOriginal = nullptr;
 	{ "UseLocalMOTD",								INI::parseBool,				nullptr,			offsetof( GlobalData, m_useLocalMOTD ) },
 	{ "BaseStatsDir",								INI::parseAsciiString,nullptr,			offsetof( GlobalData, m_baseStatsDir ) },
 	{ "LocalMOTDPath",							INI::parseAsciiString,nullptr,			offsetof( GlobalData, m_MOTDPath ) },
-	{ "ExtraLogging",								INI::parseBool,				nullptr,			offsetof( GlobalData, m_extraLogging ) },
+	{ "ExtraLogging",								INI::parseBool,			nullptr,	offsetof( GlobalData, m_extraLogging ) },
 #endif
 
-	{ nullptr,					nullptr,						nullptr,						0 }
+	// Live streaming — now read from Options.ini via OptionPreferences
+	// { "LiveStreamEnabled", ... }, { "LiveStreamRelayUrl", ... }, { "LiveStreamCanStream", ... }
+
+	{ nullptr,				nullptr,						nullptr,						0 }
 
 };
 
@@ -638,6 +641,9 @@ GlobalData::GlobalData()
 	m_chipSetType = 0;
 	m_headless = FALSE;
 	m_exportStats = FALSE;
+	m_liveStreamEnabled = FALSE;
+	m_liveStreamRelayUrl = "ws://192.168.2.108:8765";
+	m_liveStreamCanStream = TRUE;
 	m_windowed = 0;
 	m_xResolution = 800;
 	m_yResolution = 600;
@@ -1276,6 +1282,10 @@ void GlobalData::parseGameDataDefinition( INI* ini )
 	TheWritableGlobalData->m_observerNotificationSpecialPowerUsage = optionPref.getObserverNotificationSpecialPowerUsage();
 	TheWritableGlobalData->m_observerNotificationSpecialPowerPurchase = optionPref.getObserverNotificationSpecialPowerPurchase();
 	TheWritableGlobalData->m_observerNotificationMilestone = optionPref.getObserverNotificationMilestone();
+
+	TheWritableGlobalData->m_liveStreamEnabled = optionPref.getLiveStreamEnabled();
+	TheWritableGlobalData->m_liveStreamRelayUrl = optionPref.getLiveStreamRelayUrl();
+	TheWritableGlobalData->m_liveStreamCanStream = optionPref.getLiveStreamCanStream();
 
 	TheWritableGlobalData->m_antiAliasLevel = optionPref.getAntiAliasing();
 

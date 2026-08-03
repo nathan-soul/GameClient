@@ -70,3 +70,5 @@ build.ninja
 ## Python
 __pycache__/
 *.pyc
+build.ps1
+dist/builds/GeneralsOnlineZH.exe

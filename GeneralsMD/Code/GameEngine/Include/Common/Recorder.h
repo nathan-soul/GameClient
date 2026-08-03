@@ -25,6 +25,7 @@
 #pragma once
 
 #include "Common/MessageStream.h"
+#include "Common/ReplayStreamSink.h"
 #include "GameNetwork/GameInfo.h"
 
 class File;
@@ -50,6 +51,7 @@ enum RecorderModeType CPP_11(: Int) {
 	RECORDERMODETYPE_RECORD,
 	RECORDERMODETYPE_PLAYBACK,
 	RECORDERMODETYPE_SIMULATION_PLAYBACK, // Play back replay without any graphics
+	RECORDERMODETYPE_LIVE_OBSERVER, // Live observer mode — receiving frames from relay server
 	RECORDERMODETYPE_NONE // this is a valid state to be in on the shell map, or in saved games
 };
 
@@ -105,6 +107,7 @@ public:
 	UnsignedInt getPlaybackFrameCount() const { return m_playbackFrameCount; }			///< valid during playback only
 	void stopPlayback();															///< Stops playback.  Its fine to call this even if not playing back a file.
 	Bool simulateReplay(AsciiString filename);
+	Bool startLiveObserverPlayback(AsciiString filename);
 #if defined(RTS_DEBUG)
 	Bool analyzeReplay( AsciiString filename );
 #endif
@@ -136,8 +139,9 @@ public:
 	};
 	Bool readReplayHeader( ReplayHeader& header );
 
-	RecorderModeType getMode();												///< Returns the current operating mode.
-	Bool isPlaybackMode() const { return m_mode == RECORDERMODETYPE_PLAYBACK || m_mode == RECORDERMODETYPE_SIMULATION_PLAYBACK; }
+	RecorderModeType getMode();														///< Returns the current operating mode.
+	void setMode(RecorderModeType mode) { m_mode = mode; }							///< Sets the current operating mode.
+	Bool isPlaybackMode() const { return m_mode == RECORDERMODETYPE_PLAYBACK || m_mode == RECORDERMODETYPE_SIMULATION_PLAYBACK || m_mode == RECORDERMODETYPE_LIVE_OBSERVER; }
 	void initControls();															///< Show or Hide the Replay controls
 
 	static AsciiString getReplayDir();								///< Returns the directory that holds the replay files.
@@ -158,6 +162,16 @@ public:
 
 	void setArchiveEnabled(Bool enable) { m_archiveReplays = enable; } ///< Enable or disable replay archiving.
 	void stopRecording();															///< Stop recording and close m_file.
+
+	IReplayStreamSink* getStreamSink() { return m_streamSink; }
+	void setStreamSink(IReplayStreamSink* sink) { m_streamSink = sink; }
+	void setLiveStream(Bool live) { m_isLiveStream = live; }
+	void setStreamEnded(Bool ended) { m_streamEnded = ended; }
+	Bool isLiveStream() const { return m_isLiveStream; }
+	Bool isLiveWaiting() const { return m_liveWaiting; }
+	UnsignedInt getNextFrame() const { return m_nextFrame; }	///< Next frame to execute (used for live gap check).
+	UnsignedInt getCachedLiveEdge() const { return m_cachedLiveEdge; }
+
 protected:
 	void startRecording(GameDifficulty diff, Int originalGameMode, Int rankPoints, Int maxFPS);					///< Start recording to m_file.
 	void writeToFile(GameMessage *msg);								///< Write this GameMessage to m_file.
@@ -170,6 +184,7 @@ protected:
 	UnicodeString readUnicodeString();								///< Read the next string from m_file using unicode characters.
 	void readNextFrame();															///< Read the next frame number to execute a command on.
 	void appendNextCommand();													///< Read the next GameMessage and append it to TheCommandList.
+	UnsignedInt probeLiveEdge();												///< Scan forward from current file-position to find the highest frame — then restore position.
 	void writeArgument(GameMessageArgumentDataType type, const GameMessageArgumentType arg);
 	void readArgument(GameMessageArgumentDataType type, GameMessage *msg);
 
@@ -198,7 +213,15 @@ protected:
 	Int m_originalGameMode; // valid in replays
 
 	UnsignedInt m_nextFrame;												///< The Frame that the next message is to be executed on.  This can be -1.
+
+	IReplayStreamSink* m_streamSink;
+	Bool m_isLiveStream;
+	Bool m_streamEnded;
+	Bool m_liveWaiting;
+	UnsignedInt m_cachedLiveEdge;											///< cached result from probeLiveEdge()
+	Int m_liveEdgeProbeFrame;													///< frame on which we last probed
 };
 
 extern RecorderClass *TheRecorder;
 RecorderClass *createRecorder();
+void recorderLog(const char* fmt, ...);

@@ -169,6 +169,38 @@ Bool OptionPreferences::getObserverNotificationMilestone(void)
 	return FALSE;
 }
 
+Bool OptionPreferences::getLiveStreamEnabled() const
+{
+	OptionPreferences::const_iterator it = find("LiveStreamEnabled");
+	if (it == end())
+		return FALSE;
+	if (stricmp(it->second.str(), "yes") == 0)
+	{
+		return TRUE;
+	}
+	return FALSE;
+}
+
+AsciiString OptionPreferences::getLiveStreamRelayUrl() const
+{
+	OptionPreferences::const_iterator it = find("LiveStreamRelayUrl");
+	if (it == end())
+		return "";
+	return it->second;
+}
+
+Bool OptionPreferences::getLiveStreamCanStream() const
+{
+	OptionPreferences::const_iterator it = find("LiveStreamCanStream");
+	if (it == end())
+		return TRUE;
+	if (stricmp(it->second.str(), "yes") == 0)
+	{
+		return TRUE;
+	}
+	return FALSE;
+}
+
 Int OptionPreferences::getObserverStatsFontSize(void)
 {
     OptionPreferences::const_iterator it = find("ObserverStatsFontSize");

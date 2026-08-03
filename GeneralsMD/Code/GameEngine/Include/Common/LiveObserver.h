@@ -1,0 +1,113 @@
+/*
+**	Command & Conquer Generals Zero Hour(tm)
+**	Copyright 2025 Electronic Arts Inc.
+**
+**	This program is free software: you can redistribute it and/or modify
+**	it under the terms of the GNU General Public License as published by
+**	the Free Software Foundation, either version 3 of the License, or
+**	(at your option) any later version.
+**
+**	This program is distributed in the hope that it will be useful,
+**	but WITHOUT ANY WARRANTY; without even the implied warranty of
+**	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+**	GNU General Public License for more details.
+**
+**	You should have received a copy of the GNU General Public License
+**	along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+#pragma once
+
+#if defined(GENERALS_ONLINE)
+
+#include "Common/AsciiString.h"
+#include "Common/GameCommon.h"
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <vector>
+
+class File;
+
+/**
+ * LiveObserver receives raw replay bytes (HEADER/PATCH/BODY/END) from the
+ * relay server via WebSocket and writes them to a local "_live.rep" file.
+ *
+ * Once the HEADER arrives, it triggers RECORDERMODETYPE_PLAYBACK on the
+ * Recorder — the existing playback infrastructure (readReplayHeader,
+ * updatePlayback, readNextFrame, appendNextCommand) handles everything else.
+ *
+ * The Recorder reads from the live file while the LiveObserver's background
+ * thread simultaneously appends new BODY data. Short reads in readNextFrame
+ * and appendNextCommand are handled gracefully when m_isLiveStream is set.
+ */
+class LiveObserver
+{
+public:
+	LiveObserver();
+	~LiveObserver();
+
+	/// Connect to the relay and begin receiving replay data.
+	/// Non-blocking; spawns a background thread.
+	/// @param watchUrl Full WebSocket URL (e.g. ws://host:port/watch/GAMEID)
+	void connect(const AsciiString& watchUrl);
+
+	/// Returns true once the HEADER has been received and playback can start.
+	Bool isReady() const { return m_headerReceived.load(); }
+
+	/// Returns true if connected to the relay server.
+	Bool isConnected() const { return m_connected.load(); }
+
+	/// Returns true if the streamer has ended the session.
+	Bool isStreamEnded() const { return m_streamEnded.load(); }
+
+	/// Returns the filename of the live replay file (e.g. "996C586F_live.rep").
+	const AsciiString& getLiveReplayFilename() const { return m_liveFilename; }
+
+	/// Close the connection and shut down the background thread.
+	void close();
+
+private:
+	/// Background thread for network I/O.
+	void networkThreadFunc();
+
+	/// Connect via WebSocket (called from network thread).
+	bool connectToRelay();
+
+	/// Send data over WebSocket binary (called from network thread).
+	bool wsSendBinary(const unsigned char* data, size_t len);
+
+	/// Receive data from WebSocket (non-blocking).
+	bool wsRecv(std::vector<char>& outBuffer);
+
+	/// Open the local replay file for writing.
+	bool openLiveFile();
+
+	/// Process an incoming binary frame from the relay.
+	void handleFrame(unsigned char type, const char* payload, size_t len);
+
+	std::atomic<Bool> m_connected;
+	std::atomic<Bool> m_shouldRun;
+	std::atomic<Bool> m_headerReceived;
+	std::atomic<Bool> m_streamEnded;
+
+	AsciiString m_relayUrl;
+	AsciiString m_gameId;
+
+	File* m_liveFile;
+	AsciiString m_liveFilePath;
+	AsciiString m_liveFilename;   // e.g. "996C586F_live.rep"
+
+	void* m_curlEasy;
+	void* m_curlMulti;
+
+	std::thread m_networkThread;
+};
+
+extern LiveObserver* TheLiveObserver;
+LiveObserver* createLiveObserver();
+
+void liveObserverLog(const char* fmt, ...);
+void liveObserverInitLog(const char* watchUrl);
+
+#endif // GENERALS_ONLINE

@@ -127,6 +127,11 @@ public:
 	// URL to POST compressed stats JSON after export.
 	AsciiString m_statsUrl;
 
+	// Live streaming to relay server
+	Bool m_liveStreamEnabled;          ///< Enable live streaming of game commands to relay server.
+	AsciiString m_liveStreamRelayUrl;  ///< WebSocket URL of the relay server.
+	Bool m_liveStreamCanStream;        ///< Can this client act as the streamer?
+
 	Bool m_windowed;
 	Int m_xResolution;
 	Int m_yResolution;

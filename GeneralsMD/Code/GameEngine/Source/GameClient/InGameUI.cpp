@@ -50,6 +50,8 @@
 #include "Common/ThingTemplate.h"
 #include "Common/BuildAssistant.h"
 #include "Common/Recorder.h"
+#include "Common/LiveStreamer.h"
+#include "Common/LiveObserver.h"
 #include "Common/Upgrade.h"
 #include "Common/SpecialPower.h"
 #include "Common/OptionPreferences.h"
@@ -9135,6 +9137,84 @@ void InGameUI::drawPlayerInfoList()
 				safeDrawRepositionPanel(this, baseScale);
 				safeHandleRepositionClicks(this, baseScale);
 			}
+
+#if defined(GENERALS_ONLINE)
+		// Live streaming status indicator — top-center of screen
+		if (TheLiveStreamer && (TheLiveStreamer->isStreaming() || TheLiveStreamer->isBackup()))
+		{
+			DisplayString* streamStatus = TheDisplayStringManager->newDisplayString();
+			if (streamStatus)
+			{
+				streamStatus->setFont(TheFontLibrary->getFont("ArialFont", Int(14 * baseScale), false));
+				UnicodeString statusText;
+				if (TheLiveStreamer->isStreaming())
+				{
+					statusText.translate(AsciiString("STREAMING"));
+				}
+				else
+				{
+					statusText.translate(AsciiString("BACKUP"));
+				}
+				streamStatus->setText(statusText);
+				Int statusW = streamStatus->getWidth();
+				// getHeight() doesn't exist on DisplayString; use getSize() if needed
+				Int statusX = (TheDisplay->getWidth() - statusW) / 2;
+				Int statusY = Int(10 * baseScale);
+				streamStatus->draw(statusX, statusY, 0xFF00FF00, 0);
+				TheDisplayStringManager->freeDisplayString(streamStatus);
+			}
+		}
+
+		// Live observer status indicator — top-center of screen
+		if (TheLiveObserver && TheLiveObserver->isConnected())
+		{
+			DisplayString* observerStatus = TheDisplayStringManager->newDisplayString();
+			if (observerStatus)
+			{
+				observerStatus->setFont(TheFontLibrary->getFont("ArialFont", Int(14 * baseScale), false));
+
+				UnicodeString statusText;
+
+				if (!TheLiveObserver->isReady())
+				{
+					statusText.translate(AsciiString("LIVE - CONNECTING..."));
+					observerStatus->setText(statusText);
+					Int statusW = observerStatus->getWidth();
+					Int statusX = (TheDisplay->getWidth() - statusW) / 2;
+					Int statusY = Int(10 * baseScale);
+					observerStatus->draw(statusX, statusY, 0xFFFFFF00, 0); // yellow
+				}
+				else if (TheLiveObserver->isStreamEnded())
+				{
+					statusText.translate(AsciiString("LIVE - ENDED"));
+					observerStatus->setText(statusText);
+					Int statusW = observerStatus->getWidth();
+					Int statusX = (TheDisplay->getWidth() - statusW) / 2;
+					Int statusY = Int(10 * baseScale);
+					observerStatus->draw(statusX, statusY, 0xFF00FF00, 0); // green
+				}
+				else if (TheRecorder && TheRecorder->isLiveWaiting())
+				{
+					statusText.translate(AsciiString("WAITING FOR FRAMES"));
+					observerStatus->setText(statusText);
+					Int statusW = observerStatus->getWidth();
+					Int statusX = (TheDisplay->getWidth() - statusW) / 2;
+					Int statusY = Int(10 * baseScale);
+					observerStatus->draw(statusX, statusY, 0xFF00FFFF, 0); // cyan
+				}
+				else
+				{
+					statusText.translate(AsciiString("LIVE"));
+					observerStatus->setText(statusText);
+					Int statusW = observerStatus->getWidth();
+					Int statusX = (TheDisplay->getWidth() - statusW) / 2;
+					Int statusY = Int(10 * baseScale);
+					observerStatus->draw(statusX, statusY, 0xFF00FF00, 0); // green
+				}
+				TheDisplayStringManager->freeDisplayString(observerStatus);
+			}
+		}
+#endif
 		}
 
 		// TheSuperHackers @feature 15/07/2026 Public wrappers — delegate to SEH-safe static helpers.

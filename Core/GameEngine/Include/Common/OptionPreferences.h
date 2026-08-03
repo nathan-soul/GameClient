@@ -138,4 +138,8 @@ public:
 	Bool getObserverNotificationSpecialPowerUsage(void);
 	Bool getObserverNotificationSpecialPowerPurchase(void);
 	Bool getObserverNotificationMilestone(void);
+
+	Bool getLiveStreamEnabled() const;
+	AsciiString getLiveStreamRelayUrl() const;
+	Bool getLiveStreamCanStream() const;
 };

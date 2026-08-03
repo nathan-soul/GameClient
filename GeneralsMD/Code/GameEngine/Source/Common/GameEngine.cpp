@@ -63,6 +63,7 @@
 #include "Common/DamageFX.h"
 #include "Common/MultiplayerSettings.h"
 #include "Common/Recorder.h"
+#include "Common/LiveObserver.h"
 #include "Common/SpecialPower.h"
 #include "Common/TerrainTypes.h"
 #include "Common/Upgrade.h"
@@ -852,6 +853,7 @@ void GameEngine::init()
 
 	// NGMP_CHANGE: Init our settings
 	NGMP_OnlineServicesManager::Settings.Initialize();
+
 }
 
 /** -----------------------------------------------------------------------------------------------
@@ -1001,7 +1003,16 @@ void GameEngine::update()
 
 			TheAudio->UPDATE();
 			TheGameClient->UPDATE();
+
+#if defined(GENERALS_ONLINE)
+			// Propagate local input messages even in live observer mode.
+			// The Recorder::cullBadCommands() call in Recorder::update()
+			// filters gameplay commands (unit orders, etc.) while allowing
+			// camera controls (scroll, rotate, zoom) to pass through.
 			TheMessageStream->propagateMessages();
+#else
+			TheMessageStream->propagateMessages();
+#endif
 
             if (TheNetwork != nullptr)
             {
