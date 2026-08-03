@@ -232,6 +232,14 @@ public:
 	/// GameEngine::update() outside the halted path.
 	void updateLiveStreamPoll();
 
+	/// Release the live replay file and forget the finished session.
+	///
+	/// Must run before starting another live-observer session. The file is named after the
+	/// streamer's game, so rejoining the same game targets the same path — and Windows will
+	/// not delete a file this class still holds open, so the new session cannot create it.
+	/// Deliberately not stopPlayback(), which also exits the game.
+	void endLiveObserverSession();
+
 protected:
 	void startRecording(GameDifficulty diff, Int originalGameMode, Int rankPoints, Int maxFPS);					///< Start recording to m_file.
 	void writeToFile(GameMessage *msg);								///< Write this GameMessage to m_file.

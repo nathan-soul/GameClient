@@ -1369,6 +1369,26 @@ Bool RecorderClass::simulateReplay(AsciiString filename)
 	return success;
 }
 
+void RecorderClass::endLiveObserverSession() {
+	liveObserverLog("endLiveObserverSession: closing playback file (was %s)\n",
+		m_fileName.isEmpty() ? "(none)" : m_fileName.str());
+
+	if (m_file != nullptr) {
+		m_file->close();
+		m_file = nullptr;
+	}
+	m_fileName.clear();
+	m_nextFrame = 0;
+
+	m_streamEnded = FALSE;
+	m_preRollComplete = FALSE;
+	m_liveStreamAutoPaused = FALSE;
+	m_userPaused = FALSE;
+	m_liveStalled = FALSE;
+	m_lastSeenLiveEdge = 0;
+	m_lastLiveEdgeChangeMs = timeGetTime();
+}
+
 Bool RecorderClass::startLiveObserverPlayback(AsciiString filename)
 {
 	m_mode = RECORDERMODETYPE_LIVE_OBSERVER;

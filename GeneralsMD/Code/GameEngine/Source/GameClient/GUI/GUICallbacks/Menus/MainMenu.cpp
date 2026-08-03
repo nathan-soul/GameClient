@@ -631,14 +631,29 @@ void MainMenuInit( WindowLayout *layout, void *userData )
 			liveY += liveH + 4;
 		}
 
-		buttonLiveObserver = TheWindowManager->gogoGadgetPushButton(parentMainMenu,
-			WIN_STATUS_ENABLED | WIN_STATUS_IMAGE,
-			liveX, liveY, liveW, liveH,
-			&instDataLive, nullptr, TRUE);
+		// TheSuperHackers @fix 03/08/2026 Reuse the button when this screen is initialised
+		// again over the same parent, rather than creating a second one.
+		//
+		// Returning from a game used to leave the previous button drawn but dead: the
+		// pointer had been repointed at a newly created one, so clicks on the old matched
+		// nothing. Destroying it on shutdown looked like the fix but is not safe here —
+		// winDestroy is deferred via processDestroyList, and the layout tears its own
+		// children down, so ownership of a code-created child during teardown is not ours to
+		// assume. Keying off the parent avoids destroying anything: a surviving layout
+		// reuses its button, and a replaced layout took its own with it.
+		if (buttonLiveObserver == nullptr)
+		{
+			buttonLiveObserver = TheWindowManager->gogoGadgetPushButton(parentMainMenu,
+				WIN_STATUS_ENABLED | WIN_STATUS_IMAGE,
+				liveX, liveY, liveW, liveH,
+				&instDataLive, nullptr, TRUE);
 
-		// Adopt the real menu's look instead of the placeholder red/yellow that
-		// defaultVisual leaves behind.
-		buttonLiveObserver->winCopyVisualsFrom(buttonOnline);
+			// Adopt the real menu's look instead of the placeholder red/yellow that
+			// defaultVisual leaves behind. Guarded: gogoGadget* can fail, and the very next
+			// use of this pointer was already null-checked while this one was not.
+			if (buttonLiveObserver)
+				buttonLiveObserver->winCopyVisualsFrom(buttonOnline);
+		}
 
 		// The submenu is animated by a transition group defined in MainMenu.wnd, which a
 		// code-created window cannot join. So it is shown and hidden explicitly alongside the
@@ -744,17 +759,16 @@ void MainMenuShutdown( WindowLayout *layout, void *userData )
 	CancelPatchCheckCallback();
 
 #if defined(GENERALS_ONLINE)
-	// TheSuperHackers @fix 03/08/2026 Destroy the code-created button on the way out.
+	// Drop the reference without destroying anything — the layout owns this window and tears
+	// it down with the rest of its children. MainMenuInit() builds a new button only when
+	// this is null, which covers both cases: shutdown ran, so the old layout and its button
+	// are gone and a fresh one is needed; or init ran twice without a shutdown in between,
+	// where the existing button is still live and must be reused rather than duplicated.
 	//
-	// MainMenuInit() builds it fresh on every entry, so returning from a game left the
-	// previous one behind: still drawn, but no longer the window buttonLiveObserver points
-	// at, so its clicks matched nothing. Entering Multiplayer then drew a second one on top
-	// of the corpse. Windows the layout owns are torn down with it; this one is ours.
-	if (buttonLiveObserver)
-	{
-		TheWindowManager->winDestroy(buttonLiveObserver);
-		buttonLiveObserver = nullptr;
-	}
+	// Deliberately not winDestroy(): that is deferred through processDestroyList while the
+	// layout is tearing the same children down, and a crash on returning to the menu is what
+	// came of assuming ownership here.
+	buttonLiveObserver = nullptr;
 #endif
 
 	// if we are shutting down for an immediate pop, skip the animations
@@ -1154,6 +1168,13 @@ static void doLiveObserverGameStart(const AsciiString& fullWatchUrl)
 		delete TheLiveObserver;
 		TheLiveObserver = nullptr;
 	}
+
+	// Release the Recorder's read handle on the previous session's file too. LiveObserver
+	// only closes its own write handle, and the live file is named after the streamer's
+	// game — so rejoining a game we already watched targets the same path, which
+	// openLiveFile() cannot delete or recreate while this handle is still open.
+	if (TheRecorder)
+		TheRecorder->endLiveObserverSession();
 
 	TheLiveObserver = createLiveObserver();
 	if (!TheLiveObserver)
