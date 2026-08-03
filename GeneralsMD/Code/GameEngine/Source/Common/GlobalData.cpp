@@ -642,7 +642,7 @@ GlobalData::GlobalData()
 	m_headless = FALSE;
 	m_exportStats = FALSE;
 	m_liveStreamEnabled = FALSE;
-	m_liveStreamRelayUrl = "ws://192.168.2.108:8765";
+	m_liveStreamRelayUrl = "ws://85.93.90.213:8765";
 	m_liveStreamCanStream = TRUE;
 	m_windowed = 0;
 	m_xResolution = 800;
