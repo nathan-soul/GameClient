@@ -642,7 +642,7 @@ GlobalData::GlobalData()
 	m_headless = FALSE;
 	m_exportStats = FALSE;
 	m_liveStreamEnabled = TRUE;
-	m_liveStreamRelayUrl = "wss://batty.youbantoo.club/";
+	m_liveStreamRelayUrl = LIVE_DEFAULT_RELAY_URL;
 	m_liveStreamCanStream = TRUE;
 	m_liveStreamDelaySeconds = LIVE_DELAY_SECONDS_DEFAULT;
 	m_windowed = 0;

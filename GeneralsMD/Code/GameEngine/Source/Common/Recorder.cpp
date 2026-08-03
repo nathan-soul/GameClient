@@ -970,7 +970,7 @@ void RecorderClass::startRecording(GameDifficulty diff, Int originalGameMode, In
 			// Connect to relay server
 			AsciiString relayUrl = TheGlobalData->m_liveStreamRelayUrl;
 			if (relayUrl.isEmpty())
-				relayUrl = "ws://192.168.2.108:8765";
+				relayUrl = LIVE_DEFAULT_RELAY_URL;
 			TheLiveStreamer->init(relayUrl);
 
 			// Get local player name

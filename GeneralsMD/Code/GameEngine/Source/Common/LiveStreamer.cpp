@@ -31,6 +31,7 @@
 #include <cstdarg>
 #include <cstring>
 #include <cstdlib>
+#include <fstream>		// cacert.pem presence check, see connectToRelay
 #include <algorithm>
 
 // ============================================================================
@@ -437,6 +438,30 @@ bool LiveStreamer::connectToRelay()
 
     curl_easy_setopt(easy, CURLOPT_URL, url.str());
     curl_easy_setopt(easy, CURLOPT_CONNECT_ONLY, 2L);
+
+    // TheSuperHackers @fix 03/08/2026 wss:// relays need a CA bundle. This libcurl is built
+    // against OpenSSL (libssl-3.dll / libcrypto-3.dll ship beside it), and unlike Schannel
+    // OpenSSL does not consult the Windows certificate store — with no trust anchors it
+    // rejects every certificate, including valid ones, as CURLE_PEER_FAILED_VERIFICATION (60).
+    // Same approach as HTTPRequest.cpp; see the TODO_NGMP there about moving to Schannel.
+    {
+        std::ifstream certFile("cacert.pem");
+        if (certFile.good())
+        {
+            certFile.close();
+            curl_easy_setopt(easy, CURLOPT_CAINFO, "cacert.pem");
+            curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 1L);
+            curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 2L);
+        }
+        else
+        {
+            // Matches the existing fallback rather than failing the connection outright.
+            // Worth knowing this is an unverified link, so say so in the log.
+            liveStreamLog("LiveStreamer: cacert.pem not found — TLS certificate verification DISABLED\n");
+            curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 0L);
+            curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 0L);
+        }
+    }
 
     CURLM* multi = curl_multi_init();
     if (!multi)

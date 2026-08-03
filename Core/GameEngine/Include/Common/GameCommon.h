@@ -81,6 +81,11 @@ enum
 	LIVE_DELAY_SECONDS_MAX = 600
 };
 
+// Default relay endpoint, overridable via the LiveStreamRelayUrl preference. Defined once
+// here because a second, stale copy of this as a fallback elsewhere is how a client ends up
+// quietly trying to reach a machine that no longer exists.
+#define LIVE_DEFAULT_RELAY_URL "wss://batty.youbantoo.club/"
+
 const Real LOGICFRAMES_PER_MSEC_REAL = (((Real)LOGICFRAMES_PER_SECOND) / ((Real)MSEC_PER_SECOND));
 const Real MSEC_PER_LOGICFRAME_REAL = (((Real)MSEC_PER_SECOND) / ((Real)LOGICFRAMES_PER_SECOND));
 const Real LOGICFRAMES_PER_SECONDS_REAL = (Real)LOGICFRAMES_PER_SECOND;
