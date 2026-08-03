@@ -1686,6 +1686,17 @@ RecorderClass::ReadFrameResult RecorderClass::readNextFrame() {
 			if (savedPos + (Int)sizeof(m_nextFrame) > safeOffset) {
 				if (!m_streamEnded)
 					return READFRAME_EOF_WAITING;
+
+				// Stream ended and every complete record has been consumed — this is the end
+				// of the replay. Do NOT fall through to the read: the live file is opened
+				// without truncation, so a session reusing a longer previous session's file
+				// still has that session's bytes sitting here. Reading them succeeds and
+				// yields a garbage frame number at precisely the moment playback should stop.
+				liveObserverLog("readNextFrame: end of stream at offset %d (safe=%d) — stopping playback\n",
+					savedPos, safeOffset);
+				m_nextFrame = -1;
+				stopPlayback();
+				return READFRAME_STREAM_STOPPED;
 			}
 		}
 

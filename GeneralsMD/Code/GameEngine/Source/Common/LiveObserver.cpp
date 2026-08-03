@@ -42,7 +42,7 @@
 // TheSuperHackers @fix Bump this string with every debugging change to LiveObserver.cpp/
 // LiveStreamer.cpp/GameLogic.cpp's LIVE_OBSERVER_LOG instrumentation, so a log file can be
 // matched to the exact build that produced it (avoids debugging a stale binary by mistake).
-#define LIVE_OBSERVER_BUILD_TAG "2026-08-03-fix22-live-game-browser"
+#define LIVE_OBSERVER_BUILD_TAG "2026-08-03-fix23-browser-standalone-fetch"
 
 void liveObserverLog(const char* fmt, ...) {
     static FILE* logFile = NULL;
@@ -91,6 +91,114 @@ LiveObserver::LiveObserver()
     , m_curlEasy(nullptr)
     , m_curlMulti(nullptr)
 {
+}
+
+// ============================================================================
+// Standalone relay HTTP fetch (live game browser)
+// ============================================================================
+
+namespace
+{
+	std::mutex s_fetchMutex;
+	std::atomic<bool> s_fetchInFlight(false);
+	std::atomic<bool> s_fetchReady(false);
+	std::string s_fetchBody;
+	bool s_fetchSuccess = false;
+	long s_fetchStatus = 0;
+
+	size_t liveRelayWriteCb(char* ptr, size_t size, size_t nmemb, void* userdata)
+	{
+		std::string* out = static_cast<std::string*>(userdata);
+		out->append(ptr, size * nmemb);
+		return size * nmemb;
+	}
+
+	void liveRelayFetchThread(std::string url)
+	{
+		std::string body;
+		bool success = false;
+		long status = 0;
+
+		CURL* easy = curl_easy_init();
+		if (easy)
+		{
+			curl_easy_setopt(easy, CURLOPT_URL, url.c_str());
+			curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, liveRelayWriteCb);
+			curl_easy_setopt(easy, CURLOPT_WRITEDATA, &body);
+			curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L);
+			// Keep this short: it runs behind a menu the user is looking at, and a hung
+			// relay must not leave the list saying "Loading" indefinitely.
+			curl_easy_setopt(easy, CURLOPT_TIMEOUT, 10L);
+			curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, 5L);
+
+			// Same CA handling as connectToRelay — this libcurl is OpenSSL-backed and has
+			// no trust anchors of its own, so https:// fails without an explicit bundle.
+			std::ifstream certFile("cacert.pem");
+			if (certFile.good())
+			{
+				certFile.close();
+				curl_easy_setopt(easy, CURLOPT_CAINFO, "cacert.pem");
+				curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 1L);
+				curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 2L);
+			}
+			else
+			{
+				curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 0L);
+				curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 0L);
+			}
+
+			CURLcode res = curl_easy_perform(easy);
+			curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &status);
+			success = (res == CURLE_OK);
+			if (!success)
+				liveObserverLog("liveRelayFetch: curl failed (result=%d) for %s\n", (int)res, url.c_str());
+			curl_easy_cleanup(easy);
+		}
+
+		{
+			std::lock_guard<std::mutex> lock(s_fetchMutex);
+			s_fetchBody = body;
+			s_fetchSuccess = success;
+			s_fetchStatus = status;
+		}
+		s_fetchReady.store(true);
+		s_fetchInFlight.store(false);
+	}
+}
+
+Bool liveRelayBeginFetch(const AsciiString& url)
+{
+	bool expected = false;
+	if (!s_fetchInFlight.compare_exchange_strong(expected, true))
+		return FALSE;	// one already running
+
+	s_fetchReady.store(false);
+	liveObserverLog("liveRelayFetch: GET %s\n", url.str());
+
+	std::thread(liveRelayFetchThread, std::string(url.str())).detach();
+	return TRUE;
+}
+
+Bool liveRelayPollFetch(AsciiString& outBody, Bool& outSuccess, Int& outStatusCode)
+{
+	if (!s_fetchReady.load())
+		return FALSE;
+
+	std::lock_guard<std::mutex> lock(s_fetchMutex);
+	// Re-check under the lock so two callers in one frame cannot both consume the result.
+	if (!s_fetchReady.load())
+		return FALSE;
+
+	outBody = s_fetchBody.c_str();
+	outSuccess = s_fetchSuccess ? TRUE : FALSE;
+	outStatusCode = (Int)s_fetchStatus;
+	s_fetchReady.store(false);
+	return TRUE;
+}
+
+Bool liveRelayFetchInFlight()
+{
+	return s_fetchInFlight.load() ? TRUE : FALSE;
 }
 
 // ============================================================================

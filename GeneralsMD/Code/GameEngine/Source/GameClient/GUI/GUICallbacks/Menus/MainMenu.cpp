@@ -178,7 +178,6 @@ static GameWindow *buttonLiveObserverRefresh = nullptr;
 // Game IDs indexed by listbox row. Kept alongside the listbox rather than stuffed into
 // GadgetListBoxSetItemData, so nothing depends on the lifetime of a void* we hand the gadget.
 static std::vector<AsciiString> s_liveGameIds;
-static Bool s_liveGamesFetchInFlight = FALSE;
 static UnsignedInt s_liveGamesLastFetchMs = 0;
 
 // Auto-refresh cadence. Games start and end on the order of minutes, so polling harder than
@@ -189,6 +188,7 @@ enum { LIVE_GAMES_REFRESH_INTERVAL_MS = 5000 };
 static void hideLiveObserverDialog(void);
 static void doLiveObserverGameStart(const AsciiString& fullWatchUrl);
 static void requestLiveGamesList(void);
+static void applyLiveGamesResponse(Bool bSuccess, Int statusCode, const AsciiString& body);
 static AsciiString buildRelayHttpBase(void);
 #endif
 
@@ -1011,9 +1011,20 @@ void MainMenuUpdate( WindowLayout *layout, void *userData )
 		doLiveObserverGameStart(m_liveObserverStartUrl);
 	}
 
+	// Collect a finished games fetch. The request runs on its own thread (HTTPManager is not
+	// available on the main menu unless signed in), so the reply is picked up here rather
+	// than delivered by callback — this is the main thread, safe to touch gadget state.
+	{
+		AsciiString body;
+		Bool fetchOk = FALSE;
+		Int statusCode = 0;
+		if (liveRelayPollFetch(body, fetchOk, statusCode))
+			applyLiveGamesResponse(fetchOk, statusCode, body);
+	}
+
 	// Keep the browser current while it is open, so a game that starts or ends shows up
 	// without the user having to think about refreshing.
-	if (showLiveObserverDialog && listboxLiveGames && !s_liveGamesFetchInFlight)
+	if (showLiveObserverDialog && listboxLiveGames && !liveRelayFetchInFlight())
 	{
 		if (timeGetTime() - s_liveGamesLastFetchMs >= LIVE_GAMES_REFRESH_INTERVAL_MS)
 			requestLiveGamesList();
@@ -1156,34 +1167,24 @@ static AsciiString buildRelayHttpBase(void)
 	return base;
 }
 
-/// Ask the relay which games are live and repopulate the listbox from the answer.
+/// Kick off a fetch of the relay's live game list. The reply is collected in the main-menu
+/// update loop by applyLiveGamesResponse().
 static void requestLiveGamesList(void)
 {
-	if (s_liveGamesFetchInFlight)
+	if (liveRelayFetchInFlight())
 		return;		// one in flight is enough; the reply repopulates regardless
-
-	NGMP_OnlineServicesManager* pMgr = NGMP_OnlineServicesManager::GetInstance();
-	if (pMgr == nullptr || pMgr->GetHTTPManager() == nullptr)
-	{
-		liveObserverLog("requestLiveGamesList: no HTTP manager available\n");
-		return;
-	}
 
 	AsciiString uri;
 	uri.format("%s/games", buildRelayHttpBase().str());
 
-	s_liveGamesFetchInFlight = TRUE;
 	s_liveGamesLastFetchMs = timeGetTime();
-	liveObserverLog("requestLiveGamesList: GET %s\n", uri.str());
+	liveRelayBeginFetch(uri);
+}
 
-	std::map<std::string, std::string> mapHeaders;
-	pMgr->GetHTTPManager()->SendGETRequest(uri.str(), EIPProtocolVersion::DONT_CARE, mapHeaders,
-		[](bool bSuccess, int statusCode, std::string strBody, HTTPRequest* pReq)
+/// Fold a completed fetch into the listbox. Main thread only.
+static void applyLiveGamesResponse(Bool bSuccess, Int statusCode, const AsciiString& body)
+{
 		{
-			// HTTPManager::Tick() asserts CHECK_MAIN_THREAD and invokes this synchronously,
-			// so touching gadget state directly here is safe — no marshalling needed.
-			s_liveGamesFetchInFlight = FALSE;
-
 			if (listboxLiveGames == nullptr || !showLiveObserverDialog)
 				return;		// dialog closed while the request was in flight
 
@@ -1213,7 +1214,7 @@ static void requestLiveGamesList(void)
 
 			try
 			{
-				nlohmann::json games = nlohmann::json::parse(strBody);
+				nlohmann::json games = nlohmann::json::parse(body.str());
 				if (!games.is_array() || games.empty())
 				{
 					GadgetListBoxAddEntryText(listboxLiveGames,
@@ -1290,7 +1291,7 @@ static void requestLiveGamesList(void)
 					UnicodeString(L"Unexpected reply from relay - type a game ID below"),
 					GameMakeColor(255, 120, 120, 255), -1);
 			}
-		});
+		}
 }
 
 // Initialize the live observer, connect to relay, wait for HEADER,

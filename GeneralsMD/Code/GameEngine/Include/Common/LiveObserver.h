@@ -133,6 +133,26 @@ private:
 extern LiveObserver* TheLiveObserver;
 LiveObserver* createLiveObserver();
 
+// ---------------------------------------------------------------------------------------
+// TheSuperHackers @feature 03/08/2026 Standalone relay HTTP fetch, for the live game browser.
+//
+// Deliberately not routed through HTTPManager: that lives behind
+// NGMP_OnlineServicesManager, which is not initialised on the main menu unless the player has
+// signed in to GeneralsOnline — so every request silently no-op'd there. The browser has to
+// work for someone who just wants to watch a game, signed in or not.
+//
+// The request runs on its own thread, so the result is collected by polling from the main
+// loop rather than delivered by callback; nothing here touches gadget state.
+
+/// Start an async GET. Returns FALSE if a fetch is already in flight.
+Bool liveRelayBeginFetch(const AsciiString& url);
+
+/// Collect a finished fetch. Returns TRUE exactly once per completed request.
+Bool liveRelayPollFetch(AsciiString& outBody, Bool& outSuccess, Int& outStatusCode);
+
+/// TRUE while a request is outstanding.
+Bool liveRelayFetchInFlight();
+
 void liveObserverLog(const char* fmt, ...);
 void liveObserverInitLog(const char* watchUrl);
 
