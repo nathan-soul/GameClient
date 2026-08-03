@@ -270,6 +270,13 @@ public:
 
 	// --------------------------------------------------------------------------
 	// new methods for setting images
+	/// TheSuperHackers @feature 03/08/2026 Adopt another window's whole visual state:
+	/// images, colours and border colours for enabled/disabled/hilite, plus text colours and
+	/// font. Lets a gadget created in code look like one defined in a .wnd layout, instead of
+	/// keeping the placeholder scheme that gogoGadget*(..., defaultVisual=TRUE) leaves behind.
+	/// Source and destination should be the same gadget type for the draw-data slots to line up.
+	void winCopyVisualsFrom(GameWindow* src);
+
 	Int winSetEnabledImage(Int index, const Image* image);
 	Int winSetEnabledColor(Int index, Color color);
 	Int winSetEnabledBorderColor(Int index, Color color);

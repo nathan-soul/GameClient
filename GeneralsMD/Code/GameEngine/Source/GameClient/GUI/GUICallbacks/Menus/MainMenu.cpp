@@ -190,6 +190,7 @@ static void doLiveObserverGameStart(const AsciiString& fullWatchUrl);
 static void requestLiveGamesList(void);
 static void applyLiveGamesResponse(Bool bSuccess, Int statusCode, const AsciiString& body);
 static AsciiString buildRelayHttpBase(void);
+
 #endif
 
 // window pointers --------------------------------------------------------------------------------
@@ -636,12 +637,36 @@ void MainMenuInit( WindowLayout *layout, void *userData )
 		WinInstanceData instDataLive;
 		instDataLive.init();
 		BitSet(instDataLive.m_style, GWS_PUSH_BUTTON | GWS_MOUSE_TRACK);
-		instDataLive.m_textLabelString = "Live Observer";
-		instDataLive.setTooltipText(L"Watch a live game via relay server");
+		instDataLive.m_textLabelString = "Watch Live";
+		instDataLive.setTooltipText(L"Watch a live game via the relay server");
+
+		// TheSuperHackers @feature 03/08/2026 Sit with Online and Network in the multiplayer
+		// submenu, which is where someone looking for a game to watch would go. Position is
+		// taken from the Network button at runtime rather than hardcoded: this is a .wnd
+		// layout we cannot see from here, and one row below a known button is stable in a way
+		// that absolute coordinates are not.
+		Int liveX = 25, liveY = 240, liveW = 180, liveH = 26;
+		if (buttonNetwork)
+		{
+			buttonNetwork->winGetPosition(&liveX, &liveY);
+			buttonNetwork->winGetSize(&liveW, &liveH);
+			liveY += liveH + 4;
+		}
+
 		buttonLiveObserver = TheWindowManager->gogoGadgetPushButton(parentMainMenu,
 			WIN_STATUS_ENABLED | WIN_STATUS_IMAGE,
-			25, 210, 180, 26,
+			liveX, liveY, liveW, liveH,
 			&instDataLive, nullptr, TRUE);
+
+		// Adopt the real menu's look instead of the placeholder red/yellow that
+		// defaultVisual leaves behind.
+		buttonLiveObserver->winCopyVisualsFrom(buttonOnline);
+
+		// The submenu is animated by a transition group defined in MainMenu.wnd, which a
+		// code-created window cannot join. So it is shown and hidden explicitly alongside the
+		// dropdown instead — see the buttonMultiPlayerID / buttonMultiBackID handlers.
+		if (buttonLiveObserver)
+			buttonLiveObserver->winHide(TRUE);
 	}
 #endif
 
@@ -1706,6 +1731,10 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				TheTransitionHandler->remove("MainMenuMultiPlayerMenu");
 				TheTransitionHandler->reverse("MainMenuMultiPlayerMenuReverse");
 				TheTransitionHandler->setGroup("MainMenuDefaultMenu");
+#if defined(GENERALS_ONLINE)
+				if (buttonLiveObserver)
+					buttonLiveObserver->winHide(TRUE);
+#endif
 			}
 			else if( controlID == buttonLoadReplayBackID )
 			{
@@ -1740,6 +1769,10 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				TheTransitionHandler->remove("MainMenuDefaultMenu");
 				TheTransitionHandler->reverse("MainMenuDefaultMenuBack");
 				TheTransitionHandler->setGroup("MainMenuMultiPlayerMenu");
+#if defined(GENERALS_ONLINE)
+				if (buttonLiveObserver)
+					buttonLiveObserver->winHide(FALSE);
+#endif
 			}
 			else if( controlID == buttonLoadReplayID)
 			{
@@ -1812,6 +1845,10 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				buttonPushed = TRUE;
 				dropDownWindows[DROPDOWN_MULTIPLAYER]->winHide(FALSE);
 				TheTransitionHandler->reverse("MainMenuMultiPlayerMenuTransitionToNext");
+#if defined(GENERALS_ONLINE)
+				if (buttonLiveObserver)
+					buttonLiveObserver->winHide(TRUE);
+#endif
 
 				StartPatchCheck();
 //				localAnimateWindowManager->reverseAnimateWindow();
@@ -1826,6 +1863,10 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				buttonPushed = TRUE;
 				dropDownWindows[DROPDOWN_MULTIPLAYER]->winHide(FALSE);
 				TheTransitionHandler->reverse("MainMenuMultiPlayerMenuTransitionToNext");
+#if defined(GENERALS_ONLINE)
+				if (buttonLiveObserver)
+					buttonLiveObserver->winHide(TRUE);
+#endif
 				TheShell->push( "Menus/LanLobbyMenu.wnd" );
 
 				TheScriptEngine->signalUIInteract(TheShellHookNames[SHELL_SCRIPT_HOOK_MAIN_MENU_NETWORK_SELECTED]);
@@ -2073,6 +2114,8 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 					WIN_STATUS_ENABLED | WIN_STATUS_IMAGE,
 					450, 225, 130, 26,
 					&refreshInstData, nullptr, TRUE);
+				if (buttonLiveObserverRefresh)
+					buttonLiveObserverRefresh->winCopyVisualsFrom(buttonOnline);
 
 				requestLiveGamesList();
 
@@ -2110,6 +2153,8 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 					WIN_STATUS_ENABLED | WIN_STATUS_IMAGE,
 					100, 225, 130, 26,
 					&connectInstData, nullptr, TRUE);
+				if (buttonLiveObserverConnect)
+					buttonLiveObserverConnect->winCopyVisualsFrom(buttonOnline);
 
 				// Cancel button
 				WinInstanceData cancelInstData;
@@ -2120,6 +2165,8 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 					WIN_STATUS_ENABLED | WIN_STATUS_IMAGE,
 					250, 225, 130, 26,
 					&cancelInstData, nullptr, TRUE);
+				if (buttonLiveObserverCancel)
+					buttonLiveObserverCancel->winCopyVisualsFrom(buttonOnline);
 			}
 			else if(control == buttonLiveObserverRefresh)
 			{

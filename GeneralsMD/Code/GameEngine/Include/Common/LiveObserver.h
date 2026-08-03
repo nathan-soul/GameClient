@@ -176,7 +176,7 @@ Bool liveRelayFetchInFlight();
 // apart, which is precisely the confusion this tag exists to prevent. Any file using it must
 // include this header — that also brings the LIVE_OBSERVER_LOGGING resolution above, without
 // which logging silently stays off in a DEFAULT build.
-#define LIVE_OBSERVER_BUILD_TAG "2026-08-03-fix25-shared-log-gate"
+#define LIVE_OBSERVER_BUILD_TAG "2026-08-03-fix26-slotlist-roster-and-real-map"
 
 void liveObserverLog(const char* fmt, ...);
 void liveObserverInitLog(const char* watchUrl);

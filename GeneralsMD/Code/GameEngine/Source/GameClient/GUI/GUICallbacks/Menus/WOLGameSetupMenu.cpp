@@ -1643,6 +1643,17 @@ void InitWOLGameGadgets()
       baseX + 258, baseY, 50, 20,
       &entryInstData, &entryData, nullptr, TRUE);
 
+    // Adopt the look of the options they sit beside, rather than the placeholder scheme
+    // gogoGadget*(..., defaultVisual=TRUE) leaves behind.
+    if (checkBoxStreamGame)
+      checkBoxStreamGame->winCopyVisualsFrom(checkBoxLimitSuperweapons);
+    if (staticTextStreamDelay)
+      staticTextStreamDelay->winCopyVisualsFrom(
+        TheWindowManager->winGetWindowFromId(parentWOLGameSetup,
+          TheNameKeyGenerator->nameToKey("GameSpyGameOptionsMenu.wnd:StartingCashLabel")));
+    if (textEntryStreamDelay)
+      textEntryStreamDelay->winCopyVisualsFrom(textEntryChat);
+
     if (checkBoxStreamGame)
       GadgetCheckBoxSetChecked(checkBoxStreamGame,
         TheGlobalData ? TheGlobalData->m_liveStreamEnabled : FALSE);

@@ -941,18 +941,45 @@ void RecorderClass::startRecording(GameDifficulty diff, Int originalGameMode, In
 			AsciiString gameMode;
 			gameMode.format("%d", originalGameMode);
 
-			// Collect sorted player names for hash
+			// Collect player names for the hash and for the game browser.
+			//
+			// Deliberately from the GameInfo slot list rather than ThePlayerList: this runs
+			// on MSG_NEW_GAME, before the game itself has started, so ThePlayerList is not
+			// populated yet and every name came back empty. The slot list is the same source
+			// the replay header's own player list is written from a few lines below, and it
+			// is ready at this point.
 			AsciiString sortedNames;
-			if (ThePlayerList)
 			{
-				for (Int pi = 0; pi < MAX_SLOTS; ++pi)
+				GameInfo* slotSource = nullptr;
+				if (TheNetwork)
 				{
-					Player* p = ThePlayerList->getNthPlayer(pi);
-					if (p && p->isPlayerActive())
+#if defined(GENERALS_ONLINE)
+					slotSource = TheNGMPGame;
+#else
+					slotSource = TheGameSpyGame;
+#endif
+					if (TheLAN)
+						slotSource = TheLAN->GetMyGame();
+				}
+				else if (TheSkirmishGameInfo)
+				{
+					slotSource = TheSkirmishGameInfo;
+				}
+
+				if (slotSource)
+				{
+					for (Int si = 0; si < MAX_SLOTS; ++si)
 					{
-						UnicodeString displayName = p->getPlayerDisplayName();
+						const GameSlot* slot = slotSource->getConstSlot(si);
+						if (slot == nullptr || !slot->isOccupied())
+							continue;
+
 						AsciiString nameAscii;
-						nameAscii.translate(displayName);
+						nameAscii.translate(slot->getName());
+						nameAscii.trim();
+						if (nameAscii.isEmpty())
+							continue;
+
 						if (!sortedNames.isEmpty())
 							sortedNames.concat("|");
 						sortedNames.concat(nameAscii);
@@ -964,8 +991,16 @@ void RecorderClass::startRecording(GameDifficulty diff, Int originalGameMode, In
 			::time(&startTime);
 			startTimeVal = (UnsignedInt)startTime;
 
+			// m_gameInfo.getMap() rather than TheGlobalData->m_mapName: init() resolved the
+			// real map from m_pendingFile, whereas m_mapName still holds the shell map at
+			// this point — which is why the browser was advertising every game as
+			// "shellmapmd". The hash uses it too, so games on different maps hash apart.
+			AsciiString liveMapName = m_gameInfo.getMap();
+			if (liveMapName.isEmpty())
+				liveMapName = TheGlobalData->m_mapName;
+
 			AsciiString gameHash = LiveStreamer::computeGameHash(
-				TheGlobalData->m_mapName, gameMode, startTimeVal, sortedNames);
+				liveMapName, gameMode, startTimeVal, sortedNames);
 
 			// Connect to relay server
 			AsciiString relayUrl = TheGlobalData->m_liveStreamRelayUrl;
@@ -992,7 +1027,7 @@ void RecorderClass::startRecording(GameDifficulty diff, Int originalGameMode, In
 				gameHash,
 				localPlayerName,
 				sortedNames,
-				TheGlobalData->m_mapName,
+				liveMapName,
 				gameMode,
 				TheGlobalData->m_liveStreamCanStream);
 
