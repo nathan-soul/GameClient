@@ -1595,18 +1595,44 @@ void InitWOLGameGadgets()
   // TheGlobalData (which RecorderClass::startRecording() reads when the match begins) and to
   // OptionPreferences, so today's choice becomes tomorrow's default.
   {
-    // Anchor to the Limit Superweapons checkbox rather than using absolute coordinates:
-    // the layout lives in GameSpyGameOptionsMenu.wnd inside a .big archive, so hardcoded
-    // positions would be a guess that silently breaks if the layout is ever retouched.
-    // Sitting one row below a known option keeps this aligned with the options column.
-    Int baseX = 20, baseY = 470, rowH = 24;
+    // Derive every coordinate from controls the layout already positions, rather than
+    // inventing any. GameSpyGameOptionsMenu.wnd lives inside an archive we cannot read, so
+    // absolute numbers would be a guess — and a guess that silently overlaps a neighbour or
+    // falls off the panel, since nothing here reports being out of bounds.
+    //
+    // Two rows are added below the existing options:
+    //   [x] Stream this game          <- takes the Limit Superweapons checkbox's geometry
+    //   Delay (s):        [   ]       <- takes the Starting Cash label + combo geometry
+    // Using the label/field pair from the Starting Cash row means the delay field lines up
+    // with the column above it instead of being eyeballed.
+    GameWindow* labelStartingCash = TheWindowManager->winGetWindowFromId(parentWOLGameSetup,
+      TheNameKeyGenerator->nameToKey("GameSpyGameOptionsMenu.wnd:StartingCashLabel"));
+
+    // Start below whichever existing option sits lowest, so we cannot land on top of one.
+    Int rowH = 24;
+    Int lowestBottom = 0;
+    GameWindow* existingOptions[] = { checkBoxUseStats, checkBoxLimitSuperweapons,
+                                      comboBoxStartingCash, checkBoxLimitArmies, labelStartingCash };
+    for (Int i = 0; i < (Int)(sizeof(existingOptions) / sizeof(existingOptions[0])); ++i)
+    {
+      if (existingOptions[i] == NULL)
+        continue;
+      Int ox = 0, oy = 0, ow = 0, oh = 0;
+      existingOptions[i]->winGetPosition(&ox, &oy);
+      existingOptions[i]->winGetSize(&ow, &oh);
+      if (oy + oh > lowestBottom)
+        lowestBottom = oy + oh;
+      if (oh > 0)
+        rowH = oh + 4;
+    }
+
+    // Row 1: the checkbox, matching the Limit Superweapons checkbox's x and width.
+    Int checkX = 20, checkY = lowestBottom + 4, checkW = 180, checkH = 20;
     if (checkBoxLimitSuperweapons)
     {
-      Int cbW = 0, cbH = 0;
-      checkBoxLimitSuperweapons->winGetPosition(&baseX, &baseY);
-      checkBoxLimitSuperweapons->winGetSize(&cbW, &cbH);
-      rowH = (cbH > 0) ? cbH + 4 : rowH;
-      baseY += rowH;
+      Int cy = 0;
+      checkBoxLimitSuperweapons->winGetPosition(&checkX, &cy);
+      checkBoxLimitSuperweapons->winGetSize(&checkW, &checkH);
     }
 
     WinInstanceData checkInstData;
@@ -1616,18 +1642,39 @@ void InitWOLGameGadgets()
     checkInstData.setTooltipText(L"Broadcast this game so others can watch it live");
     checkBoxStreamGame = TheWindowManager->gogoGadgetCheckbox(parentWOLGameSetup,
       WIN_STATUS_ENABLED,
-      baseX, baseY, 180, 20,
+      checkX, checkY, checkW, checkH,
       &checkInstData, nullptr, TRUE);
+
+    // Row 2: label and field, taking their x/width from the Starting Cash pair so the two
+    // rows share a column. Falls back to sensible offsets if either control is missing.
+    const Int fieldRowY = checkY + rowH;
+    Int labelX = checkX, labelW = 100, labelH = checkH;
+    Int fieldX = checkX + 110, fieldW = 60, fieldH = checkH;
+    if (labelStartingCash)
+    {
+      Int ly = 0;
+      labelStartingCash->winGetPosition(&labelX, &ly);
+      labelStartingCash->winGetSize(&labelW, &labelH);
+    }
+    if (comboBoxStartingCash)
+    {
+      Int cy = 0, cw = 0, ch = 0;
+      comboBoxStartingCash->winGetPosition(&fieldX, &cy);
+      comboBoxStartingCash->winGetSize(&cw, &ch);
+      // A combo box is wider than a 3-digit number needs; keep its left edge, not its width.
+      fieldW = (cw > 0 && cw < 80) ? cw : 60;
+      fieldH = (ch > 0) ? ch : checkH;
+    }
 
     TextData labelTextData;
     memset(&labelTextData, 0, sizeof(labelTextData));
     WinInstanceData labelInstData;
     labelInstData.init();
     labelInstData.m_style = GWS_STATIC_TEXT | GWS_MOUSE_TRACK;
-    labelInstData.m_textLabelString = "Delay (s):";
+    labelInstData.m_textLabelString = "Stream delay (s):";
     staticTextStreamDelay = TheWindowManager->gogoGadgetStaticText(parentWOLGameSetup,
       WIN_STATUS_ENABLED,
-      baseX + 185, baseY, 70, 20,
+      labelX, fieldRowY, labelW, labelH,
       &labelInstData, &labelTextData, nullptr, TRUE);
 
     EntryData entryData;
@@ -1640,7 +1687,7 @@ void InitWOLGameGadgets()
     entryInstData.setTooltipText(L"How far behind the live game observers are held");
     textEntryStreamDelay = TheWindowManager->gogoGadgetTextEntry(parentWOLGameSetup,
       WIN_STATUS_ENABLED,
-      baseX + 258, baseY, 50, 20,
+      fieldX, fieldRowY, fieldW, fieldH,
       &entryInstData, &entryData, nullptr, TRUE);
 
     // Adopt the look of the options they sit beside, rather than the placeholder scheme
