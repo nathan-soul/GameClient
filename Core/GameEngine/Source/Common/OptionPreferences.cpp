@@ -173,7 +173,7 @@ Bool OptionPreferences::getLiveStreamEnabled() const
 {
 	OptionPreferences::const_iterator it = find("LiveStreamEnabled");
 	if (it == end())
-		return FALSE;
+		return TRUE;
 	if (stricmp(it->second.str(), "yes") == 0)
 	{
 		return TRUE;

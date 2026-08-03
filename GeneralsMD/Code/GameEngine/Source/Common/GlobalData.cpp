@@ -641,7 +641,7 @@ GlobalData::GlobalData()
 	m_chipSetType = 0;
 	m_headless = FALSE;
 	m_exportStats = FALSE;
-	m_liveStreamEnabled = FALSE;
+	m_liveStreamEnabled = TRUE;
 	m_liveStreamRelayUrl = "ws://85.93.90.213:8765";
 	m_liveStreamCanStream = TRUE;
 	m_windowed = 0;
@@ -1284,7 +1284,11 @@ void GlobalData::parseGameDataDefinition( INI* ini )
 	TheWritableGlobalData->m_observerNotificationMilestone = optionPref.getObserverNotificationMilestone();
 
 	TheWritableGlobalData->m_liveStreamEnabled = optionPref.getLiveStreamEnabled();
-	TheWritableGlobalData->m_liveStreamRelayUrl = optionPref.getLiveStreamRelayUrl();
+	{
+		AsciiString relayUrl = optionPref.getLiveStreamRelayUrl();
+		if (!relayUrl.isEmpty())
+			TheWritableGlobalData->m_liveStreamRelayUrl = relayUrl;
+	}
 	TheWritableGlobalData->m_liveStreamCanStream = optionPref.getLiveStreamCanStream();
 
 	TheWritableGlobalData->m_antiAliasLevel = optionPref.getAntiAliasing();
