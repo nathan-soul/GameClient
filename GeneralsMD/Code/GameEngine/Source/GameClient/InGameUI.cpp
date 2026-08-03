@@ -215,24 +215,6 @@ static void safeDrawPerBuildingQueues(InGameUI* ui)
 #pragma warning(pop)
 
 // ------------------------------------------------------------------------------------------------
-// DEBUG: file-based queue event logging
-// Writes CSV to Z:\cc_queue_debug.log (Z: = project root in Docker/Wine)
-// ------------------------------------------------------------------------------------------------
-static void logQueueEvent(const char* event, const char* unitName, const char* buildingName,
-                          ObjectID buildingID, Int slot, Int queueSize, UnsignedInt frame)
-{
-	FILE* f = fopen("cc_queue_debug.log", "a");
-	if (f)
-	{
-		fprintf(f, "%u,%s,%s,%s,%d,%d,%d\n",
-			frame, event, unitName ? unitName : "?",
-			buildingName ? buildingName : "?", (Int)buildingID, slot, queueSize);
-		fflush(f);
-		fclose(f);
-	}
-}
-
-// ------------------------------------------------------------------------------------------------
 static const RGBColor IllegalBuildColor = { 1.0, 0.0, 0.0 };
 
 // ------------------------------------------------------------------------------------------------
@@ -7794,8 +7776,6 @@ void InGameUI::drawPlayerInfoList()
 					{
 						AsciiString staleUnit;
 						if (q[i].tmpl) staleUnit = q[i].tmpl->getName();
-						logQueueEvent("S", staleUnit.str(), "", producer->getID(),
-							slot, (Int)q.size() - 1, now);
 						q.erase(q.begin() + i);
 					}
 				}
@@ -7803,10 +7783,6 @@ void InGameUI::drawPlayerInfoList()
 
 			m_playerOverlayExt[slot].queue.push_back(qe);
 
-			// DEBUG: log to file
-			logQueueEvent("Q+", unitType->getName().str(), buildingName.str(),
-				producer->getID(), slot, (Int)m_playerOverlayExt[slot].queue.size(),
-				TheGameLogic ? TheGameLogic->getFrame() : 0);
 
 			}
 
@@ -7833,7 +7809,6 @@ void InGameUI::drawPlayerInfoList()
 			{
 				if (q[i].producer == producer && q[i].tmpl == unitType)
 				{
-					AsciiString unitName = unitType->getName();
 					q.erase(q.begin() + i);
 
 					// Reset build timer for the next entry of the same producer
@@ -7847,14 +7822,10 @@ void InGameUI::drawPlayerInfoList()
 						}
 					}
 
-					// DEBUG: log to file
-					logQueueEvent("Q-", unitName.str(), "", producer->getID(), slot, (Int)q.size(), now);
 					return;
 				}
 				}
 				// Not found
-				logQueueEvent("Q-?", unitType->getName().str(), "", INVALID_ID, slot, (Int)q.size(),
-				TheGameLogic ? TheGameLogic->getFrame() : 0);
 			}
 
 			// TheSuperHackers @feature 15/07/2026 Called from ProductionUpdate::cancelUnitCreate hook.
@@ -7884,7 +7855,6 @@ void InGameUI::drawPlayerInfoList()
 			{
 				if (q[i].producer == producer && q[i].productionID == productionID)
 				{
-					AsciiString unitName = unitType->getName();
 					q.erase(q.begin() + i);
 
 					// Reset build timer for the next entry of the same producer
@@ -7898,14 +7868,10 @@ void InGameUI::drawPlayerInfoList()
 						}
 					}
 
-					// DEBUG: log to file
-					logQueueEvent("X", unitName.str(), "", producer->getID(), slot, (Int)q.size(), now);
 					return;
 				}
 				}
 				// Not found
-				logQueueEvent("X?", unitType->getName().str(), "", INVALID_ID, slot, (Int)q.size(),
-				TheGameLogic ? TheGameLogic->getFrame() : 0);
 			}
 
 		// TheSuperHackers @feature 17/07/2026 Shadow upgrade queue: called from ProductionUpdate::queueUpgrade hook.
@@ -7961,10 +7927,6 @@ void InGameUI::drawPlayerInfoList()
 
 			m_playerOverlayExt[slot].queue.push_back(qe);
 
-			// DEBUG: log upgrade queue event
-			logQueueEvent("U+", upgradeType->getUpgradeName().str(), buildingName.str(),
-				producer->getID(), slot, (Int)m_playerOverlayExt[slot].queue.size(),
-				TheGameLogic ? TheGameLogic->getFrame() : 0);
 
 			}
 
@@ -7991,9 +7953,7 @@ void InGameUI::drawPlayerInfoList()
 			{
 				if (q[i].upgradeTmpl == upgradeType && q[i].producer == producer)
 				{
-					AsciiString upgradeName = upgradeType->getUpgradeName();
 					UnsignedInt now = TheGameLogic ? TheGameLogic->getFrame() : 0;
-					logQueueEvent("U-", upgradeName.str(), "", producer->getID(), slot, (Int)q.size() - 1, now);
 
 					q.erase(q.begin() + i);
 
@@ -8034,9 +7994,6 @@ void InGameUI::drawPlayerInfoList()
 			{
 				if (q[i].upgradeTmpl == upgradeType && q[i].producer == producer)
 				{
-					AsciiString upgradeName = upgradeType->getUpgradeName();
-					UnsignedInt now = TheGameLogic ? TheGameLogic->getFrame() : 0;
-					logQueueEvent("Ux", upgradeName.str(), "", producer->getID(), slot, (Int)q.size() - 1, now);
 
 					q.erase(q.begin() + i);
 					return;
@@ -8230,8 +8187,6 @@ void InGameUI::drawPlayerInfoList()
 				{
 					AsciiString staleUnit;
 					if (q[i].tmpl) staleUnit = q[i].tmpl->getName();
-					logQueueEvent("D", staleUnit.str(), "", q[i].producerID,
-						slot, (Int)q.size() - 1, currentFrame);
 					q.erase(q.begin() + i);
 					// don't increment i
 				}

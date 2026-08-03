@@ -42,6 +42,10 @@
 #define LIVE_OBSERVER_BUILD_TAG "2026-08-03-fix11-signed-char-msglen-corruption"
 
 void liveStreamLog(const char* fmt, ...) {
+#if !defined(LIVE_OBSERVER_LOGGING)
+    // Compiled out by RTS_DEBUG_LIVE_OBSERVER=OFF — see LiveObserver.h.
+    (void)fmt;
+#else
     static FILE* logFile = NULL;
     if (!logFile) {
         // TheSuperHackers @fix Give this log a per-instance name — see the matching
@@ -59,6 +63,7 @@ void liveStreamLog(const char* fmt, ...) {
         va_end(args);
         fflush(logFile);
     }
+#endif // LIVE_OBSERVER_LOGGING
 }
 
 void liveStreamerInitLog() {

@@ -45,6 +45,12 @@
 #define LIVE_OBSERVER_BUILD_TAG "2026-08-03-fix23-browser-standalone-fetch"
 
 void liveObserverLog(const char* fmt, ...) {
+#if !defined(LIVE_OBSERVER_LOGGING)
+    // Compiled out by RTS_DEBUG_LIVE_OBSERVER=OFF (and by default in release builds).
+    // The call sites remain, so switching the option on restores full diagnostics without
+    // touching any source. See LiveObserver.h.
+    (void)fmt;
+#else
     static FILE* logFile = NULL;
     if (!logFile) {
         // TheSuperHackers @fix Give this log a per-instance name, instead of a bare
@@ -65,6 +71,7 @@ void liveObserverLog(const char* fmt, ...) {
         va_end(args);
         fflush(logFile);
     }
+#endif // LIVE_OBSERVER_LOGGING
 }
 
 void liveObserverInitLog(const char* watchUrl) {
@@ -307,8 +314,15 @@ void LiveObserver::connect(const AsciiString& watchUrl)
         }
         else
         {
+            // A watch URL without /watch/ cannot identify a game, so the connection is
+            // going to fail anyway. Previously this fell back to the bare "_live.rep" —
+            // one filename shared by every such session regardless of which game it was,
+            // which is the worst possible name to collide on.
             m_gameId = "unknown";
-            m_liveFilename = "_live.rep";
+            m_liveFilename.format("unknown_Instance%.2u_live.rep",
+                rts::ClientInstance::getInstanceId());
+            liveObserverLog("LiveObserver::connect: watch URL has no /watch/ segment: %s\n",
+                watchUrl.str());
         }
     }
 
@@ -346,7 +360,33 @@ bool LiveObserver::openLiveFile()
     filepath.concat(m_liveFilename);
 
     m_liveFilePath = filepath;
-    m_liveFile = TheFileSystem->openFile(filepath.str(), File::WRITE | File::BINARY);
+
+    // TheSuperHackers @fix 03/08/2026 Start from a genuinely empty file.
+    //
+    // File::WRITE does not imply truncation here — TRUNCATE is a separate flag — so opening
+    // an existing file leaves everything past the new session's data in place. That matters
+    // because these files are named by game id and never cleaned up, so rejoining a game, or
+    // any session after a crash, lands on the previous session's file. A shorter session then
+    // inherits a longer one's tail, and reads that should hit end-of-stream instead return
+    // stale bytes as replay records.
+    //
+    // A failed delete usually means another process still holds the file — the streamer and
+    // observer are the same exe and can share an install. Two writers at absolute offsets in
+    // one file corrupt each other, so refuse rather than proceed.
+    if (remove(filepath.str()) == 0)
+    {
+        liveObserverLog("LiveObserver::openLiveFile removed leftover %s (previous session did not clean up)\n",
+            filepath.str());
+    }
+    else if (errno != ENOENT)
+    {
+        liveObserverLog("LiveObserver::openLiveFile could NOT remove %s (errno=%d) — refusing to reuse it\n",
+            filepath.str(), errno);
+        return false;
+    }
+
+    m_liveFile = TheFileSystem->openFile(filepath.str(),
+        File::WRITE | File::CREATE | File::TRUNCATE | File::BINARY);
     if (!m_liveFile)
     {
         liveObserverLog("LiveObserver::openLiveFile FAILED for %s\n", filepath.str());
@@ -467,8 +507,13 @@ void LiveObserver::handleFrame(unsigned char type, const char* payload, size_t l
         // limit are up to date the moment the data is readable.
         advanceParseCursor(offset, (const unsigned char*)(payload + 8), dataLen);
 
+        // Guarded rather than relying on the empty liveObserverLog: this fires per chunk
+        // (~30/s) and m_liveFile->size() is a real file-system query, which would otherwise
+        // still run in a build with logging switched off.
+#if defined(LIVE_OBSERVER_LOGGING)
         liveObserverLog("LiveObserver: BODY written offset=%d dataLen=%d fileSize=%d liveEdge=%u safeOffset=%d\n",
             offset, (int)dataLen, (int)m_liveFile->size(), m_maxCompleteFrame.load(), m_safeReadOffset.load());
+#endif
         break;
     }
 

@@ -376,45 +376,6 @@ Bool GameEngine::isTimeFrozen()
 //-------------------------------------------------------------------------------------------------
 Bool GameEngine::isGameHalted()
 {
-	// TheSuperHackers @fix Diagnostic: this runs every frame regardless of whether
-	// TheGameLogic->UPDATE() itself is being skipped, unlike logging placed inside
-	// GameLogic::update() — needed to see isGamePaused() ticking (or getting stuck)
-	// even while the very code that could clear it (RecorderClass::updatePlayback(),
-	// called from inside GameLogic::UPDATE()) is starved by that same pause.
-	if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
-	{
-		static UnsignedInt s_lastHaltedLog = 0;
-		static UnsignedInt s_lastLoggedFrame = 0;
-		UnsignedInt nowMs = timeGetTime();
-		if (nowMs - s_lastHaltedLog >= 500)
-		{
-			// TheSuperHackers @diagnostic Temporary instrumentation for the broadcast-delay work:
-			// the question is whether setGamePaused(TRUE) actually freezes frame advancement in a
-			// live-observer session, or whether the isLiveObserverSession bypass further down means
-			// curFrame keeps climbing while isGamePaused reports 1. If frameDelta stays non-zero
-			// while paused=1, the pause is not a working lever and the pre-roll design needs a
-			// different mechanism. gap pinned at 0 would likewise explain permanent WAITING.
-			UnsignedInt curFrame = (TheGameLogic != nullptr) ? TheGameLogic->getFrame() : 0;
-			UnsignedInt liveEdge = TheRecorder->getCachedLiveEdge();
-			UnsignedInt gap = (liveEdge > curFrame) ? (liveEdge - curFrame) : 0;
-			liveObserverLog("LIVE_OBSERVER: isGameHalted() — paused=%d starting=%d inGame=%d liveWaiting=%d stalled=%d userPaused=%d preRoll=%d curFrame=%u frameDelta=%d liveEdge=%u gap=%u delay=%u\n",
-				(TheGameLogic != nullptr && TheGameLogic->isGamePaused()) ? 1 : 0,
-				(TheGameLogic != nullptr && TheGameLogic->isStartingNewGame()) ? 1 : 0,
-				(TheGameLogic != nullptr && TheGameLogic->isInGame() && !TheGameLogic->isInShellGame()) ? 1 : 0,
-				TheRecorder->isLiveWaiting() ? 1 : 0,
-				TheRecorder->isLiveStalled() ? 1 : 0,
-				TheRecorder->isUserPaused() ? 1 : 0,
-				TheRecorder->isPreRollComplete() ? 1 : 0,
-				curFrame,
-				(Int)(curFrame - s_lastLoggedFrame),
-				liveEdge,
-				gap,
-				TheRecorder->getLiveDelayFrames());
-			s_lastLoggedFrame = curFrame;
-			s_lastHaltedLog = nowMs;
-		}
-	}
-
 	if (TheNetwork != nullptr)
 	{
 		if (TheNetwork->isStalling())

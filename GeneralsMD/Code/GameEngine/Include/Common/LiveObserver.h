@@ -153,6 +153,23 @@ Bool liveRelayPollFetch(AsciiString& outBody, Bool& outSuccess, Int& outStatusCo
 /// TRUE while a request is outstanding.
 Bool liveRelayFetchInFlight();
 
+// ---------------------------------------------------------------------------------------
+// TheSuperHackers @build 03/08/2026 Live observer/streamer file logging.
+//
+// Controlled by the RTS_DEBUG_LIVE_OBSERVER cmake option (DEFAULT/ON/OFF), following the
+// same DEFAULT-resolution pattern as DEBUG_LOGGING in Debug.h: on for debug/internal builds,
+// off otherwise, and forceable either way. Kept separate from RTS_DEBUG_LOGGING because this
+// log is far noisier — it writes per frame during playback and flushes every line so it
+// survives a crash — and only matters when working on this feature.
+//
+// Enable in a release build with:  cmake --preset win32 -DRTS_DEBUG_LIVE_OBSERVER=ON
+//
+// When disabled the bodies compile away, so the ~105 call sites stay in place: they document
+// how this feature behaves and are what makes a failure diagnosable when it is switched on.
+#if defined(ALLOW_DEBUG_UTILS) && !defined(LIVE_OBSERVER_LOGGING) && !defined(DISABLE_LIVE_OBSERVER_LOGGING)
+	#define LIVE_OBSERVER_LOGGING 1
+#endif
+
 void liveObserverLog(const char* fmt, ...);
 void liveObserverInitLog(const char* watchUrl);
 

@@ -147,8 +147,14 @@ extern void externalAddTree(Coord3D location, Real scale, Real angle, AsciiStrin
 // only fires for an actual live-observer session, instead of on every game start
 // (including the streamer's own local game), which was polluting the shared
 // live_observer debug log with unrelated noise.
-#define LIVE_OBSERVER_LOG(...) \
-	do { if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER) (liveObserverLog)(__VA_ARGS__); } while (0)
+// Expands to nothing when RTS_DEBUG_LIVE_OBSERVER is off, so the arguments are not evaluated
+// either — unlike a plain call to the (then empty) liveObserverLog, which still would.
+#if defined(LIVE_OBSERVER_LOGGING)
+	#define LIVE_OBSERVER_LOG(...) \
+		do { if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER) (liveObserverLog)(__VA_ARGS__); } while (0)
+#else
+	#define LIVE_OBSERVER_LOG(...) do { } while (0)
+#endif
 
 // I'm making this larger now that we know how big our maps are going to be.
 enum { OBJ_HASH_SIZE = 8192 };
