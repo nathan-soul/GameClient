@@ -3677,12 +3677,14 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 		if (TheGlobalData)
 		{
 #if defined(GENERALS_ONLINE)
-			// In live observer mode: fast forward is disabled when within 900 frames (15s) of live.
+			// In live observer mode: fast forward is disabled once within the broadcast delay
+			// of live, so it can only ever be used to close a backlog, never to catch up to
+			// the real game and spoil it.
 			if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
 			{
 				UnsignedInt liveEdge = TheRecorder->getCachedLiveEdge();
 				UnsignedInt gap = (liveEdge > TheGameLogic->getFrame()) ? (liveEdge - TheGameLogic->getFrame()) : 0;
-				if (gap <= 900)
+				if (gap <= TheRecorder->getLiveDelayFrames())
 				{
 					TheInGameUI->messageNoFormat(
 						TheGameText->FETCH_OR_SUBSTITUTE("GUI:FF_DISABLED_LIVE", L"Fast Forward is disabled in live mode"));
@@ -3709,6 +3711,19 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 	case GameMessage::MSG_META_TOGGLE_PAUSE:
 	case GameMessage::MSG_META_TOGGLE_PAUSE_ALT:
 	{
+#if defined(GENERALS_ONLINE)
+		// In live observer mode P toggles the user's *intent* only; the recorder recomputes
+		// the actual pause as (userPaused || waitingForData) on its next poll, the same tick.
+		// Calling setGamePaused() directly here would fight the buffering logic: pressing P
+		// while auto-paused would unpause, and the buffering gate would simply re-pause on
+		// the next tick and reclaim ownership, silently discarding the user's intent.
+		if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
+		{
+			TheRecorder->setUserPaused(!TheRecorder->isUserPaused());
+			disp = DESTROY_MESSAGE;
+			break;
+		}
+#endif
 		if (!TheGameLogic->isInMultiplayerGame())
 		{
 			if (TheGameLogic->isGamePaused())
@@ -4112,6 +4127,19 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
                         : TheGameText->FETCH_OR_SUBSTITUTE("GUI:RepositionOff", L"Reposition mode OFF (F7)"));
             }
             disp = DESTROY_MESSAGE;
+		}
+		// TheSuperHackers @feature 03/08/2026 F6 toggle — live-observer status bar.
+		else if (key == KEY_F6)
+		{
+			if (TheInGameUI)
+			{
+				TheInGameUI->toggleLiveObserverStatusVisible();
+				if (TheControlBar && TheControlBar->isObserverControlBarOn())
+					TheInGameUI->messageNoFormat(TheInGameUI->isLiveObserverStatusVisible()
+						? TheGameText->FETCH_OR_SUBSTITUTE("GUI:LiveStatusOn", L"Live status bar ON (F6)")
+						: TheGameText->FETCH_OR_SUBSTITUTE("GUI:LiveStatusOff", L"Live status bar OFF (F6)"));
+			}
+			disp = DESTROY_MESSAGE;
 		}
 		// TheSuperHackers @feature 28/07/2026 F4 master toggle — disable all custom overlay features.
 		else if (key == KEY_F4)

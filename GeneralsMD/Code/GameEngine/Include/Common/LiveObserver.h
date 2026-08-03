@@ -64,12 +64,29 @@ public:
 	/// Returns the filename of the live replay file (e.g. "996C586F_live.rep").
 	const AsciiString& getLiveReplayFilename() const { return m_liveFilename; }
 
+	/// Highest frame number contained in a fully-received record ("the live edge").
+	/// Published by the network thread as data arrives; O(1) to read, always fresh.
+	/// Replaces the old RecorderClass::probeLiveEdge() file scan.
+	UnsignedInt getMaxCompleteFrame() const { return m_maxCompleteFrame.load(); }
+
+	/// Absolute file offset one past the last complete record. The Recorder must never
+	/// read beyond this — doing so is what allowed a torn record at the growing tail to
+	/// misalign the playback stream permanently.
+	Int getSafeReadOffset() const { return m_safeReadOffset.load(); }
+
 	/// Close the connection and shut down the background thread.
 	void close();
 
 private:
 	/// Background thread for network I/O.
 	void networkThreadFunc();
+
+	/// Consume complete records from newly-arrived body bytes and republish the
+	/// watermarks. Called on the network thread only.
+	void advanceParseCursor(Int chunkOffset, const unsigned char* data, size_t dataLen);
+
+	/// Reset the parse cursor and watermarks (new session / disconnect).
+	void resetParseCursor(Int bodyStartOffset);
 
 	/// Connect via WebSocket (called from network thread).
 	bool connectToRelay();
@@ -90,6 +107,15 @@ private:
 	std::atomic<Bool> m_shouldRun;
 	std::atomic<Bool> m_headerReceived;
 	std::atomic<Bool> m_streamEnded;
+
+	// Watermarks published by the network thread, read by the game thread.
+	std::atomic<UnsignedInt> m_maxCompleteFrame;
+	std::atomic<Int> m_safeReadOffset;
+
+	// Parse-cursor state. Owned exclusively by the network thread — no locking.
+	std::vector<unsigned char> m_parseTail;   // bytes after the last complete record
+	Int m_parseAbsOffset;                     // absolute file offset of m_parseTail[0]
+	Bool m_parseCorrupt;                      // latched: watermark frozen, see advanceParseCursor
 
 	AsciiString m_relayUrl;
 	AsciiString m_gameId;

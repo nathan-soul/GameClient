@@ -708,6 +708,13 @@ public: // TheSuperHackers: overlay methods must be public for file-scope safe* 
 	void toggleOverlayCustomDisabled() { m_overlayCustomDisabled = !m_overlayCustomDisabled; }
 	Bool isOverlayCustomDisabled() const { return m_overlayCustomDisabled; }
 
+	// TheSuperHackers @feature 03/08/2026 F6 toggle — live-observer status bar.
+	// Defaults hidden every session (see reset()), unlike the other overlay toggles: the
+	// LIVE -> LIVE - ENDED transition reveals that the real game has finished ~15s before
+	// the observer's own delayed view gets there, which is a spoiler.
+	void toggleLiveObserverStatusVisible() { m_liveObserverStatusVisible = !m_liveObserverStatusVisible; }
+	Bool isLiveObserverStatusVisible() const { return m_liveObserverStatusVisible; }
+
 	void adjustOverlayOffsetX(Int delta)
 	{
 		m_overlayOffsetX += delta;
@@ -1229,6 +1236,7 @@ protected:
 	Int m_overlayOffsetX;           // Horizontal offset in pixels for overlay repositioning
 	Bool m_repositionMode;          // F7 toggle for overlay reposition panel
 	Bool m_overlayCustomDisabled;   // F4: master disable for all custom overlay features
+	Bool m_liveObserverStatusVisible; // F6: live-observer status bar; defaults hidden per session
 	Int m_repositionClickedBtn;     // Which button was clicked (-1 = none), for flash feedback
 	UnsignedInt m_repositionClickFrame; // Frame when button was clicked
 

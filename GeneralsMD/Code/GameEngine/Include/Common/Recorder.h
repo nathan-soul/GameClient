@@ -24,6 +24,7 @@
 
 #pragma once
 
+#include "Common/GameCommon.h"		// LOGICFRAMES_PER_SECOND, for the broadcast delay
 #include "Common/MessageStream.h"
 #include "Common/ReplayStreamSink.h"
 #include "GameNetwork/GameInfo.h"
@@ -54,6 +55,42 @@ enum RecorderModeType CPP_11(: Int) {
 	RECORDERMODETYPE_LIVE_OBSERVER, // Live observer mode — receiving frames from relay server
 	RECORDERMODETYPE_NONE // this is a valid state to be in on the shell map, or in saved games
 };
+
+#if defined(GENERALS_ONLINE)
+// TheSuperHackers @feature 03/08/2026 Broadcast delay bounds, shared by the streamer (which
+// owns the value and sends it at REGISTER), the relay, and the observer (which applies it).
+// Expressed in seconds rather than frames: that is what a streamer configures, and it stays
+// correct across logic tick rates — this build runs at 60, the original at 30.
+enum
+{
+	LIVE_DELAY_SECONDS_DEFAULT = 15,	///< used when the streamer or relay sends nothing
+	LIVE_DELAY_SECONDS_MAX = 600
+};
+
+// TheSuperHackers @feature Shared replay-record scanner.
+//
+// One replay record on disk is laid out as:
+//   [UnsignedInt frame][GameMessage::Type type][Int playerIndex][UnsignedByte numTypes]
+//   { [UnsignedByte argType][UnsignedByte numArgs] } x numTypes
+//   [argument payload]
+//
+// Two places need to agree on that layout byte-for-byte: RecorderClass::appendNextCommand()
+// (which consumes records during playback) and the LiveObserver network thread (which scans
+// arriving bytes to publish the live-edge / safe-read watermarks). They previously had
+// separate copies of the sizing logic, and the copy in the old probeLiveEdge() silently
+// treated an unrecognised argument type as zero-width — which desynced the parse and made it
+// report float payload bytes as frame numbers. Keep this the single source of truth, and note
+// that it fails closed: an unparseable record stalls the watermark rather than poisoning it.
+enum ScanRecordResult CPP_11(: Int)
+{
+	SCANRECORD_OK,				///< a complete record is present; outSize/outFrame are valid
+	SCANRECORD_INCOMPLETE,		///< the buffer holds a valid prefix — more bytes needed
+	SCANRECORD_CORRUPT			///< unparseable (e.g. unknown argument type)
+};
+
+/// Scan one replay record from buf[0..len). Never reads past len. outSize/outFrame may be null.
+ScanRecordResult scanReplayRecord(const unsigned char* buf, Int len, Int* outSize, UnsignedInt* outFrame);
+#endif // GENERALS_ONLINE
 
 class RecorderClass : public SubsystemInterface
 {
@@ -170,7 +207,37 @@ public:
 	Bool isLiveStream() const { return m_isLiveStream; }
 	Bool isLiveWaiting() const { return m_liveWaiting; }
 	UnsignedInt getNextFrame() const { return m_nextFrame; }	///< Next frame to execute (used for live gap check).
-	UnsignedInt getCachedLiveEdge() const { return m_cachedLiveEdge; }
+	/// Highest frame the observer has fully received. Sourced from LiveObserver's
+	/// network-thread watermark — O(1) and always fresh. Keeps its old name because the
+	/// FF handler and the UI call it; there is no longer any caching or probing involved.
+	UnsignedInt getCachedLiveEdge() const;
+
+	// ---- Broadcast delay -------------------------------------------------------------
+	// The observer never plays closer than this to the live game. Configured in *seconds*
+	// (that is what a streamer thinks in, and it stays correct if the logic tick rate
+	// changes — this build runs at 60, not the original 30) with frames derived from it.
+	UnsignedInt getLiveDelaySeconds() const { return m_liveDelaySeconds; }
+	void setLiveDelaySeconds(UnsignedInt seconds) { m_liveDelaySeconds = seconds; }
+	UnsignedInt getLiveDelayFrames() const { return m_liveDelaySeconds * LOGICFRAMES_PER_SECOND; }
+
+	/// Whole seconds until the initial buffer is built; 0 once pre-roll is complete.
+	Int getPreRollSecondsRemaining() const;
+	Bool isPreRollComplete() const { return m_preRollComplete; }
+
+	// ---- Pause ownership -------------------------------------------------------------
+	// The user's intent and the buffering logic's are tracked separately and OR'd together,
+	// so neither can silently override the other (see updateLiveStreamPause()).
+	Bool isUserPaused() const { return m_userPaused; }
+	void setUserPaused(Bool paused) { m_userPaused = paused; }
+
+	/// True only when playback is held *and* the source has genuinely stopped producing —
+	/// not during the normal sawtooth of maintaining the delay at the boundary.
+	Bool isLiveStalled() const { return m_liveStalled; }
+
+	/// Live-stream housekeeping that must keep running even while GameLogic::UPDATE() is
+	/// skipped by the pause — otherwise the pause can never be cleared. Called from
+	/// GameEngine::update() outside the halted path.
+	void updateLiveStreamPoll();
 
 protected:
 	void startRecording(GameDifficulty diff, Int originalGameMode, Int rankPoints, Int maxFPS);					///< Start recording to m_file.
@@ -182,9 +249,20 @@ protected:
 
 	AsciiString readAsciiString();										///< Read the next string from m_file using ascii characters.
 	UnicodeString readUnicodeString();								///< Read the next string from m_file using unicode characters.
-	void readNextFrame();															///< Read the next frame number to execute a command on.
+	/// Outcome of trying to read the next record's frame number in a live stream.
+	enum ReadFrameResult CPP_11(: Int)
+	{
+		READFRAME_OK,				///< m_nextFrame updated (or a future frame was peeked and rewound)
+		READFRAME_EOF_WAITING,		///< no complete record available yet; m_nextFrame untouched
+		READFRAME_STREAM_STOPPED	///< the stream really ended; playback has been stopped
+	};
+
+	ReadFrameResult readNextFrame();									///< Read the next frame number to execute a command on.
 	void appendNextCommand();													///< Read the next GameMessage and append it to TheCommandList.
-	UnsignedInt probeLiveEdge();												///< Scan forward from current file-position to find the highest frame — then restore position.
+
+	/// Recompute m_liveWaiting / pre-roll and apply the resulting pause state.
+	/// Shared by updatePlayback() and updateLiveStreamPoll() so the two cannot drift.
+	void updateLiveStreamPause(UnsignedInt curFrame);
 	void writeArgument(GameMessageArgumentDataType type, const GameMessageArgumentType arg);
 	void readArgument(GameMessageArgumentDataType type, GameMessage *msg);
 
@@ -218,8 +296,25 @@ protected:
 	Bool m_isLiveStream;
 	Bool m_streamEnded;
 	Bool m_liveWaiting;
-	UnsignedInt m_cachedLiveEdge;											///< cached result from probeLiveEdge()
-	Int m_liveEdgeProbeFrame;													///< frame on which we last probed
+
+	// How long the live edge must sit still before a hold counts as a stall rather than
+	// normal delay maintenance. At the boundary m_liveWaiting toggles every few ticks, so
+	// the status bar needs this to avoid reading WAITING FOR FRAMES during healthy playback.
+	enum { LIVE_STALL_THRESHOLD_MS = 1000 };
+
+	// Let the game actually get on its feet before holding it. GameClient::step() — and so
+	// TheDisplay->step() — is only called on ticks where logic runs, so holding immediately
+	// at frame 1 leaves a loaded but never-composed scene: a black screen. A couple of
+	// seconds of warmup costs a rounding error against a 3600-frame delay.
+	enum { LIVE_PREROLL_WARMUP_FRAMES = 120 };
+
+	UnsignedInt m_liveDelaySeconds;
+	Bool m_preRollComplete;			///< latches TRUE once the initial buffer is first built
+	Bool m_liveStreamAutoPaused;	///< the buffering logic owns the current pause
+	Bool m_userPaused;				///< the user pressed P and wants it paused
+	Bool m_liveStalled;				///< held, and no new data has arrived for a while
+	UnsignedInt m_lastSeenLiveEdge;
+	UnsignedInt m_lastLiveEdgeChangeMs;
 };
 
 extern RecorderClass *TheRecorder;

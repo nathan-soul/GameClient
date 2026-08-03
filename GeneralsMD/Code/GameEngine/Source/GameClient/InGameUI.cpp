@@ -1446,6 +1446,7 @@ InGameUI::InGameUI()
 		}
 		m_repositionMode = false;
 		m_overlayCustomDisabled = false;
+		m_liveObserverStatusVisible = false;
 		m_repositionClickedBtn = -1;
 		m_repositionClickFrame = 0;
 		for (Int s = 0; s < MAX_SLOTS; ++s)
@@ -2370,6 +2371,9 @@ void InGameUI::reset()
 {
 	m_isQuitMenuVisible = FALSE;
 	m_inputEnabled = true;
+	// TheSuperHackers @feature 03/08/2026 Deliberately not persisted across sessions —
+	// every new live-observer session starts with the status bar hidden (F6 to show).
+	m_liveObserverStatusVisible = FALSE;
 	// reset the command bar
 	TheControlBar->reset();
 
@@ -9173,43 +9177,56 @@ void InGameUI::drawPlayerInfoList()
 			{
 				observerStatus->setFont(TheFontLibrary->getFont("ArialFont", Int(14 * baseScale), false));
 
+				// TheSuperHackers @feature 03/08/2026 Split by what each state leaks.
+				// Observer-local state (are we connected? are we still buffering?) says
+				// nothing about the live game and stays visible. Everything derived from the
+				// live game — LIVE, WAITING, and above all LIVE - ENDED — is a spoiler ~15s
+				// ahead of the observer's own view, so it hides behind F6 (default off).
 				UnicodeString statusText;
+				const Bool showLiveState = m_liveObserverStatusVisible;
+
+				AsciiString label;
+				UnsignedInt colour = 0;
 
 				if (!TheLiveObserver->isReady())
 				{
-					statusText.translate(AsciiString("LIVE - CONNECTING..."));
-					observerStatus->setText(statusText);
-					Int statusW = observerStatus->getWidth();
-					Int statusX = (TheDisplay->getWidth() - statusW) / 2;
-					Int statusY = Int(10 * baseScale);
-					observerStatus->draw(statusX, statusY, 0xFFFFFF00, 0); // yellow
+					label = "LIVE - CONNECTING...";
+					colour = 0xFFFFFF00; // yellow
+				}
+				else if (TheRecorder && TheRecorder->isLiveStream() && !TheRecorder->isPreRollComplete())
+				{
+					// Pre-roll progress is observer-local state — it says nothing about the
+					// live game, so it is shown regardless of F6. Without it the observer
+					// would sit on a frozen screen with no explanation while the delay buffer
+					// fills. Must be tested before isLiveWaiting(), which is true throughout
+					// pre-roll and would otherwise mask this with "WAITING FOR FRAMES".
+					label.format("LIVE - BUFFERING - STARTS IN %ds", TheRecorder->getPreRollSecondsRemaining());
+					colour = 0xFFFFFF00; // yellow
 				}
 				else if (TheLiveObserver->isStreamEnded())
 				{
-					statusText.translate(AsciiString("LIVE - ENDED"));
-					observerStatus->setText(statusText);
-					Int statusW = observerStatus->getWidth();
-					Int statusX = (TheDisplay->getWidth() - statusW) / 2;
-					Int statusY = Int(10 * baseScale);
-					observerStatus->draw(statusX, statusY, 0xFF00FF00, 0); // green
+					if (showLiveState) { label = "LIVE - ENDED"; colour = 0xFF00FF00; } // green
 				}
-				else if (TheRecorder && TheRecorder->isLiveWaiting())
+				else if (TheRecorder && TheRecorder->isLiveStalled())
 				{
-					statusText.translate(AsciiString("WAITING FOR FRAMES"));
-					observerStatus->setText(statusText);
-					Int statusW = observerStatus->getWidth();
-					Int statusX = (TheDisplay->getWidth() - statusW) / 2;
-					Int statusY = Int(10 * baseScale);
-					observerStatus->draw(statusX, statusY, 0xFF00FFFF, 0); // cyan
+					// Deliberately isLiveStalled(), not isLiveWaiting(): the latter toggles
+					// constantly while the delay is being maintained at the boundary, which
+					// is healthy playback and must not be reported as a problem.
+					if (showLiveState) { label = "WAITING FOR FRAMES"; colour = 0xFF00FFFF; } // cyan
 				}
 				else
 				{
-					statusText.translate(AsciiString("LIVE"));
+					if (showLiveState) { label = "LIVE"; colour = 0xFF00FF00; } // green
+				}
+
+				if (!label.isEmpty())
+				{
+					statusText.translate(label);
 					observerStatus->setText(statusText);
 					Int statusW = observerStatus->getWidth();
 					Int statusX = (TheDisplay->getWidth() - statusW) / 2;
 					Int statusY = Int(10 * baseScale);
-					observerStatus->draw(statusX, statusY, 0xFF00FF00, 0); // green
+					observerStatus->draw(statusX, statusY, colour, 0);
 				}
 				TheDisplayStringManager->freeDisplayString(observerStatus);
 			}

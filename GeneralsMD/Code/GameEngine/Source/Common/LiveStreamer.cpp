@@ -20,6 +20,8 @@
 
 #include "Common/LiveStreamer.h"
 #include "Common/GlobalData.h"
+#include "Common/OptionPreferences.h"
+#include "Common/Recorder.h"		// LIVE_DELAY_SECONDS_DEFAULT / _MAX
 #include "GameClient/ClientInstance.h"
 
 #include "GameNetwork/GeneralsOnline/Vendor/libcurl/curl.h"
@@ -232,13 +234,32 @@ void LiveStreamer::registerForGame(
     liveStreamLog("LiveStreamer::registerForGame hash=%s player=%s canStream=%d\n",
         gameHash.str(), playerName.str(), (int)canStream);
 
+    // TheSuperHackers @feature 03/08/2026 The streamer owns the broadcast delay — it is
+    // their spoiler window, so it travels with the registration rather than being an
+    // observer-side setting. Configurable via Options.ini without a rebuild.
+    Int delaySeconds = LIVE_DELAY_SECONDS_DEFAULT;
+    {
+        OptionPreferences optionPref;
+        OptionPreferences::const_iterator it = optionPref.find("LiveObserverDelaySeconds");
+        if (it != optionPref.end())
+        {
+            Int configured = atoi(it->second.str());
+            if (configured >= 0 && configured <= LIVE_DELAY_SECONDS_MAX)
+                delaySeconds = configured;
+            else
+                liveStreamLog("LiveStreamer: ignoring out-of-range LiveObserverDelaySeconds=%d\n", configured);
+        }
+    }
+
     // Build JSON registration payload
     char regJson[1024];
     snprintf(regJson, sizeof(regJson),
         "{\"type\":\"register\",\"game_hash\":\"%s\",\"player_name\":\"%s\","
-        "\"map_name\":\"%s\",\"game_mode\":\"%s\",\"can_stream\":%s}",
+        "\"map_name\":\"%s\",\"game_mode\":\"%s\",\"can_stream\":%s,\"delay_seconds\":%d}",
         gameHash.str(), playerName.str(), mapName.str(), gameMode.str(),
-        canStream ? "true" : "false");
+        canStream ? "true" : "false", delaySeconds);
+
+    liveStreamLog("LiveStreamer::registerForGame delay_seconds=%d\n", delaySeconds);
 
     // Queue the REGISTER message — the network thread will send it once connected.
     // (Must NOT call sendBinaryFrame directly here because m_connected may still be false.)

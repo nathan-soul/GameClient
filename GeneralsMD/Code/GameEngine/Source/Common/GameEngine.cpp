@@ -384,12 +384,33 @@ Bool GameEngine::isGameHalted()
 	if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
 	{
 		static UnsignedInt s_lastHaltedLog = 0;
+		static UnsignedInt s_lastLoggedFrame = 0;
 		UnsignedInt nowMs = timeGetTime();
 		if (nowMs - s_lastHaltedLog >= 500)
 		{
-			liveObserverLog("LIVE_OBSERVER: GameEngine::isGameHalted() — isGamePaused=%d isLiveStream=%d\n",
+			// TheSuperHackers @diagnostic Temporary instrumentation for the broadcast-delay work:
+			// the question is whether setGamePaused(TRUE) actually freezes frame advancement in a
+			// live-observer session, or whether the isLiveObserverSession bypass further down means
+			// curFrame keeps climbing while isGamePaused reports 1. If frameDelta stays non-zero
+			// while paused=1, the pause is not a working lever and the pre-roll design needs a
+			// different mechanism. gap pinned at 0 would likewise explain permanent WAITING.
+			UnsignedInt curFrame = (TheGameLogic != nullptr) ? TheGameLogic->getFrame() : 0;
+			UnsignedInt liveEdge = TheRecorder->getCachedLiveEdge();
+			UnsignedInt gap = (liveEdge > curFrame) ? (liveEdge - curFrame) : 0;
+			liveObserverLog("LIVE_OBSERVER: isGameHalted() — paused=%d starting=%d inGame=%d liveWaiting=%d stalled=%d userPaused=%d preRoll=%d curFrame=%u frameDelta=%d liveEdge=%u gap=%u delay=%u\n",
 				(TheGameLogic != nullptr && TheGameLogic->isGamePaused()) ? 1 : 0,
-				TheRecorder->isLiveStream() ? 1 : 0);
+				(TheGameLogic != nullptr && TheGameLogic->isStartingNewGame()) ? 1 : 0,
+				(TheGameLogic != nullptr && TheGameLogic->isInGame() && !TheGameLogic->isInShellGame()) ? 1 : 0,
+				TheRecorder->isLiveWaiting() ? 1 : 0,
+				TheRecorder->isLiveStalled() ? 1 : 0,
+				TheRecorder->isUserPaused() ? 1 : 0,
+				TheRecorder->isPreRollComplete() ? 1 : 0,
+				curFrame,
+				(Int)(curFrame - s_lastLoggedFrame),
+				liveEdge,
+				gap,
+				TheRecorder->getLiveDelayFrames());
+			s_lastLoggedFrame = curFrame;
 			s_lastHaltedLog = nowMs;
 		}
 	}
@@ -401,18 +422,15 @@ Bool GameEngine::isGameHalted()
 	}
 	else
 	{
-		// TheSuperHackers @fix Live-observer sessions pause via
-		// RecorderClass::updatePlayback() (m_isLiveStream + m_liveWaiting, see Recorder.cpp)
-		// purely to freeze visible simulation while waiting for more replay data to arrive.
-		// But updatePlayback() itself — including the code that would clear the pause again —
-		// only runs from inside TheGameLogic->UPDATE(), which this halt would otherwise block
-		// from ever running again. That is a permanent, self-inflicted deadlock: once paused
-		// once while briefly behind on data, the session can never unpause itself, even after
-		// more than enough data has arrived. The while-loop in updatePlayback() already refuses
-		// to run ahead of the data it actually has, so the pause flag here is not needed to
-		// prevent premature simulation for a live observer — never let it halt GameLogic::UPDATE().
-		Bool isLiveObserverSession = TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER;
-		if (!isLiveObserverSession && TheGameLogic != nullptr && TheGameLogic->isGamePaused())
+		// TheSuperHackers @fix Live-observer sessions previously bypassed this halt entirely,
+		// because updatePlayback() — the only code that could clear their buffering pause —
+		// runs from inside TheGameLogic->UPDATE() and so was starved by that same pause.
+		// The cost was that setGamePaused() froze nothing at all for an observer: frames kept
+		// advancing while isGamePaused() reported true, so neither the broadcast delay nor a
+		// manual P could actually hold playback back. The deadlock is now broken at the source
+		// — RecorderClass::updateLiveStreamPoll() runs from GameEngine::update(), outside this
+		// halt — so the pause is honoured here like any other.
+		if (TheGameLogic != nullptr && TheGameLogic->isGamePaused())
 			return true;
 	}
 
@@ -1077,6 +1095,15 @@ void GameEngine::update()
 				NGMP_OnlineServicesManager::GetInstance()->Tick();
 			}
 		}
+
+#if defined(GENERALS_ONLINE)
+		// TheSuperHackers @fix Live-observer housekeeping must run outside the halted path.
+		// The buffering pause genuinely halts GameLogic::UPDATE(), and updatePlayback() —
+		// which would clear that pause — only runs from inside it. Polling here breaks the
+		// cycle: it re-reads the live edge and lifts the pause once enough data has arrived.
+		if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
+			TheRecorder->updateLiveStreamPoll();
+#endif
 
 		const Bool canUpdate = canUpdateGameLogic(FramePacer::IgnoreFrozenTime | FramePacer::IgnoreHaltedGame);
 		const Bool canUpdateLogic = canUpdate && !TheFramePacer->isGameHalted() && !TheFramePacer->isTimeFrozen();

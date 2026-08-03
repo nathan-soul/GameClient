@@ -218,6 +218,11 @@ public:
 
 	Bool isIntroMoviePlaying();
 
+	/// TRUE while a new game has been requested but not yet actually started. The real
+	/// start work runs inside update(), so anything that can halt update() must not do so
+	/// until this clears — otherwise the game never starts at all.
+	Bool isStartingNewGame() const { return m_startNewGame; }
+
 	void updateObjectsChangedTriggerAreas() {m_frameObjectsChangedTriggerAreas = m_frame;}
 	UnsignedInt getFrameObjectsChangedTriggerAreas() {return m_frameObjectsChangedTriggerAreas;}
 

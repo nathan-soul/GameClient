@@ -41,7 +41,7 @@
 // TheSuperHackers @fix Bump this string with every debugging change to LiveObserver.cpp/
 // LiveStreamer.cpp/GameLogic.cpp's LIVE_OBSERVER_LOG instrumentation, so a log file can be
 // matched to the exact build that produced it (avoids debugging a stale binary by mistake).
-#define LIVE_OBSERVER_BUILD_TAG "2026-08-03-fix11-signed-char-msglen-corruption"
+#define LIVE_OBSERVER_BUILD_TAG "2026-08-03-fix18-streamer-configurable-delay"
 
 void liveObserverLog(const char* fmt, ...) {
     static FILE* logFile = NULL;
@@ -82,10 +82,89 @@ LiveObserver::LiveObserver()
     , m_shouldRun(false)
     , m_headerReceived(false)
     , m_streamEnded(false)
+    , m_maxCompleteFrame(0)
+    , m_safeReadOffset(0)
+    , m_parseAbsOffset(0)
+    , m_parseCorrupt(false)
     , m_liveFile(nullptr)
     , m_curlEasy(nullptr)
     , m_curlMulti(nullptr)
 {
+}
+
+// ============================================================================
+// Parse cursor — publishes the live-edge and safe-read watermarks
+// ============================================================================
+
+void LiveObserver::resetParseCursor(Int bodyStartOffset)
+{
+    m_parseTail.clear();
+    m_parseAbsOffset = bodyStartOffset;
+    m_parseCorrupt = false;
+    m_maxCompleteFrame.store(0);
+    m_safeReadOffset.store(bodyStartOffset);
+}
+
+void LiveObserver::advanceParseCursor(Int chunkOffset, const unsigned char* data, size_t dataLen)
+{
+    if (m_parseCorrupt || dataLen == 0)
+        return;
+
+    // The relay appends body data strictly in order (see server.py apply_body, which only
+    // accepts offset == body_len), so chunks normally arrive contiguously. The exception is
+    // the observer-join race documented in plans/live-observer-900-frame-broadcast-delay.md
+    // §8: a live chunk can be broadcast to a freshly-registered observer before catch-up has
+    // sent the earlier chunks, leaving a hole in the file. Parsing across a hole would feed
+    // uninitialised bytes to the scanner, so stall the watermark instead. The cursor resumes
+    // by itself once the missing bytes are backfilled and a contiguous chunk arrives.
+    Int expected = m_parseAbsOffset + (Int)m_parseTail.size();
+    if (chunkOffset != expected)
+    {
+        liveObserverLog("LiveObserver: parse cursor gap — chunkOffset=%d expected=%d, watermark stalled\n",
+            chunkOffset, expected);
+        return;
+    }
+
+    m_parseTail.insert(m_parseTail.end(), data, data + dataLen);
+
+    Int consumed = 0;
+    UnsignedInt maxFrame = m_maxCompleteFrame.load();
+    const Int tailSize = (Int)m_parseTail.size();
+
+    while (consumed < tailSize)
+    {
+        Int recSize = 0;
+        UnsignedInt recFrame = 0;
+        ScanRecordResult r = scanReplayRecord(&m_parseTail[consumed], tailSize - consumed, &recSize, &recFrame);
+
+        if (r == SCANRECORD_INCOMPLETE)
+            break;
+
+        if (r == SCANRECORD_CORRUPT)
+        {
+            // Fail closed. Freezing the watermark stops playback advancing into data we
+            // cannot trust, which is recoverable and diagnosable; the old behaviour skipped
+            // zero bytes and reported garbage frame numbers indefinitely.
+            m_parseCorrupt = true;
+            liveObserverLog("LiveObserver: parse cursor CORRUPT at abs offset %d — watermark frozen at frame %u\n",
+                m_parseAbsOffset + consumed, maxFrame);
+            break;
+        }
+
+        consumed += recSize;
+        if (recFrame > maxFrame)
+            maxFrame = recFrame;
+    }
+
+    if (consumed > 0)
+    {
+        m_parseTail.erase(m_parseTail.begin(), m_parseTail.begin() + consumed);
+        m_parseAbsOffset += consumed;
+        // Publish the frame before the offset: a reader that sees the new safe offset must
+        // never see a stale live edge for the records it is now allowed to read.
+        m_maxCompleteFrame.store(maxFrame);
+        m_safeReadOffset.store(m_parseAbsOffset);
+    }
 }
 
 LiveObserver::~LiveObserver()
@@ -194,6 +273,11 @@ void LiveObserver::handleFrame(unsigned char type, const char* payload, size_t l
         m_liveFile->close();
         m_liveFile = nullptr;
 
+        // Body records start immediately after the header, so that is where the parse
+        // cursor begins. Reset here rather than only in the constructor, so a second
+        // live-observer session in the same process cannot inherit a stale watermark.
+        resetParseCursor((Int)len);
+
 		m_headerReceived.store(true);
 		liveObserverLog("LiveObserver: HEADER received (%zu bytes), ready for playback\n", len);
         break;
@@ -269,7 +353,42 @@ void LiveObserver::handleFrame(unsigned char type, const char* payload, size_t l
         m_liveFile->seek(offset, File::seekMode::START);
         m_liveFile->write(payload + 8, (Int)dataLen);
         m_liveFile->flush();
-        liveObserverLog("LiveObserver: BODY written offset=%d dataLen=%d fileSize=%d\n", offset, (int)dataLen, (int)m_liveFile->size());
+
+        // Scan the bytes we just committed, so the game thread's live edge and safe-read
+        // limit are up to date the moment the data is readable.
+        advanceParseCursor(offset, (const unsigned char*)(payload + 8), dataLen);
+
+        liveObserverLog("LiveObserver: BODY written offset=%d dataLen=%d fileSize=%d liveEdge=%u safeOffset=%d\n",
+            offset, (int)dataLen, (int)m_liveFile->size(), m_maxCompleteFrame.load(), m_safeReadOffset.load());
+        break;
+    }
+
+    case 5: // LIVE_MSG_ROLE — session config, sent by the relay ahead of the HEADER
+    {
+        // The broadcast delay originates with the streamer and reaches us here. It must be
+        // applied before playback starts, because the pre-roll buffer latches against it and
+        // there is no un-latching once a session is running — which is exactly why the relay
+        // sends this frame before the HEADER that triggers the game start.
+        std::string json(payload, len);
+        liveObserverLog("LiveObserver: ROLE received: %s\n", json.c_str());
+
+        const char* delayStart = strstr(json.c_str(), "\"delay_seconds\":");
+        if (delayStart && TheRecorder)
+        {
+            delayStart += 16; // skip "delay_seconds":
+            Int delaySeconds = (Int)strtol(delayStart, nullptr, 10);
+            if (delaySeconds >= 0 && delaySeconds <= LIVE_DELAY_SECONDS_MAX)
+            {
+                TheRecorder->setLiveDelaySeconds((UnsignedInt)delaySeconds);
+                liveObserverLog("LiveObserver: broadcast delay set to %d seconds\n", delaySeconds);
+            }
+            else
+            {
+                liveObserverLog("LiveObserver: ignoring out-of-range delay_seconds=%d, keeping %u\n",
+                    delaySeconds, TheRecorder->getLiveDelaySeconds());
+            }
+        }
+        // No delay_seconds (older relay) simply leaves the built-in default in place.
         break;
     }
 
