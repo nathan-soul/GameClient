@@ -170,6 +170,14 @@ Bool liveRelayFetchInFlight();
 	#define LIVE_OBSERVER_LOGGING 1
 #endif
 
+// Identifies the build that produced a log, so a stale binary is not debugged by mistake.
+// Bump on every change to the instrumentation. Defined here rather than per .cpp: it was
+// previously declared separately in LiveObserver.cpp and LiveStreamer.cpp and the two drifted
+// apart, which is precisely the confusion this tag exists to prevent. Any file using it must
+// include this header — that also brings the LIVE_OBSERVER_LOGGING resolution above, without
+// which logging silently stays off in a DEFAULT build.
+#define LIVE_OBSERVER_BUILD_TAG "2026-08-03-fix25-shared-log-gate"
+
 void liveObserverLog(const char* fmt, ...);
 void liveObserverInitLog(const char* watchUrl);
 

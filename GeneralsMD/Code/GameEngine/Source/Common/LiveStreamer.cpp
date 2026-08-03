@@ -19,6 +19,7 @@
 #include "PreRTS.h"
 
 #include "Common/LiveStreamer.h"
+#include "Common/LiveObserver.h"	// LIVE_OBSERVER_LOGGING gate + LIVE_OBSERVER_BUILD_TAG
 #include "Common/GlobalData.h"
 #include "Common/GameCommon.h"		// LIVE_DELAY_SECONDS_DEFAULT / _MAX
 #include "GameClient/ClientInstance.h"
@@ -37,9 +38,10 @@
 // ============================================================================
 // liveStreamLog — write diagnostic messages to live_streamer_debug.log
 // ============================================================================
-// TheSuperHackers @fix Kept in sync with LIVE_OBSERVER_BUILD_TAG in LiveObserver.cpp — bump
-// both together so a log file can be matched to the exact build that produced it.
-#define LIVE_OBSERVER_BUILD_TAG "2026-08-03-fix11-signed-char-msglen-corruption"
+// LIVE_OBSERVER_BUILD_TAG and the LIVE_OBSERVER_LOGGING gate both come from LiveObserver.h,
+// included above. Without that include this file kept its own copy of the tag (which drifted
+// out of sync) and never saw the DEFAULT logging resolution, so streamer logging stayed off
+// in builds where observer logging was on.
 
 void liveStreamLog(const char* fmt, ...) {
 #if !defined(LIVE_OBSERVER_LOGGING)
