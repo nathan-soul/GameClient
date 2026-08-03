@@ -79,7 +79,12 @@
 #if defined(GENERALS_ONLINE)
 #include "Common/LiveObserver.h"
 #include "Common/Recorder.h"
+#include "Common/GameCommon.h"					// LIVE_DEFAULT_RELAY_URL, LIVE_DELAY_SECONDS_DEFAULT
 #include "Common/MessageStream.h"
+#include "GameClient/GadgetListBox.h"			// live game browser list
+#include "GameNetwork/GeneralsOnline/HTTP/HTTPManager.h"
+#include "GameNetwork/GeneralsOnline/json.hpp"	// already vendored; used to parse /games
+#include <vector>
 #include "Common/PlayerTemplate.h"
 #include "GameNetwork/GameInfo.h"
 #include "GameNetwork/NetworkDefs.h"
@@ -165,9 +170,26 @@ static Bool showLiveObserverDialog = FALSE;
 static Bool startLiveObserverGame = FALSE;
 static AsciiString m_liveObserverStartUrl;
 
+// TheSuperHackers @feature 03/08/2026 Live game browser. Replaces typing a game ID by hand,
+// which offered no way to discover a game and no feedback on a typo.
+static GameWindow *listboxLiveGames = nullptr;
+static GameWindow *buttonLiveObserverRefresh = nullptr;
+
+// Game IDs indexed by listbox row. Kept alongside the listbox rather than stuffed into
+// GadgetListBoxSetItemData, so nothing depends on the lifetime of a void* we hand the gadget.
+static std::vector<AsciiString> s_liveGameIds;
+static Bool s_liveGamesFetchInFlight = FALSE;
+static UnsignedInt s_liveGamesLastFetchMs = 0;
+
+// Auto-refresh cadence. Games start and end on the order of minutes, so polling harder than
+// this only adds load — the Refresh button covers the impatient case.
+enum { LIVE_GAMES_REFRESH_INTERVAL_MS = 5000 };
+
 // Forward declaration
 static void hideLiveObserverDialog(void);
 static void doLiveObserverGameStart(const AsciiString& fullWatchUrl);
+static void requestLiveGamesList(void);
+static AsciiString buildRelayHttpBase(void);
 #endif
 
 // window pointers --------------------------------------------------------------------------------
@@ -988,6 +1010,14 @@ void MainMenuUpdate( WindowLayout *layout, void *userData )
 		startLiveObserverGame = FALSE;
 		doLiveObserverGameStart(m_liveObserverStartUrl);
 	}
+
+	// Keep the browser current while it is open, so a game that starts or ends shows up
+	// without the user having to think about refreshing.
+	if (showLiveObserverDialog && listboxLiveGames && !s_liveGamesFetchInFlight)
+	{
+		if (timeGetTime() - s_liveGamesLastFetchMs >= LIVE_GAMES_REFRESH_INTERVAL_MS)
+			requestLiveGamesList();
+	}
 #endif
 
 	if (startGame && TheShell->isAnimFinished() && TheTransitionHandler->isFinished())
@@ -1081,6 +1111,186 @@ static void hideLiveObserverDialog(void)
 		buttonLiveObserverCancel->winHide(TRUE);
 	if (liveObserverGameIdEntry)
 		liveObserverGameIdEntry->winHide(TRUE);
+	if (listboxLiveGames)
+		listboxLiveGames->winHide(TRUE);
+	if (buttonLiveObserverRefresh)
+		buttonLiveObserverRefresh->winHide(TRUE);
+	s_liveGameIds.clear();
+}
+
+/// Turn the relay's WebSocket URL into its HTTP origin. Derived rather than configured
+/// separately so the two can never drift apart: wss://host/ -> https://host
+static AsciiString buildRelayHttpBase(void)
+{
+	AsciiString relay = TheGlobalData ? TheGlobalData->m_liveStreamRelayUrl : AsciiString::TheEmptyString;
+	if (relay.isEmpty())
+		relay = LIVE_DEFAULT_RELAY_URL;
+
+	const char* str = relay.str();
+	AsciiString scheme, remainder;
+	const char* sep = strstr(str, "://");
+	if (sep)
+	{
+		AsciiString rawScheme(str, (Int)(sep - str));
+		remainder = sep + 3;
+		// wss is TLS, ws is not — mapping both to http would fail against a TLS relay,
+		// and mapping both to https would fail against a plain one.
+		if (stricmp(rawScheme.str(), "wss") == 0 || stricmp(rawScheme.str(), "https") == 0)
+			scheme = "https";
+		else
+			scheme = "http";
+	}
+	else
+	{
+		scheme = "http";
+		remainder = str;
+	}
+
+	// Drop any path — /games hangs off the origin.
+	const char* slash = strchr(remainder.str(), '/');
+	if (slash)
+		remainder = AsciiString(remainder.str(), (Int)(slash - remainder.str()));
+
+	AsciiString base;
+	base.format("%s://%s", scheme.str(), remainder.str());
+	return base;
+}
+
+/// Ask the relay which games are live and repopulate the listbox from the answer.
+static void requestLiveGamesList(void)
+{
+	if (s_liveGamesFetchInFlight)
+		return;		// one in flight is enough; the reply repopulates regardless
+
+	NGMP_OnlineServicesManager* pMgr = NGMP_OnlineServicesManager::GetInstance();
+	if (pMgr == nullptr || pMgr->GetHTTPManager() == nullptr)
+	{
+		liveObserverLog("requestLiveGamesList: no HTTP manager available\n");
+		return;
+	}
+
+	AsciiString uri;
+	uri.format("%s/games", buildRelayHttpBase().str());
+
+	s_liveGamesFetchInFlight = TRUE;
+	s_liveGamesLastFetchMs = timeGetTime();
+	liveObserverLog("requestLiveGamesList: GET %s\n", uri.str());
+
+	std::map<std::string, std::string> mapHeaders;
+	pMgr->GetHTTPManager()->SendGETRequest(uri.str(), EIPProtocolVersion::DONT_CARE, mapHeaders,
+		[](bool bSuccess, int statusCode, std::string strBody, HTTPRequest* pReq)
+		{
+			// HTTPManager::Tick() asserts CHECK_MAIN_THREAD and invokes this synchronously,
+			// so touching gadget state directly here is safe — no marshalling needed.
+			s_liveGamesFetchInFlight = FALSE;
+
+			if (listboxLiveGames == nullptr || !showLiveObserverDialog)
+				return;		// dialog closed while the request was in flight
+
+			// Remember what the user had picked. Repopulating clears the selection, and with
+			// a 5s auto-refresh that would silently deselect a game while they were reading
+			// the list — then Connect would fall through to the manual field, or do nothing.
+			AsciiString previouslySelected;
+			{
+				Int wasSelected = -1;
+				GadgetListBoxGetSelected(listboxLiveGames, &wasSelected);
+				if (wasSelected >= 0 && wasSelected < (Int)s_liveGameIds.size())
+					previouslySelected = s_liveGameIds[wasSelected];
+			}
+
+			GadgetListBoxReset(listboxLiveGames);
+			s_liveGameIds.clear();
+
+			if (!bSuccess || statusCode != 200)
+			{
+				liveObserverLog("requestLiveGamesList: failed (success=%d status=%d)\n",
+					bSuccess ? 1 : 0, statusCode);
+				GadgetListBoxAddEntryText(listboxLiveGames,
+					UnicodeString(L"Could not reach the relay - type a game ID below"),
+					GameMakeColor(255, 120, 120, 255), -1);
+				return;
+			}
+
+			try
+			{
+				nlohmann::json games = nlohmann::json::parse(strBody);
+				if (!games.is_array() || games.empty())
+				{
+					GadgetListBoxAddEntryText(listboxLiveGames,
+						UnicodeString(L"No live games right now"),
+						GameMakeColor(200, 200, 200, 255), -1);
+					return;
+				}
+
+				for (const auto& game : games)
+				{
+					AsciiString gameId = game.value("game_id", std::string("")).c_str();
+					if (gameId.isEmpty())
+						continue;
+
+					// Older relays omit map/players/delay; fall back rather than dropping
+					// the row, since the game is still perfectly watchable.
+					std::string mapName = game.value("map", std::string(""));
+					if (mapName.empty())
+						mapName = "(unknown map)";
+
+					std::string playerList;
+					if (game.contains("players") && game["players"].is_array())
+					{
+						for (const auto& p : game["players"])
+						{
+							if (!playerList.empty())
+								playerList += ", ";
+							playerList += p.get<std::string>();
+						}
+					}
+					if (playerList.empty())
+						playerList = "?";
+
+					Int viewers = game.value("viewers", 0);
+					Int delaySeconds = game.value("delay_seconds", (Int)LIVE_DELAY_SECONDS_DEFAULT);
+					Int ageSeconds = game.value("age_seconds", 0);
+
+					AsciiString row;
+					row.format("%s  |  %s  |  %d watching  |  %dm in  |  %ds delay",
+						mapName.c_str(), playerList.c_str(), viewers,
+						ageSeconds / 60, delaySeconds);
+
+					UnicodeString rowText;
+					rowText.translate(row);
+					GadgetListBoxAddEntryText(listboxLiveGames, rowText,
+						GameMakeColor(255, 255, 255, 255), -1);
+					s_liveGameIds.push_back(gameId);
+				}
+
+				// Restore the selection by game ID rather than by row index — games ending
+				// between refreshes shifts every row below them.
+				if (!previouslySelected.isEmpty())
+				{
+					for (Int i = 0; i < (Int)s_liveGameIds.size(); ++i)
+					{
+						if (s_liveGameIds[i] == previouslySelected)
+						{
+							GadgetListBoxSetSelected(listboxLiveGames, i);
+							break;
+						}
+					}
+				}
+
+				liveObserverLog("requestLiveGamesList: listed %d game(s)\n", (Int)s_liveGameIds.size());
+			}
+			catch (...)
+			{
+				// Malformed JSON should degrade to "browser unavailable", never take the
+				// main menu down with it.
+				liveObserverLog("requestLiveGamesList: could not parse response\n");
+				GadgetListBoxReset(listboxLiveGames);
+				s_liveGameIds.clear();
+				GadgetListBoxAddEntryText(listboxLiveGames,
+					UnicodeString(L"Unexpected reply from relay - type a game ID below"),
+					GameMakeColor(255, 120, 120, 255), -1);
+			}
+		});
 }
 
 // Initialize the live observer, connect to relay, wait for HEADER,
@@ -1825,13 +2035,53 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 
 				showLiveObserverDialog = TRUE;
 
+				// Live games list. Selecting a row is the normal way in; the manual entry
+				// below stays as a fallback for an unlisted game or an unreachable relay.
+				{
+					static Int columnWidth = 100;
+					ListboxData listboxData;
+					memset(&listboxData, 0, sizeof(listboxData));
+					listboxData.listLength = 64;
+					listboxData.columns = 1;
+					listboxData.columnWidthPercentage = &columnWidth;
+					listboxData.autoScroll = FALSE;
+					listboxData.scrollBar = TRUE;
+					listboxData.multiSelect = FALSE;
+					listboxData.forceSelect = FALSE;
+
+					WinInstanceData listInstData;
+					listInstData.init();
+					listInstData.m_style = GWS_SCROLL_LISTBOX | GWS_MOUSE_TRACK;
+					// Sits above the manual-entry label at y=160.
+					listboxLiveGames = TheWindowManager->gogoGadgetListBox(parentMainMenu,
+						WIN_STATUS_ENABLED,
+						100, 55, 480, 100,
+						&listInstData, &listboxData, nullptr, TRUE);
+
+					GadgetListBoxAddEntryText(listboxLiveGames,
+						UnicodeString(L"Loading live games..."),
+						GameMakeColor(200, 200, 200, 255), -1);
+				}
+
+				// Refresh button
+				WinInstanceData refreshInstData;
+				refreshInstData.init();
+				BitSet(refreshInstData.m_style, GWS_PUSH_BUTTON | GWS_MOUSE_TRACK);
+				refreshInstData.m_textLabelString = "Refresh";
+				buttonLiveObserverRefresh = TheWindowManager->gogoGadgetPushButton(parentMainMenu,
+					WIN_STATUS_ENABLED | WIN_STATUS_IMAGE,
+					450, 225, 130, 26,
+					&refreshInstData, nullptr, TRUE);
+
+				requestLiveGamesList();
+
 				// Static text label
 				TextData labelTextData;
 				memset(&labelTextData, 0, sizeof(labelTextData));
 				WinInstanceData labelInstData;
 				labelInstData.init();
 				labelInstData.m_style = GWS_STATIC_TEXT | GWS_MOUSE_TRACK;
-				labelInstData.m_textLabelString = "Enter Game ID:";
+				labelInstData.m_textLabelString = "...or enter a Game ID:";
 				TheWindowManager->gogoGadgetStaticText(parentMainMenu,
 					WIN_STATUS_ENABLED,
 					100, 160, 280, 20,
@@ -1870,15 +2120,34 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 					250, 225, 130, 26,
 					&cancelInstData, nullptr, TRUE);
 			}
+			else if(control == buttonLiveObserverRefresh)
+			{
+				if (showLiveObserverDialog)
+					requestLiveGamesList();
+			}
 			else if(control == buttonLiveObserverConnect)
 			{
 				// User clicked Connect — build URL and start observer mode
-				if (!liveObserverGameIdEntry || !showLiveObserverDialog)
+				if (!showLiveObserverDialog)
 					break;
 
-				UnicodeString gameIdUnicode = GadgetTextEntryGetText(liveObserverGameIdEntry);
+				// A selected row wins over the manual field: picking from the list is the
+				// intended path, and it cannot carry a typo.
 				AsciiString gameId;
-				gameId.translate(gameIdUnicode);
+				if (listboxLiveGames)
+				{
+					Int selected = -1;
+					GadgetListBoxGetSelected(listboxLiveGames, &selected);
+					if (selected >= 0 && selected < (Int)s_liveGameIds.size())
+						gameId = s_liveGameIds[selected];
+				}
+
+				if (gameId.isEmpty() && liveObserverGameIdEntry)
+				{
+					UnicodeString gameIdUnicode = GadgetTextEntryGetText(liveObserverGameIdEntry);
+					gameId.translate(gameIdUnicode);
+					gameId.trim();
+				}
 
 				if (gameId.isEmpty())
 					break;

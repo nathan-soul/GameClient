@@ -42,7 +42,7 @@
 // TheSuperHackers @fix Bump this string with every debugging change to LiveObserver.cpp/
 // LiveStreamer.cpp/GameLogic.cpp's LIVE_OBSERVER_LOG instrumentation, so a log file can be
 // matched to the exact build that produced it (avoids debugging a stale binary by mistake).
-#define LIVE_OBSERVER_BUILD_TAG "2026-08-03-fix21-tls-cacert"
+#define LIVE_OBSERVER_BUILD_TAG "2026-08-03-fix22-live-game-browser"
 
 void liveObserverLog(const char* fmt, ...) {
     static FILE* logFile = NULL;
