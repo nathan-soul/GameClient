@@ -229,6 +229,7 @@ void LiveStreamer::close()
 void LiveStreamer::registerForGame(
     const AsciiString& gameHash,
     const AsciiString& playerName,
+    const AsciiString& allPlayerNames,
     const AsciiString& mapName,
     const AsciiString& gameMode,
     Bool canStream)
@@ -236,8 +237,8 @@ void LiveStreamer::registerForGame(
     m_gameHash = gameHash;
     m_playerName = playerName;
 
-    liveStreamLog("LiveStreamer::registerForGame hash=%s player=%s canStream=%d\n",
-        gameHash.str(), playerName.str(), (int)canStream);
+    liveStreamLog("LiveStreamer::registerForGame hash=%s player='%s' allPlayers='%s' map='%s' canStream=%d\n",
+        gameHash.str(), playerName.str(), allPlayerNames.str(), mapName.str(), (int)canStream);
 
     // TheSuperHackers @feature 03/08/2026 The streamer owns the broadcast delay — it is
     // their spoiler window, so it travels with the registration rather than being an
@@ -247,12 +248,47 @@ void LiveStreamer::registerForGame(
         ? TheGlobalData->m_liveStreamDelaySeconds
         : (Int)LIVE_DELAY_SECONDS_DEFAULT;
 
+    // Turn the '|' separated roster into a JSON array. The game browser lists these, so a
+    // match shows both sides rather than just whoever happens to be streaming it.
+    AsciiString playersArray = "[";
+    {
+        AsciiString remaining = allPlayerNames;
+        Bool first = TRUE;
+        while (!remaining.isEmpty())
+        {
+            AsciiString name;
+            const char* sep = strchr(remaining.str(), '|');
+            if (sep)
+            {
+                name = AsciiString(remaining.str(), (Int)(sep - remaining.str()));
+                remaining = sep + 1;
+            }
+            else
+            {
+                name = remaining;
+                remaining.clear();
+            }
+
+            name.trim();
+            if (name.isEmpty())
+                continue;
+
+            if (!first)
+                playersArray.concat(",");
+            playersArray.concat("\"");
+            playersArray.concat(name);
+            playersArray.concat("\"");
+            first = FALSE;
+        }
+    }
+    playersArray.concat("]");
+
     // Build JSON registration payload
-    char regJson[1024];
+    char regJson[2048];
     snprintf(regJson, sizeof(regJson),
-        "{\"type\":\"register\",\"game_hash\":\"%s\",\"player_name\":\"%s\","
+        "{\"type\":\"register\",\"game_hash\":\"%s\",\"player_name\":\"%s\",\"players\":%s,"
         "\"map_name\":\"%s\",\"game_mode\":\"%s\",\"can_stream\":%s,\"delay_seconds\":%d}",
-        gameHash.str(), playerName.str(), mapName.str(), gameMode.str(),
+        gameHash.str(), playerName.str(), playersArray.str(), mapName.str(), gameMode.str(),
         canStream ? "true" : "false", delaySeconds);
 
     liveStreamLog("LiveStreamer::registerForGame delay_seconds=%d\n", delaySeconds);

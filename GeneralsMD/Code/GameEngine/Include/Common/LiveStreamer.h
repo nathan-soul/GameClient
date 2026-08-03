@@ -68,9 +68,13 @@ public:
 	void close();
 
 	/// Register a game session with the relay server.
+	/// @param playerName the local player, kept for compatibility with older relays
+	/// @param allPlayerNames every active player, '|' separated — this is what the game
+	///        browser lists, since the local player alone never describes a match
 	void registerForGame(
 		const AsciiString& gameHash,
 		const AsciiString& playerName,
+		const AsciiString& allPlayerNames,
 		const AsciiString& mapName,
 		const AsciiString& gameMode,
 		Bool canStream);

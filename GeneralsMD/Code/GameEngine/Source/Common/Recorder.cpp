@@ -985,10 +985,13 @@ void RecorderClass::startRecording(GameDifficulty diff, Int originalGameMode, In
 				}
 			}
 
-			// Register with the relay
+			// Register with the relay. sortedNames is the full active roster, already
+			// gathered above for the game hash — the browser needs all of them, not just
+			// whichever client happens to be doing the streaming.
 			TheLiveStreamer->registerForGame(
 				gameHash,
 				localPlayerName,
+				sortedNames,
 				TheGlobalData->m_mapName,
 				gameMode,
 				TheGlobalData->m_liveStreamCanStream);
