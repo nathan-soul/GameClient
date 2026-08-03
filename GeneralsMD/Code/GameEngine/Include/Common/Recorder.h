@@ -57,15 +57,8 @@ enum RecorderModeType CPP_11(: Int) {
 };
 
 #if defined(GENERALS_ONLINE)
-// TheSuperHackers @feature 03/08/2026 Broadcast delay bounds, shared by the streamer (which
-// owns the value and sends it at REGISTER), the relay, and the observer (which applies it).
-// Expressed in seconds rather than frames: that is what a streamer configures, and it stays
-// correct across logic tick rates — this build runs at 60, the original at 30.
-enum
-{
-	LIVE_DELAY_SECONDS_DEFAULT = 15,	///< used when the streamer or relay sends nothing
-	LIVE_DELAY_SECONDS_MAX = 600
-};
+// LIVE_DELAY_SECONDS_DEFAULT / LIVE_DELAY_SECONDS_MAX live in Common/GameCommon.h, so that
+// OptionPreferences (in Core) can share them.
 
 // TheSuperHackers @feature Shared replay-record scanner.
 //

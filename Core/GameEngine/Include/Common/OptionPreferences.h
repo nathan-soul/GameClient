@@ -140,6 +140,12 @@ public:
 	Bool getObserverNotificationMilestone(void);
 
 	Bool getLiveStreamEnabled() const;
+	void setLiveStreamEnabled(Bool enabled);
 	AsciiString getLiveStreamRelayUrl() const;
 	Bool getLiveStreamCanStream() const;
+
+	/// Broadcast delay in seconds that this client asks the relay to apply to its observers.
+	/// Clamped to [0, LIVE_DELAY_SECONDS_MAX]; absent or malformed reads as the default.
+	Int getLiveStreamDelaySeconds() const;
+	void setLiveStreamDelaySeconds(Int seconds);
 };

@@ -131,6 +131,7 @@ public:
 	Bool m_liveStreamEnabled;          ///< Enable live streaming of game commands to relay server.
 	AsciiString m_liveStreamRelayUrl;  ///< WebSocket URL of the relay server.
 	Bool m_liveStreamCanStream;        ///< Can this client act as the streamer?
+	Int m_liveStreamDelaySeconds;      ///< Broadcast delay applied to this game's observers.
 
 	Bool m_windowed;
 	Int m_xResolution;

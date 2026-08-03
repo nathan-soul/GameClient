@@ -69,6 +69,18 @@ enum
 	LOGICFRAMES_PER_SECOND = WWSyncPerSecond,
 	MSEC_PER_SECOND = 1000
 };
+// ----------------------------------------------------------------------------------------------
+// TheSuperHackers @feature 03/08/2026 Live-observer broadcast delay: how far behind the live
+// game an observer is held. Owned by the streamer, sent at REGISTER, forwarded by the relay.
+// Expressed in seconds rather than frames deliberately — it is what a streamer configures,
+// and it stays correct across logic tick rates (this build runs at 60, the original at 30).
+// Lives here rather than in Recorder.h so OptionPreferences (Core) can share it.
+enum
+{
+	LIVE_DELAY_SECONDS_DEFAULT = 15,	// used when the streamer or relay supplies nothing
+	LIVE_DELAY_SECONDS_MAX = 600
+};
+
 const Real LOGICFRAMES_PER_MSEC_REAL = (((Real)LOGICFRAMES_PER_SECOND) / ((Real)MSEC_PER_SECOND));
 const Real MSEC_PER_LOGICFRAME_REAL = (((Real)MSEC_PER_SECOND) / ((Real)LOGICFRAMES_PER_SECOND));
 const Real LOGICFRAMES_PER_SECONDS_REAL = (Real)LOGICFRAMES_PER_SECOND;

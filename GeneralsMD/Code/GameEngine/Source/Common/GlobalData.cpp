@@ -642,8 +642,9 @@ GlobalData::GlobalData()
 	m_headless = FALSE;
 	m_exportStats = FALSE;
 	m_liveStreamEnabled = TRUE;
-	m_liveStreamRelayUrl = "ws://85.93.90.213:8765";
+	m_liveStreamRelayUrl = "wss://batty.youbantoo.club/";
 	m_liveStreamCanStream = TRUE;
+	m_liveStreamDelaySeconds = LIVE_DELAY_SECONDS_DEFAULT;
 	m_windowed = 0;
 	m_xResolution = 800;
 	m_yResolution = 600;
@@ -1290,6 +1291,7 @@ void GlobalData::parseGameDataDefinition( INI* ini )
 			TheWritableGlobalData->m_liveStreamRelayUrl = relayUrl;
 	}
 	TheWritableGlobalData->m_liveStreamCanStream = optionPref.getLiveStreamCanStream();
+	TheWritableGlobalData->m_liveStreamDelaySeconds = optionPref.getLiveStreamDelaySeconds();
 
 	TheWritableGlobalData->m_antiAliasLevel = optionPref.getAntiAliasing();
 

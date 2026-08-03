@@ -181,12 +181,53 @@ Bool OptionPreferences::getLiveStreamEnabled() const
 	return FALSE;
 }
 
+void OptionPreferences::setLiveStreamEnabled(Bool enabled)
+{
+	(*this)["LiveStreamEnabled"] = enabled ? "yes" : "no";
+}
+
 AsciiString OptionPreferences::getLiveStreamRelayUrl() const
 {
 	OptionPreferences::const_iterator it = find("LiveStreamRelayUrl");
 	if (it == end())
 		return "";
 	return it->second;
+}
+
+Int OptionPreferences::getLiveStreamDelaySeconds() const
+{
+	OptionPreferences::const_iterator it = find("LiveObserverDelaySeconds");
+	if (it == end())
+		return LIVE_DELAY_SECONDS_DEFAULT;
+
+	// atoi returns 0 for junk, which is indistinguishable from a deliberate 0. Reject
+	// anything that is not a plain non-negative integer rather than silently streaming
+	// with no delay at all — that would defeat the whole point of the spoiler window.
+	const char* str = it->second.str();
+	if (str == nullptr || *str == '\0')
+		return LIVE_DELAY_SECONDS_DEFAULT;
+	for (const char* c = str; *c != '\0'; ++c)
+	{
+		if (*c < '0' || *c > '9')
+			return LIVE_DELAY_SECONDS_DEFAULT;
+	}
+
+	Int seconds = atoi(str);
+	if (seconds > LIVE_DELAY_SECONDS_MAX)
+		return LIVE_DELAY_SECONDS_MAX;
+	return seconds;
+}
+
+void OptionPreferences::setLiveStreamDelaySeconds(Int seconds)
+{
+	if (seconds < 0)
+		seconds = 0;
+	if (seconds > LIVE_DELAY_SECONDS_MAX)
+		seconds = LIVE_DELAY_SECONDS_MAX;
+
+	AsciiString value;
+	value.format("%d", seconds);
+	(*this)["LiveObserverDelaySeconds"] = value;
 }
 
 Bool OptionPreferences::getLiveStreamCanStream() const

@@ -20,8 +20,7 @@
 
 #include "Common/LiveStreamer.h"
 #include "Common/GlobalData.h"
-#include "Common/OptionPreferences.h"
-#include "Common/Recorder.h"		// LIVE_DELAY_SECONDS_DEFAULT / _MAX
+#include "Common/GameCommon.h"		// LIVE_DELAY_SECONDS_DEFAULT / _MAX
 #include "GameClient/ClientInstance.h"
 
 #include "GameNetwork/GeneralsOnline/Vendor/libcurl/curl.h"
@@ -236,20 +235,11 @@ void LiveStreamer::registerForGame(
 
     // TheSuperHackers @feature 03/08/2026 The streamer owns the broadcast delay — it is
     // their spoiler window, so it travels with the registration rather than being an
-    // observer-side setting. Configurable via Options.ini without a rebuild.
-    Int delaySeconds = LIVE_DELAY_SECONDS_DEFAULT;
-    {
-        OptionPreferences optionPref;
-        OptionPreferences::const_iterator it = optionPref.find("LiveObserverDelaySeconds");
-        if (it != optionPref.end())
-        {
-            Int configured = atoi(it->second.str());
-            if (configured >= 0 && configured <= LIVE_DELAY_SECONDS_MAX)
-                delaySeconds = configured;
-            else
-                liveStreamLog("LiveStreamer: ignoring out-of-range LiveObserverDelaySeconds=%d\n", configured);
-        }
-    }
+    // observer-side setting. Sourced from TheGlobalData, which the pre-game lobby writes
+    // through to, so a per-game override in the lobby takes effect without a restart.
+    Int delaySeconds = TheGlobalData
+        ? TheGlobalData->m_liveStreamDelaySeconds
+        : (Int)LIVE_DELAY_SECONDS_DEFAULT;
 
     // Build JSON registration payload
     char regJson[1024];

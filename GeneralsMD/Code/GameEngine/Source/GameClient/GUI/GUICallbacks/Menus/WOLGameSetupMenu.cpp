@@ -31,7 +31,9 @@
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
 
 #include "Common/GameEngine.h"
+#include "Common/GameCommon.h"		// LIVE_DELAY_SECONDS_DEFAULT / _MAX
 #include "Common/GameState.h"
+#include "Common/GlobalData.h"
 #include "Common/MultiplayerSettings.h"
 #include "Common/OptionPreferences.h"
 #include "GameClient/GameText.h"
@@ -226,6 +228,74 @@ static GameWindow *checkBoxUseStats = NULL;
 static GameWindow *checkBoxLimitSuperweapons = NULL;
 static GameWindow *comboBoxStartingCash = NULL;
 static GameWindow *checkBoxLimitArmies = NULL;
+
+#if defined(GENERALS_ONLINE)
+// TheSuperHackers @feature 03/08/2026 Live-stream controls. Created programmatically rather
+// than declared in GameSpyGameOptionsMenu.wnd, following the Live Observer button in
+// MainMenu.cpp — this keeps the feature entirely in code, with no layout file to keep in sync.
+// Dispatched by pointer comparison, since they have no .wnd-assigned control ID.
+static GameWindow *checkBoxStreamGame = NULL;
+static GameWindow *textEntryStreamDelay = NULL;
+static GameWindow *staticTextStreamDelay = NULL;
+
+/// The delay only means anything when the game is being streamed, so grey it out otherwise.
+static void refreshStreamControls(void)
+{
+	if (checkBoxStreamGame == NULL)
+		return;
+
+	const Bool streaming = GadgetCheckBoxIsChecked(checkBoxStreamGame);
+	if (textEntryStreamDelay)
+		textEntryStreamDelay->winEnable(streaming);
+	if (staticTextStreamDelay)
+		staticTextStreamDelay->winEnable(streaming);
+}
+
+/// Validate and store the delay the user typed. Rejects rather than clamps: silently
+/// turning "6000" into 600 would leave the streamer believing they had a 100-minute buffer.
+static void commitStreamDelayEntry(void)
+{
+	if (textEntryStreamDelay == NULL || TheWritableGlobalData == NULL)
+		return;
+
+	UnicodeString typed = GadgetTextEntryGetText(textEntryStreamDelay);
+	AsciiString typedAscii;
+	typedAscii.translate(typed);
+	typedAscii.trim();
+
+	Bool valid = !typedAscii.isEmpty();
+	for (const char* c = typedAscii.str(); valid && *c != '\0'; ++c)
+	{
+		if (*c < '0' || *c > '9')
+			valid = FALSE;
+	}
+
+	Int seconds = valid ? atoi(typedAscii.str()) : 0;
+	if (valid && seconds > LIVE_DELAY_SECONDS_MAX)
+		valid = FALSE;
+
+	if (!valid)
+	{
+		// Put the last good value back so the field never shows something that is not in effect.
+		UnicodeString restored;
+		restored.format(L"%d", TheGlobalData->m_liveStreamDelaySeconds);
+		GadgetTextEntrySetText(textEntryStreamDelay, restored);
+		if (TheInGameUI)
+		{
+			UnicodeString msg;
+			msg.format(L"Delay must be between 0 and %d seconds", (Int)LIVE_DELAY_SECONDS_MAX);
+			TheInGameUI->messageNoFormat(msg);
+		}
+		return;
+	}
+
+	TheWritableGlobalData->m_liveStreamDelaySeconds = seconds;
+
+	OptionPreferences optionPref;
+	optionPref.setLiveStreamDelaySeconds(seconds);
+	optionPref.write();
+}
+#endif
 
 static GameWindow *comboBoxPlayer[MAX_SLOTS] = {NULL,NULL,NULL,NULL,
 																									 NULL,NULL,NULL,NULL };
@@ -1519,6 +1589,77 @@ void InitWOLGameGadgets()
   checkBoxLimitArmies = TheWindowManager->winGetWindowFromId( parentWOLGameSetup, checkBoxLimitArmiesID );
   DEBUG_ASSERTCRASH(windowMap, ("Could not find the GameSpyGameOptionsMenu.wnd:CheckBoxLimitArmies" ));
 
+#if defined(GENERALS_ONLINE)
+  // TheSuperHackers @feature 03/08/2026 Live-stream controls: enable streaming for this game
+  // and choose how far behind live its observers are held. Both write through to
+  // TheGlobalData (which RecorderClass::startRecording() reads when the match begins) and to
+  // OptionPreferences, so today's choice becomes tomorrow's default.
+  {
+    // Anchor to the Limit Superweapons checkbox rather than using absolute coordinates:
+    // the layout lives in GameSpyGameOptionsMenu.wnd inside a .big archive, so hardcoded
+    // positions would be a guess that silently breaks if the layout is ever retouched.
+    // Sitting one row below a known option keeps this aligned with the options column.
+    Int baseX = 20, baseY = 470, rowH = 24;
+    if (checkBoxLimitSuperweapons)
+    {
+      Int cbW = 0, cbH = 0;
+      checkBoxLimitSuperweapons->winGetPosition(&baseX, &baseY);
+      checkBoxLimitSuperweapons->winGetSize(&cbW, &cbH);
+      rowH = (cbH > 0) ? cbH + 4 : rowH;
+      baseY += rowH;
+    }
+
+    WinInstanceData checkInstData;
+    checkInstData.init();
+    checkInstData.m_style = GWS_CHECK_BOX | GWS_MOUSE_TRACK;
+    checkInstData.m_textLabelString = "Stream this game";
+    checkInstData.setTooltipText(L"Broadcast this game so others can watch it live");
+    checkBoxStreamGame = TheWindowManager->gogoGadgetCheckbox(parentWOLGameSetup,
+      WIN_STATUS_ENABLED,
+      baseX, baseY, 180, 20,
+      &checkInstData, nullptr, TRUE);
+
+    TextData labelTextData;
+    memset(&labelTextData, 0, sizeof(labelTextData));
+    WinInstanceData labelInstData;
+    labelInstData.init();
+    labelInstData.m_style = GWS_STATIC_TEXT | GWS_MOUSE_TRACK;
+    labelInstData.m_textLabelString = "Delay (s):";
+    staticTextStreamDelay = TheWindowManager->gogoGadgetStaticText(parentWOLGameSetup,
+      WIN_STATUS_ENABLED,
+      baseX + 185, baseY, 70, 20,
+      &labelInstData, &labelTextData, nullptr, TRUE);
+
+    EntryData entryData;
+    memset(&entryData, 0, sizeof(entryData));
+    entryData.maxTextLen = 4;               // LIVE_DELAY_SECONDS_MAX is 3 digits
+    entryData.numericalOnly = TRUE;
+    WinInstanceData entryInstData;
+    entryInstData.init();
+    entryInstData.m_style = GWS_ENTRY_FIELD | GWS_MOUSE_TRACK;
+    entryInstData.setTooltipText(L"How far behind the live game observers are held");
+    textEntryStreamDelay = TheWindowManager->gogoGadgetTextEntry(parentWOLGameSetup,
+      WIN_STATUS_ENABLED,
+      baseX + 258, baseY, 50, 20,
+      &entryInstData, &entryData, nullptr, TRUE);
+
+    if (checkBoxStreamGame)
+      GadgetCheckBoxSetChecked(checkBoxStreamGame,
+        TheGlobalData ? TheGlobalData->m_liveStreamEnabled : FALSE);
+
+    if (textEntryStreamDelay)
+    {
+      UnicodeString delayText;
+      delayText.format(L"%d", TheGlobalData
+        ? TheGlobalData->m_liveStreamDelaySeconds
+        : (Int)LIVE_DELAY_SECONDS_DEFAULT);
+      GadgetTextEntrySetText(textEntryStreamDelay, delayText);
+    }
+
+    refreshStreamControls();
+  }
+#endif
+
   // Limit Armies can ONLY be set in the Host Game window (PopupHostGame.wnd)
   checkBoxLimitArmies->winEnable( false );
   // Ditto use stats
@@ -1715,6 +1856,13 @@ void DeinitWOLGameGadgets()
 	checkBoxUseStats = NULL;
   checkBoxLimitSuperweapons = NULL;
   comboBoxStartingCash = NULL;
+#if defined(GENERALS_ONLINE)
+  // Owned by the layout's window tree, which is torn down with the screen — just drop our
+  // references so a stale pointer cannot be compared against on the next visit.
+  checkBoxStreamGame = NULL;
+  textEntryStreamDelay = NULL;
+  staticTextStreamDelay = NULL;
+#endif
 
 //	GameWindow *staticTextTitle = NULL;
 	for (Int i = 0; i < MAX_SLOTS; i++)
@@ -4009,6 +4157,22 @@ WindowMsgHandledType WOLGameSetupMenuSystem( GameWindow *window, UnsignedInt msg
         {
           handleLimitSuperweaponsClick();
         }
+#if defined(GENERALS_ONLINE)
+        else if ( control == checkBoxStreamGame )
+        {
+          // Compared by pointer: this gadget is created in code, so it has no .wnd control ID.
+          if (TheWritableGlobalData)
+          {
+            const Bool streaming = GadgetCheckBoxIsChecked(checkBoxStreamGame);
+            TheWritableGlobalData->m_liveStreamEnabled = streaming;
+
+            OptionPreferences optionPref;
+            optionPref.setLiveStreamEnabled(streaming);
+            optionPref.write();
+          }
+          refreshStreamControls();
+        }
+#endif
 				else
 				{
 					NGMP_OnlineServices_LobbyInterface* pLobbyInterface = NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
@@ -4110,6 +4274,13 @@ WindowMsgHandledType WOLGameSetupMenuSystem( GameWindow *window, UnsignedInt msg
 			{
 				GameWindow *control = (GameWindow *)mData1;
 				Int controlID = control->winGetWindowId();
+#if defined(GENERALS_ONLINE)
+				if ( control == textEntryStreamDelay )
+				{
+					commitStreamDelayEntry();
+					break;
+				}
+#endif
 				// Take the user's input and echo it into the chat window as well as
 				// send it to the other clients on the lan
 				if ( controlID == textEntryChatID )
