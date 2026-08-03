@@ -402,6 +402,7 @@ RecorderClass::~RecorderClass() {
  * will set the recorder mode to RECORDERMODETYPE_PLAYBACK.
  */
 void RecorderClass::init() {
+	liveObserverLog("RecorderClass::init: enter — m_mode=%d m_isLiveStream=%d\n", m_mode, m_isLiveStream ? 1 : 0);
 	m_originalGameMode = GAME_NONE;
 	if (m_mode != RECORDERMODETYPE_LIVE_OBSERVER)
 		m_mode = RECORDERMODETYPE_NONE;
@@ -425,6 +426,8 @@ void RecorderClass::init() {
 
 	OptionPreferences optionPref;
 	m_archiveReplays = optionPref.getArchiveReplaysEnabled();
+
+	liveObserverLog("RecorderClass::init: exit — m_mode=%d m_isLiveStream=%d\n", m_mode, m_isLiveStream ? 1 : 0);
 }
 
 /**
@@ -1230,8 +1233,9 @@ Bool RecorderClass::startLiveObserverPlayback(AsciiString filename)
 	else
 	{
 		m_mode = RECORDERMODETYPE_LIVE_OBSERVER;
+		m_isLiveStream = TRUE;
 		m_nextFrame = 0;
-		liveObserverLog("startLiveObserverPlayback: OK, mode restored to LIVE_OBSERVER, nextFrame=0\n");
+		liveObserverLog("startLiveObserverPlayback: OK, mode restored to LIVE_OBSERVER, isLiveStream=1, nextFrame=0\n");
 	}
 	return success;
 }

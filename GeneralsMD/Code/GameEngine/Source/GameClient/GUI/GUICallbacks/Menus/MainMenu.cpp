@@ -82,6 +82,7 @@
 #include "Common/MessageStream.h"
 #include "Common/PlayerTemplate.h"
 #include "GameNetwork/GameInfo.h"
+#include "GameNetwork/NetworkDefs.h"
 #include "GameClient/ClientInstance.h"
 #include "GameClient/GadgetTextEntry.h"
 #include "GameLogic/GameLogic.h"
@@ -341,7 +342,7 @@ static void doGameStart()
 #if defined(GENERALS_ONLINE)
 	// If live streaming, playbackFile already sent MSG_NEW_GAME with GAME_REPLAY.
 	// Don't send a second one or we'd start a duplicate game.
-	if (TheRecorder && TheRecorder->isLiveStream())
+	if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
 	{
 		liveObserverLog("doGameStart: skipping MSG_NEW_GAME (already sent by live playback)\n");
 		isShuttingDown = TRUE;
@@ -1089,6 +1090,8 @@ static void doLiveObserverGameStart(const AsciiString& fullWatchUrl)
 	liveObserverInitLog(fullWatchUrl.str());
 	liveObserverLog("=== doLiveObserverGameStart (from menu) ===\n");
 	liveObserverLog("URL: %s\n", fullWatchUrl.str());
+	liveObserverLog("doLiveObserverGameStart: entry — TheNetwork=%p isInMultiplayerGame=%d\n",
+		(void*)TheNetwork, TheGameLogic->isInMultiplayerGame() ? 1 : 0);
 
 	// Clean up any previous LiveObserver that might still be running
 	if (TheLiveObserver)

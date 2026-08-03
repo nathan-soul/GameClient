@@ -376,6 +376,24 @@ Bool GameEngine::isTimeFrozen()
 //-------------------------------------------------------------------------------------------------
 Bool GameEngine::isGameHalted()
 {
+	// TheSuperHackers @fix Diagnostic: this runs every frame regardless of whether
+	// TheGameLogic->UPDATE() itself is being skipped, unlike logging placed inside
+	// GameLogic::update() — needed to see isGamePaused() ticking (or getting stuck)
+	// even while the very code that could clear it (RecorderClass::updatePlayback(),
+	// called from inside GameLogic::UPDATE()) is starved by that same pause.
+	if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
+	{
+		static UnsignedInt s_lastHaltedLog = 0;
+		UnsignedInt nowMs = timeGetTime();
+		if (nowMs - s_lastHaltedLog >= 500)
+		{
+			liveObserverLog("LIVE_OBSERVER: GameEngine::isGameHalted() — isGamePaused=%d isLiveStream=%d\n",
+				(TheGameLogic != nullptr && TheGameLogic->isGamePaused()) ? 1 : 0,
+				TheRecorder->isLiveStream() ? 1 : 0);
+			s_lastHaltedLog = nowMs;
+		}
+	}
+
 	if (TheNetwork != nullptr)
 	{
 		if (TheNetwork->isStalling())
@@ -383,7 +401,18 @@ Bool GameEngine::isGameHalted()
 	}
 	else
 	{
-		if (TheGameLogic != nullptr && TheGameLogic->isGamePaused())
+		// TheSuperHackers @fix Live-observer sessions pause via
+		// RecorderClass::updatePlayback() (m_isLiveStream + m_liveWaiting, see Recorder.cpp)
+		// purely to freeze visible simulation while waiting for more replay data to arrive.
+		// But updatePlayback() itself — including the code that would clear the pause again —
+		// only runs from inside TheGameLogic->UPDATE(), which this halt would otherwise block
+		// from ever running again. That is a permanent, self-inflicted deadlock: once paused
+		// once while briefly behind on data, the session can never unpause itself, even after
+		// more than enough data has arrived. The while-loop in updatePlayback() already refuses
+		// to run ahead of the data it actually has, so the pause flag here is not needed to
+		// prevent premature simulation for a live observer — never let it halt GameLogic::UPDATE().
+		Bool isLiveObserverSession = TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER;
+		if (!isLiveObserverSession && TheGameLogic != nullptr && TheGameLogic->isGamePaused())
 			return true;
 	}
 
@@ -871,6 +900,9 @@ void GameEngine::reset()
 	if (TheGameLogic->isInMultiplayerGame())
 		deleteNetwork = true;
 
+	liveObserverLog("GameEngine::reset: TheNetwork=%p isInMultiplayerGame=%d deleteNetwork=%d\n",
+		(void*)TheNetwork, TheGameLogic->isInMultiplayerGame() ? 1 : 0, deleteNetwork ? 1 : 0);
+
 	resetSubsystems();
 
 	if (deleteNetwork)
@@ -879,6 +911,8 @@ void GameEngine::reset()
 		delete TheNetwork;
 		TheNetwork = nullptr;
 	}
+
+	liveObserverLog("GameEngine::reset: done — TheNetwork=%p\n", (void*)TheNetwork);
 	if (background)
 	{
 		background->destroyWindows();
@@ -905,6 +939,17 @@ Bool GameEngine::canUpdateGameLogic(UnsignedInt logicTimeQueryFlags)
 
 	TheFramePacer->setTimeFrozen(isTimeFrozen());
 	TheFramePacer->setGameHalted(isGameHalted());
+
+	if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
+	{
+		static Bool s_loggedOnce = FALSE;
+		if (!s_loggedOnce)
+		{
+			s_loggedOnce = TRUE;
+			liveObserverLog("GameEngine::canUpdateGameLogic: first check for live-observer session — TheNetwork=%p isInMultiplayerGame=%d\n",
+				(void*)TheNetwork, TheGameLogic->isInMultiplayerGame() ? 1 : 0);
+		}
+	}
 
 	if (TheNetwork != nullptr)
 	{

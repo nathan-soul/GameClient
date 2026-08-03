@@ -428,10 +428,20 @@ void GameLogic::logicMessageDispatcher(GameMessage* msg, void* userData)
 		// TheSuperHackers @fix stephanmeesters 11/03/2026
 		// Make sure we're ready to start a new game. This prevents an issue where an infinite disconnect screen
 		// can be force-triggered in an online match by using cheats.
-		if (isInGame() || isClearingGameData() || isLoadingMap())
+		// TheSuperHackers @fix isInGame() explicitly includes the shell game (see its doc comment), so this guard
+		// blocked every legitimate MSG_NEW_GAME sent while sitting at the main menu — including the live-observer
+		// join flow, which enqueues MSG_NEW_GAME directly from the shell. Use isInInteractiveGame() instead, which
+		// excludes GAME_SHELL/GAME_NONE and still blocks the cheat scenario (an active real match) as intended.
+		liveObserverLog("LIVE_OBSERVER: MSG_NEW_GAME dispatch check — isInInteractiveGame=%d isClearingGameData=%d isLoadingMap=%d recorderMode=%d\n",
+			isInInteractiveGame() ? 1 : 0, isClearingGameData() ? 1 : 0, isLoadingMap() ? 1 : 0,
+			TheRecorder ? TheRecorder->getMode() : -1);
+
+		if (isInInteractiveGame() || isClearingGameData() || isLoadingMap())
 		{
+			liveObserverLog("LIVE_OBSERVER: MSG_NEW_GAME DROPPED — isInInteractiveGame=%d isClearingGameData=%d isLoadingMap=%d\n",
+				isInInteractiveGame() ? 1 : 0, isClearingGameData() ? 1 : 0, isLoadingMap() ? 1 : 0);
 			DEBUG_CRASH(("Called MSG_NEW_GAME while game is not ready (inGame=%d, clearingData=%d, loadingMap=%d)",
-				isInGame(), isClearingGameData(), isLoadingMap()));
+				isInInteractiveGame(), isClearingGameData(), isLoadingMap()));
 			break;
 		}
 #endif
@@ -2058,7 +2068,7 @@ void GameLogic::logicMessageDispatcher(GameMessage* msg, void* userData)
 	//---------------------------------------------------------------------------------------------
 	case GameMessage::MSG_LOGIC_CRC:
 	{
-		if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
+		if (TheRecorder && (TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER || TheRecorder->isLiveStream()))
 		{
 			// CRC validation is skipped in live observer mode
 			break;

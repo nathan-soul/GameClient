@@ -20,6 +20,7 @@
 
 #include "Common/LiveStreamer.h"
 #include "Common/GlobalData.h"
+#include "GameClient/ClientInstance.h"
 
 #include "GameNetwork/GeneralsOnline/Vendor/libcurl/curl.h"
 #include "GameNetwork/GeneralsOnline/Vendor/libcurl/multi.h"
@@ -34,10 +35,20 @@
 // ============================================================================
 // liveStreamLog — write diagnostic messages to live_streamer_debug.log
 // ============================================================================
+// TheSuperHackers @fix Kept in sync with LIVE_OBSERVER_BUILD_TAG in LiveObserver.cpp — bump
+// both together so a log file can be matched to the exact build that produced it.
+#define LIVE_OBSERVER_BUILD_TAG "2026-08-03-fix11-signed-char-msglen-corruption"
+
 void liveStreamLog(const char* fmt, ...) {
     static FILE* logFile = NULL;
     if (!logFile) {
-        logFile = fopen("live_streamer_debug.log", "w");
+        // TheSuperHackers @fix Give this log a per-instance name — see the matching
+        // comment in LiveObserver.cpp::liveObserverLog.
+        AsciiString path;
+        path.format("live_streamer_debug_Instance%.2u.log", rts::ClientInstance::getInstanceId());
+        logFile = fopen(path.str(), "w");
+        if (logFile)
+            fprintf(logFile, "LIVE_OBSERVER_BUILD_TAG=%s\n", LIVE_OBSERVER_BUILD_TAG);
     }
     if (logFile) {
         va_list args;
@@ -519,11 +530,13 @@ void LiveStreamer::networkThreadFunc()
             if (recvBuf.size() < 5)
                 continue;
 
+            // TheSuperHackers @fix Same signed-char sign-extension bug as
+            // LiveObserver.cpp::networkThreadFunc — must zero-extend through unsigned char.
             unsigned char msgType = (unsigned char)recvBuf[0];
-            unsigned int msgLen = (unsigned int)recvBuf[1]
-                | ((unsigned int)recvBuf[2] << 8)
-                | ((unsigned int)recvBuf[3] << 16)
-                | ((unsigned int)recvBuf[4] << 24);
+            unsigned int msgLen = (unsigned int)(unsigned char)recvBuf[1]
+                | ((unsigned int)(unsigned char)recvBuf[2] << 8)
+                | ((unsigned int)(unsigned char)recvBuf[3] << 16)
+                | ((unsigned int)(unsigned char)recvBuf[4] << 24);
 
             if (msgType == LIVE_MSG_ROLE && msgLen > 0 && recvBuf.size() >= (size_t)(5 + msgLen))
             {
@@ -575,12 +588,16 @@ void LiveStreamer::networkThreadFunc()
             }
         }
 
-        // Small sleep to avoid busy-looping
+        // Small sleep to avoid busy-looping.
+        // TheSuperHackers @fix curl_multi_poll's out-param is numfds, not "still
+        // running" — see the matching comment in LiveObserver.cpp::networkThreadFunc.
+        // curl_multi_perform() must run unconditionally or incoming ROLE/ERROR
+        // messages can silently stop being received.
         {
-            int stillRunning = 0;
-            curl_multi_poll(m_curlMulti, NULL, 0, 10, &stillRunning);
-            if (stillRunning)
-                curl_multi_perform((CURLM*)m_curlMulti, &stillRunning);
+            int numfds = 0;
+            curl_multi_poll(m_curlMulti, NULL, 0, 10, &numfds);
+            int runningHandles = 0;
+            curl_multi_perform((CURLM*)m_curlMulti, &runningHandles);
         }
     }
 

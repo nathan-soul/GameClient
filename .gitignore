@@ -72,3 +72,4 @@ __pycache__/
 *.pyc
 build.ps1
 dist/builds/GeneralsOnlineZH.exe
+dist/

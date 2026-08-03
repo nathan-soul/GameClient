@@ -25,6 +25,7 @@
 #include "Common/GlobalData.h"
 #include "Common/FileSystem.h"
 #include "Common/file.h"
+#include "GameClient/ClientInstance.h"
 
 #include "GameNetwork/GeneralsOnline/Vendor/libcurl/curl.h"
 #include "GameNetwork/GeneralsOnline/Vendor/libcurl/multi.h"
@@ -37,10 +38,24 @@
 // ============================================================================
 // liveObserverLog
 // ============================================================================
+// TheSuperHackers @fix Bump this string with every debugging change to LiveObserver.cpp/
+// LiveStreamer.cpp/GameLogic.cpp's LIVE_OBSERVER_LOG instrumentation, so a log file can be
+// matched to the exact build that produced it (avoids debugging a stale binary by mistake).
+#define LIVE_OBSERVER_BUILD_TAG "2026-08-03-fix11-signed-char-msglen-corruption"
+
 void liveObserverLog(const char* fmt, ...) {
     static FILE* logFile = NULL;
     if (!logFile) {
-        logFile = fopen("live_observer_debug.log", "w");
+        // TheSuperHackers @fix Give this log a per-instance name, instead of a bare
+        // relative filename in the exe's cwd (the install dir). Streamer and observer
+        // are the same exe and can share a cwd/install; without this, both processes'
+        // calls to liveObserverLog() (this file AND GameLogic.cpp's unconditional
+        // LIVE_OBSERVER instrumentation) truncate the same file.
+        AsciiString path;
+        path.format("live_observer_debug_Instance%.2u.log", rts::ClientInstance::getInstanceId());
+        logFile = fopen(path.str(), "w");
+        if (logFile)
+            fprintf(logFile, "LIVE_OBSERVER_BUILD_TAG=%s\n", LIVE_OBSERVER_BUILD_TAG);
     }
     if (logFile) {
         va_list args;
@@ -429,16 +444,22 @@ void LiveObserver::networkThreadFunc()
     while (m_shouldRun.load() && m_connected.load())
     {
         {
-            int stillRunning = 0;
-            CURLMcode mpoll = curl_multi_poll(m_curlMulti, NULL, 0, 50, &stillRunning);
-            if (stillRunning)
-                curl_multi_perform((CURLM*)m_curlMulti, &stillRunning);
+            // TheSuperHackers @fix curl_multi_poll's out-param is numfds (fds with
+            // activity during this poll), NOT "transfers still running" — it can be 0
+            // on a timeout even though curl_multi_perform() would still have work to
+            // do. curl_multi_perform() must be called unconditionally every iteration,
+            // or received bytes can sit unprocessed forever and curl_ws_recv() keeps
+            // returning CURLE_AGAIN even though data already arrived on the socket.
+            int numfds = 0;
+            CURLMcode mpoll = curl_multi_poll(m_curlMulti, NULL, 0, 50, &numfds);
             if (mpoll != CURLM_OK)
             {
                 liveObserverLog("LiveObserver: curl_multi_poll failed (%d), connection lost\n", (int)mpoll);
                 m_connected.store(false);
                 break;
             }
+            int runningHandles = 0;
+            curl_multi_perform((CURLM*)m_curlMulti, &runningHandles);
         }
 
         // Append any newly received data to our persistent buffer
@@ -457,14 +478,32 @@ void LiveObserver::networkThreadFunc()
         // Process as many complete frames as possible from the buffer
         while (buf.size() >= 5)
         {
+            // TheSuperHackers @fix `buf` is std::vector<char>, and char is signed on MSVC.
+            // Casting a byte >= 0x80 straight to unsigned int sign-extends it (e.g. 0x87 ->
+            // 0xFFFFFF87) instead of zero-extending, corrupting the length for roughly half of
+            // all possible values. Must cast through (unsigned char) first to zero-extend.
             unsigned char msgType = (unsigned char)buf[0];
-            unsigned int msgLen = (unsigned int)buf[1]
-                | ((unsigned int)buf[2] << 8)
-                | ((unsigned int)buf[3] << 16)
-                | ((unsigned int)buf[4] << 24);
+            unsigned int msgLen = (unsigned int)(unsigned char)buf[1]
+                | ((unsigned int)(unsigned char)buf[2] << 8)
+                | ((unsigned int)(unsigned char)buf[3] << 16)
+                | ((unsigned int)(unsigned char)buf[4] << 24);
 
             if (buf.size() < (size_t)(5 + msgLen))
+            {
+                // TheSuperHackers @fix Log once per distinct incomplete-frame situation
+                // (not every ~50ms poll) so we can tell a legitimately large still-arriving
+                // frame apart from a corrupted/garbage length that would wait forever.
+                static unsigned int s_lastWaitMsgLen = 0xFFFFFFFFu;
+                static unsigned char s_lastWaitMsgType = 0xFF;
+                if (msgLen != s_lastWaitMsgLen || msgType != s_lastWaitMsgType)
+                {
+                    liveObserverLog("LiveObserver: waiting for frame type=%d len=%u — have %zu of %zu bytes\n",
+                        (int)msgType, msgLen, buf.size(), (size_t)(5 + msgLen));
+                    s_lastWaitMsgLen = msgLen;
+                    s_lastWaitMsgType = msgType;
+                }
                 break; // Partial frame — wait for more data
+            }
 
             const char* payload = (msgLen > 0) ? buf.data() + 5 : nullptr;
             handleFrame(msgType, payload, msgLen);

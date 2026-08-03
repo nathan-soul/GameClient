@@ -143,6 +143,13 @@ extern void externalAddTree(Coord3D location, Real scale, Real angle, AsciiStrin
 
 
 
+// TheSuperHackers @fix Gate the ad hoc LIVE_OBSERVER instrumentation below so it
+// only fires for an actual live-observer session, instead of on every game start
+// (including the streamer's own local game), which was polluting the shared
+// live_observer debug log with unrelated noise.
+#define LIVE_OBSERVER_LOG(...) \
+	do { if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER) (liveObserverLog)(__VA_ARGS__); } while (0)
+
 // I'm making this larger now that we know how big our maps are going to be.
 enum { OBJ_HASH_SIZE = 8192 };
 
@@ -630,7 +637,7 @@ static Object* placeObjectAtPosition(Int slotNum, AsciiString objectTemplateName
 static void placeNetworkBuildingsForPlayer(Int slotNum, const GameSlot* pSlot, Player* pPlayer, const PlayerTemplate* pTemplate)
 {
 	Int startPos = pSlot->getStartPos();
-	liveObserverLog("LIVE_OBSERVER: placeNetworkBuildingsForPlayer slot=%d, template=%ls, startPos=%d\n",
+	LIVE_OBSERVER_LOG("LIVE_OBSERVER: placeNetworkBuildingsForPlayer slot=%d, template=%ls, startPos=%d\n",
 		slotNum, pTemplate ? pTemplate->getDisplayName().str() : L"(null)", startPos);
 	AsciiString waypointName;
 	waypointName.format("Player_%d_Start", startPos + 1); // start pos waypoints are 1-based
@@ -657,7 +664,7 @@ static void placeNetworkBuildingsForPlayer(Int slotNum, const GameSlot* pSlot, P
 	DEBUG_LOG(("Placing starting building at waypoint %s", waypointName.str()));
 	Object* conYard = placeObjectAtPosition(slotNum, buildingTemplateName, pos, pPlayer, pTemplate);
 
-	liveObserverLog("LIVE_OBSERVER: slot %d — CC ObjectID=%d at (%.0f,%.0f)\n",
+	LIVE_OBSERVER_LOG("LIVE_OBSERVER: slot %d — CC ObjectID=%d at (%.0f,%.0f)\n",
 		slotNum, conYard ? conYard->getID() : -1, pos.x, pos.y);
 
 	if (!conYard)
@@ -692,7 +699,7 @@ static void placeNetworkBuildingsForPlayer(Int slotNum, const GameSlot* pSlot, P
 			{
 				Object* unit = placeObjectAtPosition(slotNum, objName, objPos, pPlayer, pTemplate);
 				if (unit) {
-					liveObserverLog("LIVE_OBSERVER: slot %d — unit ObjectID=%d type=%s\n",
+					LIVE_OBSERVER_LOG("LIVE_OBSERVER: slot %d — unit ObjectID=%d type=%s\n",
 						slotNum, unit->getID(), objName.str());
 					pPlayer->onUnitCreated(NULL, unit);
 				}
@@ -831,7 +838,7 @@ static void populateRandomSideAndColor(GameInfo* game)
 		Bool disallowLockedGenerals = TRUE;
 		if (!TheChallengeGenerals)
 		{
-			liveObserverLog("LIVE_OBSERVER: guard FIX1_TheChallengeGenerals triggered — skipping\n");
+			LIVE_OBSERVER_LOG("LIVE_OBSERVER: guard FIX1_TheChallengeGenerals triggered — skipping\n");
 			continue;
 		}
 		const GeneralPersona* general = TheChallengeGenerals->getGeneralByTemplateName(ptTest->getName());
@@ -1260,7 +1267,7 @@ void GameLogic::startNewGame(Bool loadingSaveGame)
 
 void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 {
-	liveObserverLog("LIVE_OBSERVER: tryStartNewGame() enter — loadingSaveGame=%d, gameMode=%d, playback=%d\n",
+	LIVE_OBSERVER_LOG("LIVE_OBSERVER: tryStartNewGame() enter — loadingSaveGame=%d, gameMode=%d, playback=%d\n",
 		loadingSaveGame, m_gameMode, (TheRecorder && TheRecorder->isPlaybackMode()) ? 1 : 0);
 
 	#ifdef DUMP_PERF_STATS
@@ -1328,11 +1335,14 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 			}
 
 			m_startNewGame = TRUE;
+			LIVE_OBSERVER_LOG("LIVE_OBSERVER: tryStartNewGame() deferring — m_startNewGame was FALSE, set TRUE and returning (real work happens on the next call)\n");
 			return;
 
 		}
 
 	}
+
+	LIVE_OBSERVER_LOG("LIVE_OBSERVER: tryStartNewGame() proceeding past the defer check — doing real work this call\n");
 
 	m_rankLevelLimit = 1000;	// this is reset every game.
 
@@ -1396,7 +1406,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 	// Log seed and per-slot overview for determinism diagnosis
 	if (TheRecorder && TheRecorder->isPlaybackMode())
 	{
-		liveObserverLog("LIVE_OBSERVER: tryStartNewGame — game=%p seed=%d slots_occupied=",
+		LIVE_OBSERVER_LOG("LIVE_OBSERVER: tryStartNewGame — game=%p seed=%d slots_occupied=",
 			game, game ? game->getSeed() : -1);
 		if (game)
 		{
@@ -1405,12 +1415,12 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 				GameSlot* sl = game->getSlot(si);
 				if (sl && sl->isOccupied())
 				{
-					liveObserverLog("%d(tmpl=%d,pos=%d,color=%d) ",
+					LIVE_OBSERVER_LOG("%d(tmpl=%d,pos=%d,color=%d) ",
 						si, sl->getPlayerTemplate(), sl->getStartPos(), sl->getColor());
 				}
 			}
 		}
-		liveObserverLog("\n");
+		LIVE_OBSERVER_LOG("\n");
 	}
 
 	// On a NEW game, we need to copy the superweapon restrictions from the game info to here
@@ -1645,7 +1655,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 			}
 			else
 			{
-				liveObserverLog("LIVE_OBSERVER: guard FIX2_getLocalSlotNum triggered — skipping\n");
+				LIVE_OBSERVER_LOG("LIVE_OBSERVER: guard FIX2_getLocalSlotNum triggered — skipping\n");
 			}
 		}
 		d.setBool(TheKey_multiplayerIsLocal, isLocalPlayer);
@@ -1863,6 +1873,28 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 	Player* localPlayer = ThePlayerList->getLocalPlayer();
 	Player* observerPlayer = ThePlayerList->findPlayerWithNameKey(TheNameKeyGenerator->nameToKey("ReplayObserver"));
 
+	LIVE_OBSERVER_LOG("LIVE_OBSERVER: localSlot=%d localPlayer=%p (idx=%d) observerPlayer=%p (idx=%d) sameAsLocal=%d\n",
+		localSlot,
+		localPlayer, localPlayer ? localPlayer->getPlayerIndex() : -1,
+		observerPlayer, observerPlayer ? observerPlayer->getPlayerIndex() : -1,
+		(localPlayer && observerPlayer && localPlayer == observerPlayer) ? 1 : 0);
+
+	// TheSuperHackers @fix Without TheNetwork, PlayerList::newGame()'s fallback local-player
+	// logic picks the first human side it finds — since the "ReplayObserver" side is always
+	// added with multiplayerIsLocal=FALSE (it must stay that way for normal skirmish/replay
+	// playback, where you ARE one of the real players), a live-observer session's local player
+	// silently ends up being one of the real match participants instead of the observer. That
+	// mismatch left fog-of-war/rendering keyed to a player whose map was never revealed (only
+	// observerPlayer's was, via revealMapForPlayerPermanently() below), producing a black
+	// screen. Force local player to the observer explicitly, only for live-observer sessions.
+	if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER &&
+		observerPlayer && localPlayer != observerPlayer)
+	{
+		ThePlayerList->setLocalPlayer(observerPlayer);
+		localPlayer = observerPlayer;
+		LIVE_OBSERVER_LOG("LIVE_OBSERVER: forced local player to observerPlayer (idx=%d)\n", observerPlayer->getPlayerIndex());
+	}
+
 	// set the radar as on a new map
 	TheRadar->newMap(TheTerrainLogic);
 
@@ -1902,7 +1934,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 	}
 	else
 	{
-		liveObserverLog("LIVE_OBSERVER: guard FIX3_localPlayerNULL triggered — skipping setLocalPlayerIndex\n");
+		LIVE_OBSERVER_LOG("LIVE_OBSERVER: guard FIX3_localPlayerNULL triggered — skipping setLocalPlayerIndex\n");
 	}
 	TheGhostObjectManager->reset();
 
@@ -1985,7 +2017,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 	}
 	else
 	{
-		liveObserverLog("LIVE_OBSERVER: guard FIX4_observerPlayerNULL triggered — skipping revealMapForPlayerPermanently\n");
+		LIVE_OBSERVER_LOG("LIVE_OBSERVER: guard FIX4_observerPlayerNULL triggered — skipping revealMapForPlayerPermanently\n");
 	}
 
 	if (game)
@@ -2003,7 +2035,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 
 			if (!player)
 			{
-				liveObserverLog("LIVE_OBSERVER: guard FIX5_playerNULL_loop1 triggered — skipping player %d\n", i);
+				LIVE_OBSERVER_LOG("LIVE_OBSERVER: guard FIX5_playerNULL_loop1 triggered — skipping player %d\n", i);
 				continue;
 			}
 
@@ -2184,7 +2216,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 
 	progressCount = LOAD_PROGRESS_LOOP_INITIAL_NETWORK_BUILDINGS;
 	// place initial network buildings/units
-	liveObserverLog("LIVE_OBSERVER: placing initial buildings — game=%p, loadingSaveGame=%d\n", game, loadingSaveGame);
+	LIVE_OBSERVER_LOG("LIVE_OBSERVER: placing initial buildings — game=%p, loadingSaveGame=%d\n", game, loadingSaveGame);
 	if (game && !loadingSaveGame)
 	{
 		for (int i = 0; i < MAX_SLOTS; ++i)
@@ -2194,7 +2226,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 			if (!slot || !slot->isOccupied())
 				continue;
 
-			liveObserverLog("LIVE_OBSERVER: slot %d occupied — template=%d, startPos=%d\n",
+			LIVE_OBSERVER_LOG("LIVE_OBSERVER: slot %d occupied — template=%d, startPos=%d\n",
 				i, slot->getPlayerTemplate(), slot->getStartPos());
 
 			AsciiString playerName;
@@ -2203,7 +2235,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 
 			if (!player)
 			{
-				liveObserverLog("LIVE_OBSERVER: guard FIX6_playerNULL_loop2 triggered — skipping player %d\n", i);
+				LIVE_OBSERVER_LOG("LIVE_OBSERVER: guard FIX6_playerNULL_loop2 triggered — skipping player %d\n", i);
 				continue;
 			}
 
@@ -2229,7 +2261,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 				const PlayerTemplate* pt = NULL;
 				pt = ThePlayerTemplateStore->getNthPlayerTemplate(slot->getPlayerTemplate());
 				if (!pt) {
-					liveObserverLog("LIVE_OBSERVER: slot %d has invalid playerTemplate %d, skipping building placement\n",
+					LIVE_OBSERVER_LOG("LIVE_OBSERVER: slot %d has invalid playerTemplate %d, skipping building placement\n",
 						i, slot->getPlayerTemplate());
 					continue;
 				}
@@ -2241,7 +2273,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 
 				// TheSuperHackers @logic-client-separation helmutbuhler 11/04/2025
 				// TheChallengeGenerals belongs to client, we shouldn't depend on that here.
-				liveObserverLog("LIVE_OBSERVER: tryStartNewGame() — about to check TheChallengeGenerals (ptr=%p)\n", TheChallengeGenerals);
+				LIVE_OBSERVER_LOG("LIVE_OBSERVER: tryStartNewGame() — about to check TheChallengeGenerals (ptr=%p)\n", TheChallengeGenerals);
 				Bool disallowLockedGenerals = TRUE;
 				if (TheChallengeGenerals)
 				{
@@ -2252,7 +2284,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 				}
 				else
 				{
-					liveObserverLog("LIVE_OBSERVER: tryStartNewGame() — TheChallengeGenerals is NULL, skipping locked general check\n");
+					LIVE_OBSERVER_LOG("LIVE_OBSERVER: tryStartNewGame() — TheChallengeGenerals is NULL, skipping locked general check\n");
 				}
 
 				// prevent from loading disallowed templates, in case your peer hacked their GUI.
@@ -2270,14 +2302,14 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 
 
 				placeNetworkBuildingsForPlayer(i, slot, player, pt);
-				liveObserverLog("LIVE_OBSERVER: buildings placed for slot %d\n", i);
+				LIVE_OBSERVER_LOG("LIVE_OBSERVER: buildings placed for slot %d\n", i);
 			}
 
 			updateLoadProgress(progressCount++);
 
 		}
 	}
-	liveObserverLog("LIVE_OBSERVER: tryStartNewGame() — buildings done, frame=%d\n", m_frame);
+	LIVE_OBSERVER_LOG("LIVE_OBSERVER: tryStartNewGame() — buildings done, frame=%d\n", m_frame);
 	// update the loadscreen
 	updateLoadProgress(LOAD_PROGRESS_POST_INITIAL_NETWORK_BUILDINGS);
 
@@ -2327,6 +2359,10 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 			startingCamName.format("Player_%d_Start", startPos + 1); // start pos waypoints are 1-based
 			DEBUG_LOG(("Using %s as the multiplayer initial camera position", startingCamName.str()));
 		}
+
+		LIVE_OBSERVER_LOG("LIVE_OBSERVER: camera setup — localSlot=%d slot=%p isHuman=%d startPos=%d startingCamName=%s\n",
+			localSlot, slot, slot ? (slot->isHuman() ? 1 : 0) : -1,
+			slot ? slot->getStartPos() : -1, startingCamName.str());
 	}
 
 	// update the loadscreen
@@ -2337,6 +2373,8 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 	{
 		Coord3D pos = *way->getLocation();
 		TheTacticalView->lookAt(&pos);
+		LIVE_OBSERVER_LOG("LIVE_OBSERVER: camera lookAt waypoint %s at (%.0f,%.0f,%.0f)\n",
+			startingCamName.str(), pos.x, pos.y, pos.z);
 	}
 	else
 	{
@@ -2348,6 +2386,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 		pos.z = 0;
 		TheTacticalView->lookAt(&pos);
 		DEBUG_LOG(("Failed to find initial camera position waypoint %s", startingCamName.str()));
+		LIVE_OBSERVER_LOG("LIVE_OBSERVER: camera FALLBACK — waypoint '%s' not found, looking at (50,50,0)\n", startingCamName.str());
 	}
 
 	// Set up the camera height based on the map height & globalData.
@@ -2661,7 +2700,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 	message.format("GameStart: %s", TheGlobalData->m_mapName.str());
 	PROFILER_MSG(message.str(), message.getLength());
 #endif
-	liveObserverLog("LIVE_OBSERVER: tryStartNewGame() COMPLETE — frame=%d\n", m_frame);
+	LIVE_OBSERVER_LOG("LIVE_OBSERVER: tryStartNewGame() COMPLETE — frame=%d\n", m_frame);
 }
 
 //-----------------------------------------------------------------------------------------
@@ -2873,9 +2912,13 @@ void GameLogic::processCommandList(CommandList* list)
 		logicMessageDispatcher(msg, NULL);
 	}
 
-	if (m_shouldValidateCRCs && !TheNetwork->sawCRCMismatch() && !(TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER))
+	if (m_shouldValidateCRCs && !TheNetwork->sawCRCMismatch() && !(TheRecorder && (TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER || TheRecorder->isLiveStream())))
 	{
-		liveObserverLog("GameLogic: CRC validation check (live observer guard passed)\n");
+		// Not gated by LIVE_OBSERVER_LOG: this branch only runs when the session is
+		// NOT a live observer, so the gate would silence it entirely.
+		liveObserverLog("GameLogic: CRC validation check (live observer guard passed) mode=%d isLiveStream=%d\n",
+			TheRecorder ? TheRecorder->getMode() : -1,
+			TheRecorder ? (TheRecorder->isLiveStream() ? 1 : 0) : -1);
 		Bool sawCRCMismatch = FALSE;
 		Int numPlayers = 0;
 		DEBUG_ASSERTCRASH(TheNetwork, ("No Network!"));
@@ -4017,6 +4060,23 @@ void GameLogic::update()
 #endif
 
 	setFPMode();
+
+	// TheSuperHackers @fix Diagnostic: the isMoviePlaying() hypothesis was checked and
+	// disproven (that log never appeared while stuck). Broaden this into an unconditional
+	// heartbeat for live-observer sessions so we can see: (a) whether update() even keeps
+	// ticking after the first tryStartNewGame() call, and (b) the full state of every
+	// variable this gate depends on, not just isMoviePlaying().
+	if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
+	{
+		static UnsignedInt s_lastHeartbeatLog = 0;
+		UnsignedInt nowMs = timeGetTime();
+		if (nowMs - s_lastHeartbeatLog >= 500)
+		{
+			liveObserverLog("LIVE_OBSERVER: GameLogic::update() heartbeat — m_startNewGame=%d isMoviePlaying=%d isGamePaused=%d gameMode=%d frame=%d\n",
+				m_startNewGame ? 1 : 0, TheDisplay->isMoviePlaying() ? 1 : 0, isGamePaused() ? 1 : 0, m_gameMode, m_frame);
+			s_lastHeartbeatLog = nowMs;
+		}
+	}
 
 	/// @todo remove this hack
 	if (m_startNewGame && !TheDisplay->isMoviePlaying())
