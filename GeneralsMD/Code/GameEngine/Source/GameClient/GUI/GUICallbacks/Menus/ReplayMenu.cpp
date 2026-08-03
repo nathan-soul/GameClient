@@ -243,28 +243,50 @@ static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiStri
 			Int delaySeconds = game.value("delay_seconds", (Int)LIVE_DELAY_SECONDS_DEFAULT);
 			Int ageSeconds = game.value("age_seconds", 0);
 
-			const Int row = (Int)s_liveGameIds.size();
+			// The relay stores map_name exactly as the streamer sent it, which is
+			// TheGlobalData->m_mapName — a full path such as
+			// "Maps\Tournament Desert\Tournament Desert.map". Showing that raw is what made
+			// this column unreadable: far too long for the width, and the backslashes render
+			// as missing-glyph boxes. Take the leaf name without its extension.
+			{
+				size_t slash = mapName.find_last_of("\\/");
+				if (slash != std::string::npos)
+					mapName = mapName.substr(slash + 1);
+				size_t dot = mapName.find_last_of('.');
+				if (dot != std::string::npos && dot > 0)
+					mapName = mapName.substr(0, dot);
+			}
+
+			const Color rowColor = GameMakeColor(255, 255, 255, 255);
 			UnicodeString text;
-
-			// This listbox has four columns, laid out for the replay list. Reuse them:
-			// name / time / version / map becomes map / running-for / delay / players.
-			text.translate(AsciiString(mapName.c_str()));
-			GadgetListBoxAddEntryText(listboxReplayFiles, text, GameMakeColor(255,255,255,255), row, 0);
-
 			AsciiString tmp;
+
+			// Four columns, laid out for the replay list. Reuse them as
+			// map / running-for / delay / players. Append column 0 and use the row index it
+			// returns for the rest, exactly as PopulateReplayFileListbox does — passing a
+			// precomputed row instead is what merged these cells together.
+			text.translate(AsciiString(mapName.c_str()));
+			const Int row = GadgetListBoxAddEntryText(listboxReplayFiles, text, rowColor, -1, 0);
+			if (row < 0)
+				continue;
+
 			tmp.format("%dm in", ageSeconds / 60);
 			text.translate(tmp);
-			GadgetListBoxAddEntryText(listboxReplayFiles, text, GameMakeColor(255,255,255,255), row, 1);
+			GadgetListBoxAddEntryText(listboxReplayFiles, text, rowColor, row, 1);
 
 			tmp.format("%ds delay", delaySeconds);
 			text.translate(tmp);
-			GadgetListBoxAddEntryText(listboxReplayFiles, text, GameMakeColor(255,255,255,255), row, 2);
+			GadgetListBoxAddEntryText(listboxReplayFiles, text, rowColor, row, 2);
 
 			tmp.format("%s (%d watching)", playerList.c_str(), viewers);
 			text.translate(tmp);
-			GadgetListBoxAddEntryText(listboxReplayFiles, text, GameMakeColor(255,255,255,255), row, 3);
+			GadgetListBoxAddEntryText(listboxReplayFiles, text, rowColor, row, 3);
 
-			s_liveGameIds.push_back(gameId);
+			// Index by the row the listbox actually used, so a lookup on selection cannot
+			// drift out of step with the rows if one is ever skipped.
+			if ((Int)s_liveGameIds.size() <= row)
+				s_liveGameIds.resize(row + 1);
+			s_liveGameIds[row] = gameId;
 		}
 
 		if (!previouslySelected.isEmpty())

@@ -1373,6 +1373,21 @@ Bool RecorderClass::startLiveObserverPlayback(AsciiString filename)
 {
 	m_mode = RECORDERMODETYPE_LIVE_OBSERVER;
 	m_isLiveStream = TRUE;
+
+	// TheSuperHackers @fix 03/08/2026 Clear the previous session's live state here rather
+	// than relying on init() having run in between. m_streamEnded in particular is set by
+	// LiveObserver's END handler and survives into the next session; readNextFrame() treats
+	// "past the safe watermark while the stream has ended" as end-of-playback, so a stale
+	// TRUE makes the very first read stop playback outright and no commands are ever
+	// processed. The rest are reset alongside it so a second session cannot inherit a
+	// completed pre-roll, a stale pause claim, or a stale live edge either.
+	m_streamEnded = FALSE;
+	m_preRollComplete = FALSE;
+	m_liveStreamAutoPaused = FALSE;
+	m_userPaused = FALSE;
+	m_liveStalled = FALSE;
+	m_lastSeenLiveEdge = 0;
+	m_lastLiveEdgeChangeMs = timeGetTime();
 	liveObserverLog("startLiveObserverPlayback: mode=LIVE_OBSERVER isLiveStream=1 filename=%s\n", filename.str());
 
 	Bool success = playbackFile(filename);

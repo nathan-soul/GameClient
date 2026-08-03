@@ -743,6 +743,20 @@ void MainMenuShutdown( WindowLayout *layout, void *userData )
 
 	CancelPatchCheckCallback();
 
+#if defined(GENERALS_ONLINE)
+	// TheSuperHackers @fix 03/08/2026 Destroy the code-created button on the way out.
+	//
+	// MainMenuInit() builds it fresh on every entry, so returning from a game left the
+	// previous one behind: still drawn, but no longer the window buttonLiveObserver points
+	// at, so its clicks matched nothing. Entering Multiplayer then drew a second one on top
+	// of the corpse. Windows the layout owns are torn down with it; this one is ours.
+	if (buttonLiveObserver)
+	{
+		TheWindowManager->winDestroy(buttonLiveObserver);
+		buttonLiveObserver = nullptr;
+	}
+#endif
+
 	// if we are shutting down for an immediate pop, skip the animations
 	Bool popImmediate = *(Bool *)userData;
 
