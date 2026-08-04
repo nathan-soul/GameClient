@@ -34,8 +34,6 @@
 
 #include <stdio.h>
 #include <zlib.h>
-#include <map>
-#include <string>
 
 #include "GameNetwork/GeneralsOnline/json.hpp"
 
@@ -100,29 +98,6 @@ static Bool isGamePlayer(Player *player)
 	return TRUE;
 }
 
-// TheSuperHackers @feature: callback to count objects by template name for unit snapshots
-static void countUnitsCallback(Object *obj, void *userData)
-{
-	if (obj == nullptr || userData == nullptr) return;
-	const ThingTemplate *tmpl = obj->getTemplate();
-	if (tmpl == nullptr) return;
-	const char *name = tmpl->getName().str();
-	if (name == nullptr || name[0] == '\0') return;
-
-	std::map<std::string, Int> *counts = (std::map<std::string, Int> *)userData;
-	(*counts)[std::string(name)]++;
-}
-
-// TheSuperHackers @feature: SEH-wrapped iterateObjects — standalone to avoid MSVC C2712
-static void safeIteratePlayerObjects(Player *player, void *userData)
-{
-	__try {
-		player->iterateObjects(countUnitsCallback, userData);
-	} __except(EXCEPTION_EXECUTE_HANDLER) {
-		// Linked list may be corrupt in replay mode — leave counts empty
-	}
-}
-
 //-----------------------------------------------------------------------------
 
 struct PlayerSnapshotData
@@ -131,12 +106,6 @@ struct PlayerSnapshotData
 	UnsignedInt money;
 	Int moneyEarned;
 	Int moneySpent;
-	// TheSuperHackers @feature: per-template unit counts at this snapshot
-	std::map<std::string, Int> unitCounts;
-	// TheSuperHackers @feature: shadow queue - units currently in production
-	std::map<std::string, Int> activeProductionQueue;
-	// TheSuperHackers @feature: shadow queue - running total of completed units (from queue tracking)
-	std::map<std::string, Int> totalProducedFromQueue;
 };
 
 struct PlayerStateData
@@ -229,10 +198,6 @@ struct StatsExporterState
 	std::vector<DeathEvent> deathEvents;
 	std::vector<BattlePlanEvent> battlePlanEvents;
 
-	// TheSuperHackers @feature: shadow production queue tracking per player (updated by hooks)
-	std::map<std::string, Int> queueActive[MAX_PLAYER_COUNT];    // units currently in production
-	std::map<std::string, Int> queueCompleted[MAX_PLAYER_COUNT]; // running total completed
-
 	void resetData()
 	{
 		mappingInitialized = FALSE;
@@ -251,10 +216,6 @@ struct StatsExporterState
 		radarEvents.clear();
 		deathEvents.clear();
 		battlePlanEvents.clear();
-		for (Int i = 0; i < MAX_PLAYER_COUNT; ++i) {
-			queueActive[i].clear();
-			queueCompleted[i].clear();
-		}
 	}
 };
 
@@ -315,10 +276,9 @@ void StatsExporterCollectSnapshot()
 	const Int totalPlayers = ThePlayerList->getPlayerCount();
 
 	FrameSnapshotData snap;
-	// Can NOT memset() entire struct — PlayerSnapshotData now contains std::map which memset destroys
+	memset(&snap, 0, sizeof(snap));
 	snap.frame = currentFrame;
 	snap.playerCount = s_state.gamePlayerCount;
-	// PlayerSnapshotData maps default-construct empty via their own constructors
 
 	Int gameIdx = 0;
 	Int i;
@@ -435,19 +395,11 @@ void StatsExporterCollectSnapshot()
 				s_state.battlePlanEvents.push_back(bev);
 				last.bombardment = curVal;
 				last.holdTheLine = curVal2;
-							last.searchAndDestroy = curVal3;
-						}
-					}
+				last.searchAndDestroy = curVal3;
+			}
+		}
 
-					// TheSuperHackers @feature: count units by template for this player at this snapshot
-					pd.unitCounts.clear();
-					safeIteratePlayerObjects(player, &pd.unitCounts);
-
-					// TheSuperHackers @feature: copy shadow queue tracking data into snapshot
-					pd.activeProductionQueue = s_state.queueActive[i];
-					pd.totalProducedFromQueue = s_state.queueCompleted[i];
-
-					++gameIdx;
+		++gameIdx;
 	}
 
 	s_state.snapshots.push_back(snap);
@@ -569,76 +521,6 @@ void StatsExporterRecordCapture(const Object *captured, const Player *oldOwner, 
 	strlcpy(ev.templateName, captured->getTemplate()->getName().str(), ARRAY_SIZE(ev.templateName));
 
 	s_state.captureEvents.push_back(ev);
-}
-
-//-----------------------------------------------------------------------------
-// TheSuperHackers @feature: shadow production queue tracking via hooks.
-// Called from ProductionUpdate::queueCreateUnit -> addToProductionQueue.
-// Maintains per-player counters for "in queue" and "completed from queue".
-// These work even when the replay simulation can't spawn combat units (CRC divergence),
-// because they track the PRODUCTION STATE rather than the OBJECT LIST.
-//-----------------------------------------------------------------------------
-
-void StatsExporterRecordUnitQueued(const Player *player, const ThingTemplate *unitType, const Object *producer)
-{
-	if (!s_state.exportingActive)
-		return;
-	if (player == nullptr || unitType == nullptr)
-		return;
-
-	Int pi = player->getPlayerIndex();
-	if (pi < 0 || pi >= MAX_PLAYER_COUNT)
-		return;
-
-	const char *tmplName = unitType->getName().str();
-	if (tmplName == nullptr || tmplName[0] == '\0')
-		return;
-
-	s_state.queueActive[pi][std::string(tmplName)]++;
-}
-
-void StatsExporterRecordUnitCompleted(const Player *player, const ThingTemplate *unitType, const Object *producer)
-{
-	if (!s_state.exportingActive)
-		return;
-	if (player == nullptr || unitType == nullptr)
-		return;
-
-	Int pi = player->getPlayerIndex();
-	if (pi < 0 || pi >= MAX_PLAYER_COUNT)
-		return;
-
-	const char *tmplName = unitType->getName().str();
-	if (tmplName == nullptr || tmplName[0] == '\0')
-		return;
-
-	// Decrement active queue count (unit left the queue)
-	Int &active = s_state.queueActive[pi][std::string(tmplName)];
-	if (active > 0)
-		active--;
-	// Increment completed total
-	s_state.queueCompleted[pi][std::string(tmplName)]++;
-}
-
-void StatsExporterRecordUnitCancelled(const Player *player, const ThingTemplate *unitType, const Object *producer)
-{
-	if (!s_state.exportingActive)
-		return;
-	if (player == nullptr || unitType == nullptr)
-		return;
-
-	Int pi = player->getPlayerIndex();
-	if (pi < 0 || pi >= MAX_PLAYER_COUNT)
-		return;
-
-	const char *tmplName = unitType->getName().str();
-	if (tmplName == nullptr || tmplName[0] == '\0')
-		return;
-
-	// Decrement active queue count (unit cancelled, never produced)
-	Int &active = s_state.queueActive[pi][std::string(tmplName)];
-	if (active > 0)
-		active--;
 }
 
 //-----------------------------------------------------------------------------
@@ -815,102 +697,14 @@ static ordered_json buildTimeSeriesJson()
 		p["money"] = money;
 		p["moneyEarned"] = moneyEarned;
 		p["moneySpent"] = moneySpent;
-
-		// TheSuperHackers @feature: export per-template unit count arrays
-		ordered_json unitCounts = ordered_json::object();
-		for (size_t s = 0; s < s_state.snapshots.size(); ++s)
-		{
-			const std::map<std::string, Int> &counts = s_state.snapshots[s].players[pi].unitCounts;
-			// Register any new templates first (backfill with zeros)
-			for (std::map<std::string, Int>::const_iterator it = counts.begin(); it != counts.end(); ++it)
-			{
-				const std::string &tmpl = it->first;
-				if (unitCounts.find(tmpl) == unitCounts.end())
-				{
-					ordered_json arr = ordered_json::array();
-					for (size_t f = 0; f < s; ++f)
-						arr.push_back(0);
-					unitCounts[tmpl] = arr;
-				}
-			}
-			// Push current counts for templates present in this snapshot
-			for (std::map<std::string, Int>::const_iterator it = counts.begin(); it != counts.end(); ++it)
-				unitCounts[it->first].push_back(it->second);
-			// Fill templates not present in this snapshot with last known value
-			for (ordered_json::iterator jt = unitCounts.begin(); jt != unitCounts.end(); ++jt)
-			{
-				if (counts.find(jt.key()) == counts.end())
-				{
-					ordered_json &arr = jt.value();
-					if (arr.size() <= s)
-					{
-						Int lastVal = (arr.size() > 0) ? arr.back().get<Int>() : 0;
-						arr.push_back(lastVal);
-					}
-				}
-			}
-		}
-		p["unitCounts"] = unitCounts;
-
-		// TheSuperHackers @feature: export shadow queue counts (unitCounts based on production queue tracking)
-		ordered_json activeQueue = ordered_json::object();
-		ordered_json totalProduced = ordered_json::object();
-		for (size_t s = 0; s < s_state.snapshots.size(); ++s)
-		{
-			const std::map<std::string, Int> &active = s_state.snapshots[s].players[pi].activeProductionQueue;
-			const std::map<std::string, Int> &completed = s_state.snapshots[s].players[pi].totalProducedFromQueue;
-
-			// activeProductionQueue: backfill and push
-			for (std::map<std::string, Int>::const_iterator it = active.begin(); it != active.end(); ++it) {
-				const std::string &tmpl = it->first;
-				if (activeQueue.find(tmpl) == activeQueue.end()) {
-					ordered_json arr = ordered_json::array();
-					for (size_t f = 0; f < s; ++f) arr.push_back(0);
-					activeQueue[tmpl] = arr;
-				}
-			}
-			for (std::map<std::string, Int>::const_iterator it = active.begin(); it != active.end(); ++it)
-				activeQueue[it->first].push_back(it->second);
-			for (ordered_json::iterator jt = activeQueue.begin(); jt != activeQueue.end(); ++jt) {
-				if (active.find(jt.key()) == active.end()) {
-					ordered_json &arr = jt.value();
-					if (arr.size() <= s) {
-						Int lastVal = (arr.size() > 0) ? arr.back().get<Int>() : 0;
-						arr.push_back(lastVal);
-					}
-				}
-			}
-
-			// totalProducedFromQueue: backfill and push
-			for (std::map<std::string, Int>::const_iterator it = completed.begin(); it != completed.end(); ++it) {
-				const std::string &tmpl = it->first;
-				if (totalProduced.find(tmpl) == totalProduced.end()) {
-					ordered_json arr = ordered_json::array();
-					for (size_t f = 0; f < s; ++f) arr.push_back(0);
-					totalProduced[tmpl] = arr;
-				}
-			}
-			for (std::map<std::string, Int>::const_iterator it = completed.begin(); it != completed.end(); ++it)
-				totalProduced[it->first].push_back(it->second);
-			for (ordered_json::iterator jt = totalProduced.begin(); jt != totalProduced.end(); ++jt) {
-				if (completed.find(jt.key()) == completed.end()) {
-					ordered_json &arr = jt.value();
-					if (arr.size() <= s) {
-						Int lastVal = (arr.size() > 0) ? arr.back().get<Int>() : 0;
-						arr.push_back(lastVal);
-					}
-				}
-			}
-		}
-		p["activeQueue"] = activeQueue;
-		p["totalProducedFromQueue"] = totalProduced;
-
 		playersArr.push_back(p);
 	}
 
 	ts["players"] = playersArr;
 	return ts;
 }
+
+//-----------------------------------------------------------------------------
 
 void ExportGameStatsJSON(const AsciiString& replayDir, const AsciiString& replayFileName)
 {

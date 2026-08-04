@@ -21,7 +21,6 @@ class AsciiString;
 class Object;
 class Player;
 class DamageInfo;
-class ThingTemplate;
 
 /// Export game statistics as a JSON file alongside the replay file.
 /// @param replayDir Directory containing replays (e.g. "[UserDataPath]/Replays/")
@@ -43,12 +42,3 @@ void StatsExporterRecordBuild(const Object *producer, const Object *built);
 
 /// Record a capture event (called from Object::onCapture).
 void StatsExporterRecordCapture(const Object *captured, const Player *oldOwner, const Player *newOwner);
-
-/// Record a unit being queued for production (called from ProductionUpdate::queueCreateUnit).
-void StatsExporterRecordUnitQueued(const Player *player, const ThingTemplate *unitType, const Object *producer);
-
-/// Record a unit that completed production (called from ProductionUpdate after removeFromProductionQueue).
-void StatsExporterRecordUnitCompleted(const Player *player, const ThingTemplate *unitType, const Object *producer);
-
-/// Record a unit being cancelled from production (called from ProductionUpdate::cancelUnitCreate).
-void StatsExporterRecordUnitCancelled(const Player *player, const ThingTemplate *unitType, const Object *producer);

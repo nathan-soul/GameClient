@@ -127,9 +127,6 @@ public:
 		STRETCH_DRAW_HEIGHT = 1 + 2*VERTEX_BUFFER_TILE_LENGTH,
 		LOW_ANGLE_DRAW_WIDTH = 1 + (NORMAL_DRAW_WIDTH-1) * 2,
 		LOW_ANGLE_DRAW_HEIGHT = 1 + (NORMAL_DRAW_HEIGHT-1) * 2,
-		// TheSuperHackers @tweak nathan 18/07/2026 Wide draw for extreme zoom out / low pitch.
-		WIDE_DRAW_WIDTH = 1 + 16*VERTEX_BUFFER_TILE_LENGTH,
-		WIDE_DRAW_HEIGHT = 1 + 16*VERTEX_BUFFER_TILE_LENGTH,
 	};
 
 protected:

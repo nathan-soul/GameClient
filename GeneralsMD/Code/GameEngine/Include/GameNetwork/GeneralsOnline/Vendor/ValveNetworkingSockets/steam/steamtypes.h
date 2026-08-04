@@ -59,14 +59,8 @@ typedef unsigned __int32 uintp;
 
 typedef short int16;
 typedef unsigned short uint16;
-
-// Match bittype.h from Westwood Library (included via PCH) which defines:
-//   typedef unsigned long  uint32;
-//   typedef signed long    sint32;
-// Using long instead of int/int32 avoids C++ duplicate typedef errors on MinGW.
-typedef unsigned long uint32;
-typedef signed long int32;
-
+typedef int int32;
+typedef unsigned int uint32;
 typedef long long int64;
 typedef unsigned long long uint64;
 

@@ -66,6 +66,7 @@
 
 #include "Common/file.h"
 
+
 enum { INFINITE_LOOP_COUNT = 1000000 };
 
 // Callback functions useful for Miles ////////////////////////////////////////////////////////////
@@ -1464,7 +1465,9 @@ void MilesAudioManager::openDevice()
 	// AIL_quick_startup should be replaced later with a call to actually pick which device to use, etc
 	const AudioSettings *audioSettings = getAudioSettings();
 	m_selectedSpeakerType = TheAudio->translateSpeakerTypeToUnsignedInt(m_prefSpeaker);
+
 	retval = AIL_quick_startup(audioSettings->m_useDigital, audioSettings->m_useMidi, audioSettings->m_outputRate, audioSettings->m_outputBits, audioSettings->m_outputChannels);
+
 	if (!retval) {
 		// Initialization failed - ensure m_digitalHandle stays nullptr and audio is disabled
 		m_digitalHandle = nullptr;
@@ -1474,6 +1477,7 @@ void MilesAudioManager::openDevice()
 
 	// Only get handles if initialization succeeded
 	AIL_quick_handles(&m_digitalHandle, nullptr, nullptr);
+
 	// If we still don't have a valid handle, disable audio
 	if (m_digitalHandle == nullptr) {
 		setOn(false, AudioAffect_All);
@@ -1483,6 +1487,7 @@ void MilesAudioManager::openDevice()
 	// Device initialized successfully - proceed with setup
 	buildProviderList();
 	selectProvider(TheAudio->getProviderIndex(m_pref3DProvider));
+
 	// Now that we're all done, update the cached variables so that everything is in sync.
 	TheAudio->refreshCachedVariables();
 

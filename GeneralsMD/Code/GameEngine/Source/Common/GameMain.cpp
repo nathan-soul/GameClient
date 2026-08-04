@@ -40,10 +40,10 @@ Int GameMain()
 {
 	int exitcode = 0;
 	// initialize the game engine using factory function
-		TheFramePacer = new FramePacer();
-		TheFramePacer->enableFramesPerSecondLimit(TRUE);
-		TheGameEngine = CreateGameEngine();
-		TheGameEngine->init();
+	TheFramePacer = new FramePacer();
+	TheFramePacer->enableFramesPerSecondLimit(TRUE);
+	TheGameEngine = CreateGameEngine();
+	TheGameEngine->init();
 
 	if (TheGlobalData->m_exportStats && (!TheGlobalData->m_headless || TheGlobalData->m_simulateReplays.empty()))
 	{

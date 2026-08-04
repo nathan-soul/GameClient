@@ -11,16 +11,7 @@ wineboot --init 2>/dev/null || true
 
 # MSVC paths - replicate what msvcenv.sh sets
 BASE="Z:\\build\\tools\\msvc"
-# Detect MSVC version dynamically to stay in sync with what vsdownload.py installed
-# Fallback to hardcoded defaults if detection fails
-MSVC_DIR="/build/tools/msvc/VC/Tools/MSVC"
-if [ -d "$MSVC_DIR" ]; then
-    MSVCVER=$(ls "$MSVC_DIR" | sort -V | tail -1)
-    echo "Detected MSVC version: $MSVCVER"
-else
-    MSVCVER="14.51.36231"
-    echo "Using default MSVC version: $MSVCVER"
-fi
+MSVCVER="14.50.35717"
 SDKVER="10.0.26100.0"
 ARCH="x86"
 
@@ -56,13 +47,6 @@ RC_COMPILER="Z:/build/tools/msvc/WindowsKits/10/bin/${SDKVER}/x64/rc.exe"
 RC_INCLUDE="Z:/build/tools/msvc/WindowsKits/10/Include/${SDKVER}"
 RC_FLAGS="-I \"${RC_INCLUDE}/um\" -I \"${RC_INCLUDE}/shared\""
 
-# Derive compiler version info from detected MSVCVER
-COMPILER_MAJOR="19"
-COMPILER_MINOR=$(echo $MSVCVER | cut -d. -f2)
-COMPILER_BUILD=$(echo $MSVCVER | cut -d. -f3)
-COMPILER_FULL="${COMPILER_MAJOR}.${COMPILER_MINOR}.${COMPILER_BUILD}"
-MSVC_NUM="${COMPILER_MAJOR}${COMPILER_MINOR}"
-
 # Configure if needed
 if [ "${FORCE_CMAKE:-}" = "true" ] || [ ! -f "${BUILD_DIR}/build.ninja" ]; then
 	rm -f "${BUILD_DIR}/CMakeCache.txt"
@@ -78,9 +62,9 @@ if [ "${FORCE_CMAKE:-}" = "true" ] || [ ! -f "${BUILD_DIR}/build.ninja" ]; then
 		-DCMAKE_LINKER="${LINK_WIN}" \
 		-DCMAKE_C_COMPILER_ID=MSVC \
 		-DCMAKE_CXX_COMPILER_ID=MSVC \
-		-DCMAKE_C_COMPILER_VERSION="${COMPILER_FULL}" \
-		-DCMAKE_CXX_COMPILER_VERSION="${COMPILER_FULL}" \
-		-DMSVC_VERSION="${MSVC_NUM}" \
+		-DCMAKE_C_COMPILER_VERSION=19.50.35726 \
+		-DCMAKE_CXX_COMPILER_VERSION=19.50.35726 \
+		-DMSVC_VERSION=1950 \
 		-DMSVC=1 \
 		-DCMAKE_C_STANDARD_COMPUTED_DEFAULT=17 \
 		-DCMAKE_C_EXTENSIONS_COMPUTED_DEFAULT=OFF \
@@ -123,10 +107,4 @@ echo "Fixed paths: ${FIXED} occurrences with Z: prefix"
 
 # Build - pass MSVC environment into the Windows cmd session
 cd "${BUILD_DIR}"
-wine cmd /c "set TMP=Z:\\build\\tmp& set TEMP=Z:\\build\\tmp& set INCLUDE=${INCLUDE}& set LIB=${LIB}& set LIBPATH=${LIBPATH}& set PATH=${WINEPATH};%PATH%& Z:\\build\\tools\\ninja.exe ${MAKE_TARGET:-z_generals}"
-
-# Deploy: copy the built executable to the deploy directory
-DEPLOY_DIR="/build/cnc/build/deploy"
-mkdir -p "${DEPLOY_DIR}"
-cp "${BUILD_DIR}/GeneralsMD/GeneralsOnlineZH.exe" "${DEPLOY_DIR}/GeneralsOnlineZH.exe"
-echo "Deployed: ${DEPLOY_DIR}/GeneralsOnlineZH.exe"
+wine cmd /c "set TMP=Z:\build\tmp& set TEMP=Z:\build\tmp& set INCLUDE=${INCLUDE}& set LIB=${LIB}& set LIBPATH=${LIBPATH}& set PATH=${WINEPATH};%PATH%& Z:\build\tools\ninja.exe ${MAKE_TARGET:-z_generals}"

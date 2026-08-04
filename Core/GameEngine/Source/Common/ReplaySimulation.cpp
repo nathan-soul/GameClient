@@ -26,7 +26,6 @@
 #include "Common/Recorder.h"
 #include "Common/StatsExporter.h"
 #include "Common/WorkerProcess.h"
-#include "GameClient/MapUtil.h"
 #include "GameLogic/GameLogic.h"
 #include "GameClient/GameClient.h"
 
@@ -53,18 +52,6 @@ int countProcessesRunning(const std::vector<WorkerProcess>& processes)
 int ReplaySimulation::simulateReplaysInThisProcess(const std::vector<AsciiString> &filenames)
 {
 	int numErrors = 0;
-
-	// TheSuperHackers @fix Initialize the MapCache in headless mode.
-	// In normal gameplay, execute() populates TheMapCache, but headless replay
-	// skips execute() and jumps directly to simulateReplays. Without the map
-	// cache, maps can't be loaded, terrain is missing, and CRC mismatches occur.
-	if (!TheMapCache)
-	{
-		TheMapCache = MSGNEW("ReplaySim") MapCache;
-		TheMapCache->updateCache();
-	}
-	printf("MapCache has %d maps loaded\n", (int)(TheMapCache ? TheMapCache->size() : 0));
-	fflush(stdout);
 
 	if (!TheGlobalData->m_headless)
 	{
@@ -121,8 +108,7 @@ int ReplaySimulation::simulateReplaysInThisProcess(const std::vector<AsciiString
 				if (TheRecorder->sawCRCMismatch())
 				{
 					numErrors++;
-					// Don't break on CRC mismatch in headless replay mode — 
-					// continue extracting stats even if state diverges
+					break;
 				}
 			}
 			UnsignedInt gameTimeSec = TheGameLogic->getFrame() / LOGICFRAMES_PER_SECOND;

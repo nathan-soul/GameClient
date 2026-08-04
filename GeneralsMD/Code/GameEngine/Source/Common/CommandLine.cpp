@@ -1193,7 +1193,6 @@ static CommandLineParam paramsForStartup[] =
 
 	// URL to POST compressed stats JSON after export.
 	{ "-statsUrl", parseStatsUrl },
-
 };
 
 // These Params are parsed during Engine Init before INI data is loaded

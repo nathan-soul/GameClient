@@ -819,7 +819,7 @@ void W3DView::updateCameraClipPlanes(const Matrix3D &transform)
 	}
 	else
 	{
-		farZ = WorldHeightMap::WIDE_DRAW_WIDTH * MAP_XY_FACTOR;
+		farZ = WorldHeightMap::NORMAL_DRAW_WIDTH * MAP_XY_FACTOR;
 	}
 
 	if (m_useRealZoomCam)	//WST 10.19.2002
@@ -3742,22 +3742,10 @@ void W3DView::updateTerrain()
 	RefRenderObjListIterator *it = W3DDisplay::m_3DScene->createLightsIterator();
 	const Vector3 cameraPivot(m_pos.x, m_pos.y, m_pos.z);
 	const Real cameraPitch = asin(fabs(m_3DCamera->Get_Forward_Dir().Z));
-	// TheSuperHackers @tweak nathan 18/07/2026 Use camera height to detect extreme zoom out (pitch alone
-	// doesn't change enough during zoom — the camera goes higher, not flatter).
-	const Real heightAboveGround = getCurrentHeightAboveGround();
 	Int drawWidth;
 	Int drawHeight;
 
-	// When camera is very high above terrain (extreme zoom out), use wide draw to prevent
-	// black edges at map borders — the frustum covers more terrain than the normal/low-angle draw windows.
-	// Also triggers at very low pitch (camera tilted to near-horizontal).
-	// TheSuperHackers @tweak nathan 18/07/2026 Wide draw for extreme zoom (height-based + pitch fallback).
-	if (heightAboveGround > 200.0f || cameraPitch <= ViewWidePitchRadians)
-	{
-		drawWidth = WorldHeightMap::WIDE_DRAW_WIDTH;
-		drawHeight = WorldHeightMap::WIDE_DRAW_HEIGHT;
-	}
-	else if (cameraPitch > ViewDefaultLowPitchRadians)
+	if (cameraPitch > ViewDefaultLowPitchRadians)
 	{
 		drawWidth = WorldHeightMap::NORMAL_DRAW_WIDTH;
 		drawHeight = WorldHeightMap::NORMAL_DRAW_HEIGHT;

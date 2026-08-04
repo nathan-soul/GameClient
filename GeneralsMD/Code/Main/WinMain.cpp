@@ -41,8 +41,6 @@
 
 // USER INCLUDES //////////////////////////////////////////////////////////////
 #include "WinMain.h"
-
-
 #include "Lib/BaseType.h"
 #include "Common/CommandLine.h"
 #include "Common/CriticalSection.h"
@@ -807,7 +805,6 @@ Int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 	LPSTR lpCmdLine, Int nCmdShow)
 {
 	Int exitcode = 1;
-
 
 #ifdef RTS_PROFILE_LEGACY
 	Profile::StartRange("init");
