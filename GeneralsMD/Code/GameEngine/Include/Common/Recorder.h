@@ -320,4 +320,3 @@ protected:
 
 extern RecorderClass *TheRecorder;
 RecorderClass *createRecorder();
-void recorderLog(const char* fmt, ...);

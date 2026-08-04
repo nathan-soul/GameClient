@@ -43,7 +43,9 @@
 #include "Common/MessageStream.h"
 #include "Common/MultiplayerSettings.h"
 #include "Common/Recorder.h"
+#if defined(GENERALS_ONLINE)
 #include "Common/LiveObserver.h"
+#endif
 #include "Common/BuildAssistant.h"
 #include "Common/SpecialPower.h"
 #include "Common/ThingTemplate.h"
@@ -432,14 +434,12 @@ void GameLogic::logicMessageDispatcher(GameMessage* msg, void* userData)
 		// blocked every legitimate MSG_NEW_GAME sent while sitting at the main menu — including the live-observer
 		// join flow, which enqueues MSG_NEW_GAME directly from the shell. Use isInInteractiveGame() instead, which
 		// excludes GAME_SHELL/GAME_NONE and still blocks the cheat scenario (an active real match) as intended.
-		liveObserverLog("LIVE_OBSERVER: MSG_NEW_GAME dispatch check — isInInteractiveGame=%d isClearingGameData=%d isLoadingMap=%d recorderMode=%d\n",
-			isInInteractiveGame() ? 1 : 0, isClearingGameData() ? 1 : 0, isLoadingMap() ? 1 : 0,
-			TheRecorder ? TheRecorder->getMode() : -1);
-
 		if (isInInteractiveGame() || isClearingGameData() || isLoadingMap())
 		{
-			liveObserverLog("LIVE_OBSERVER: MSG_NEW_GAME DROPPED — isInInteractiveGame=%d isClearingGameData=%d isLoadingMap=%d\n",
+#if defined(GENERALS_ONLINE)
+			LIVE_OBSERVER_LOG("LIVE_OBSERVER: MSG_NEW_GAME DROPPED - isInInteractiveGame=%d isClearingGameData=%d isLoadingMap=%d\n",
 				isInInteractiveGame() ? 1 : 0, isClearingGameData() ? 1 : 0, isLoadingMap() ? 1 : 0);
+#endif
 			DEBUG_CRASH(("Called MSG_NEW_GAME while game is not ready (inGame=%d, clearingData=%d, loadingMap=%d)",
 				isInInteractiveGame(), isClearingGameData(), isLoadingMap()));
 			break;

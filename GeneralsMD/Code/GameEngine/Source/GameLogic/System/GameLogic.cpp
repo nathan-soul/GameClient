@@ -143,19 +143,6 @@ extern void externalAddTree(Coord3D location, Real scale, Real angle, AsciiStrin
 
 
 
-// TheSuperHackers @fix Gate the ad hoc LIVE_OBSERVER instrumentation below so it
-// only fires for an actual live-observer session, instead of on every game start
-// (including the streamer's own local game), which was polluting the shared
-// live_observer debug log with unrelated noise.
-// Expands to nothing when RTS_DEBUG_LIVE_OBSERVER is off, so the arguments are not evaluated
-// either — unlike a plain call to the (then empty) liveObserverLog, which still would.
-#if defined(LIVE_OBSERVER_LOGGING)
-	#define LIVE_OBSERVER_LOG(...) \
-		do { if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER) (liveObserverLog)(__VA_ARGS__); } while (0)
-#else
-	#define LIVE_OBSERVER_LOG(...) do { } while (0)
-#endif
-
 // I'm making this larger now that we know how big our maps are going to be.
 enum { OBJ_HASH_SIZE = 8192 };
 
@@ -2922,7 +2909,7 @@ void GameLogic::processCommandList(CommandList* list)
 	{
 		// Not gated by LIVE_OBSERVER_LOG: this branch only runs when the session is
 		// NOT a live observer, so the gate would silence it entirely.
-		liveObserverLog("GameLogic: CRC validation check (live observer guard passed) mode=%d isLiveStream=%d\n",
+		LIVE_OBSERVER_LOG("GameLogic: CRC validation check (live observer guard passed) mode=%d isLiveStream=%d\n",
 			TheRecorder ? TheRecorder->getMode() : -1,
 			TheRecorder ? (TheRecorder->isLiveStream() ? 1 : 0) : -1);
 		Bool sawCRCMismatch = FALSE;
@@ -4078,7 +4065,7 @@ void GameLogic::update()
 		UnsignedInt nowMs = timeGetTime();
 		if (nowMs - s_lastHeartbeatLog >= 500)
 		{
-			liveObserverLog("LIVE_OBSERVER: GameLogic::update() heartbeat — m_startNewGame=%d isMoviePlaying=%d isGamePaused=%d gameMode=%d frame=%d\n",
+			LIVE_OBSERVER_LOG("LIVE_OBSERVER: GameLogic::update() heartbeat — m_startNewGame=%d isMoviePlaying=%d isGamePaused=%d gameMode=%d frame=%d\n",
 				m_startNewGame ? 1 : 0, TheDisplay->isMoviePlaying() ? 1 : 0, isGamePaused() ? 1 : 0, m_gameMode, m_frame);
 			s_lastHeartbeatLog = nowMs;
 		}

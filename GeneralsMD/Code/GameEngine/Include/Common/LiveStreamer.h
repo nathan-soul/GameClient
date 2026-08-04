@@ -113,7 +113,6 @@ private:
 	bool wsRecv(std::vector<char>& outBuffer);
 	bool sendBinaryFrame(LiveMsgType type, const void* payload, size_t payloadLen);
 	bool sendBinaryFrame(const QueuedFrame& frame);
-	bool sendJsonFrame(const char* jsonStr);
 	void queueFrame(LiveMsgType type, const void* data, size_t len);
 
 	// UI-informational only — never gate data flow with these

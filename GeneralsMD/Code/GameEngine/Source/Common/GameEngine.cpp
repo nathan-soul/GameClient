@@ -888,7 +888,7 @@ void GameEngine::reset()
 	if (TheGameLogic->isInMultiplayerGame())
 		deleteNetwork = true;
 
-	liveObserverLog("GameEngine::reset: TheNetwork=%p isInMultiplayerGame=%d deleteNetwork=%d\n",
+	LIVE_OBSERVER_LOG("GameEngine::reset: TheNetwork=%p isInMultiplayerGame=%d deleteNetwork=%d\n",
 		(void*)TheNetwork, TheGameLogic->isInMultiplayerGame() ? 1 : 0, deleteNetwork ? 1 : 0);
 
 	resetSubsystems();
@@ -900,7 +900,7 @@ void GameEngine::reset()
 		TheNetwork = nullptr;
 	}
 
-	liveObserverLog("GameEngine::reset: done — TheNetwork=%p\n", (void*)TheNetwork);
+	LIVE_OBSERVER_LOG("GameEngine::reset: done — TheNetwork=%p\n", (void*)TheNetwork);
 	if (background)
 	{
 		background->destroyWindows();

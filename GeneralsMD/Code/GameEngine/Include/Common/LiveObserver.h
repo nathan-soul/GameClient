@@ -191,4 +191,17 @@ void ReplayMenuEnterLiveGamesMode(void);
 void liveObserverLog(const char* fmt, ...);
 void liveObserverInitLog(const char* watchUrl);
 
+// Gates the ad hoc LIVE_OBSERVER instrumentation so it only fires for an actual live-observer
+// session, instead of on every game start (including the streamer's own local game), which used to
+// pollute the shared log with unrelated noise. Expands to nothing when logging is off, so the
+// arguments are not evaluated either - unlike a plain call to the (then empty) liveObserverLog.
+// Defined here rather than per .cpp so every call site shares one gate; a user must have included
+// Common/Recorder.h for TheRecorder/RECORDERMODETYPE_LIVE_OBSERVER.
+#if defined(LIVE_OBSERVER_LOGGING)
+	#define LIVE_OBSERVER_LOG(...) \
+		do { if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER) (liveObserverLog)(__VA_ARGS__); } while (0)
+#else
+	#define LIVE_OBSERVER_LOG(...) do { } while (0)
+#endif
+
 #endif // GENERALS_ONLINE

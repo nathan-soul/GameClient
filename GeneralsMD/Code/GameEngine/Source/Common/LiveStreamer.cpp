@@ -395,11 +395,6 @@ bool LiveStreamer::sendBinaryFrame(const QueuedFrame& frame)
         frame.data.size());
 }
 
-bool LiveStreamer::sendJsonFrame(const char* jsonStr)
-{
-    return sendBinaryFrame(LIVE_MSG_REGISTER, jsonStr, strlen(jsonStr));
-}
-
 // ============================================================================
 // WebSocket I/O (libcurl, background thread)
 // ============================================================================

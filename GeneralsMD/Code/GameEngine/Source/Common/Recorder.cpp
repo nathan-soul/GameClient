@@ -55,21 +55,6 @@
 
 extern NGMPGame* TheNGMPGame;
 
-void recorderLog(const char* fmt, ...)
-{
-	static FILE* logFile = NULL;
-	if (!logFile)
-		logFile = fopen("recorder_debug.log", "w");
-	if (logFile)
-	{
-		va_list args;
-		va_start(args, fmt);
-		vfprintf(logFile, fmt, args);
-		va_end(args);
-		fflush(logFile);
-	}
-}
-
 constexpr const char s_genrep[] = "GENREP";
 constexpr const UnsignedInt replayBufferBytes = 8192;
 
@@ -407,7 +392,7 @@ RecorderClass::~RecorderClass() {
  * will set the recorder mode to RECORDERMODETYPE_PLAYBACK.
  */
 void RecorderClass::init() {
-	liveObserverLog("RecorderClass::init: enter — m_mode=%d m_isLiveStream=%d\n", m_mode, m_isLiveStream ? 1 : 0);
+	LIVE_OBSERVER_LOG("RecorderClass::init: enter — m_mode=%d m_isLiveStream=%d\n", m_mode, m_isLiveStream ? 1 : 0);
 	m_originalGameMode = GAME_NONE;
 	if (m_mode != RECORDERMODETYPE_LIVE_OBSERVER)
 		m_mode = RECORDERMODETYPE_NONE;
@@ -440,7 +425,7 @@ void RecorderClass::init() {
 	OptionPreferences optionPref;
 	m_archiveReplays = optionPref.getArchiveReplaysEnabled();
 
-	liveObserverLog("RecorderClass::init: exit — m_mode=%d m_isLiveStream=%d\n", m_mode, m_isLiveStream ? 1 : 0);
+	LIVE_OBSERVER_LOG("RecorderClass::init: exit — m_mode=%d m_isLiveStream=%d\n", m_mode, m_isLiveStream ? 1 : 0);
 }
 
 /**
@@ -478,7 +463,7 @@ void RecorderClass::updatePlayback() {
 	CullBadCommandsResult result = cullBadCommands();
 
 	if (result.hasClearGameDataMessage) {
-		liveObserverLog("updatePlayback: MSG_CLEAR_GAME_DATA detected, stopping command processing. curFrame=%d nextFrame=%d\n",
+		LIVE_OBSERVER_LOG("updatePlayback: MSG_CLEAR_GAME_DATA detected, stopping command processing. curFrame=%d nextFrame=%d\n",
 			TheGameLogic->getFrame(), m_nextFrame);
 		// TheSuperHackers @bugfix Stop appending more commands if the replay playback is about to end.
 		// Previously this would be able to append more commands, which could have unintended consequences,
@@ -636,7 +621,7 @@ Int RecorderClass::getPreRollSecondsRemaining() const {
  * reaching the end of the playback file.
  */
 void RecorderClass::stopPlayback() {
-	liveObserverLog("stopPlayback: isLiveStream=%d streamEnded=%d mode=%d nextFrame=%d curFrame=%d\n",
+	LIVE_OBSERVER_LOG("stopPlayback: isLiveStream=%d streamEnded=%d mode=%d nextFrame=%d curFrame=%d\n",
 		m_isLiveStream, m_streamEnded, (int)m_mode, m_nextFrame, TheGameLogic->getFrame());
 	if (m_file != nullptr) {
 		m_file->close();
@@ -1765,7 +1750,7 @@ RecorderClass::ReadFrameResult RecorderClass::readNextFrame() {
 				// without truncation, so a session reusing a longer previous session's file
 				// still has that session's bytes sitting here. Reading them succeeds and
 				// yields a garbage frame number at precisely the moment playback should stop.
-				liveObserverLog("readNextFrame: end of stream at offset %d (safe=%d) — stopping playback\n",
+				LIVE_OBSERVER_LOG("readNextFrame: end of stream at offset %d (safe=%d) — stopping playback\n",
 					savedPos, safeOffset);
 				m_nextFrame = -1;
 				stopPlayback();
@@ -1780,7 +1765,7 @@ RecorderClass::ReadFrameResult RecorderClass::readNextFrame() {
 				m_file->seek(savedPos, File::START);
 				return READFRAME_EOF_WAITING;
 			}
-			liveObserverLog("readNextFrame: read FAILED (bytes=%d streamEnded=%d) — stopping playback, curFrame=%d\n",
+			LIVE_OBSERVER_LOG("readNextFrame: read FAILED (bytes=%d streamEnded=%d) — stopping playback, curFrame=%d\n",
 				bytesRead, m_streamEnded, TheGameLogic->getFrame());
 			DEBUG_LOG(("RecorderClass::readNextFrame - read failed on frame %d", TheGameLogic->getFrame()));
 			m_nextFrame = -1;
@@ -1794,7 +1779,7 @@ RecorderClass::ReadFrameResult RecorderClass::readNextFrame() {
 			m_file->seek(savedPos, File::START);
 		}
 		else if (m_nextFrame % 300 == 0 || m_nextFrame <= 3) {
-			liveObserverLog("readNextFrame: OK nextFrame=%d curFrame=%d fileSize=%d filePos=%d\n",
+			LIVE_OBSERVER_LOG("readNextFrame: OK nextFrame=%d curFrame=%d fileSize=%d filePos=%d\n",
 				m_nextFrame, TheGameLogic->getFrame(), m_file->size(), savedPos);
 		}
 		return READFRAME_OK;
@@ -1802,7 +1787,7 @@ RecorderClass::ReadFrameResult RecorderClass::readNextFrame() {
 
 	Int bytesRead = m_file->read(&m_nextFrame, sizeof(m_nextFrame));
 	if (bytesRead != sizeof(m_nextFrame)) {
-		liveObserverLog("readNextFrame: NON-LIVE read FAILED (bytes=%d) — stopping playback, curFrame=%d\n",
+		LIVE_OBSERVER_LOG("readNextFrame: NON-LIVE read FAILED (bytes=%d) — stopping playback, curFrame=%d\n",
 			bytesRead, TheGameLogic->getFrame());
 		DEBUG_LOG(("RecorderClass::readNextFrame - read failed on frame %d", TheGameLogic->getFrame()));
 		m_nextFrame = -1;
@@ -1825,7 +1810,7 @@ void RecorderClass::appendNextCommand() {
 	if (bytesRead != sizeof(type)) {
 		if (m_isLiveStream && !m_streamEnded)
 			return;
-		liveObserverLog("appendNextCommand: read FAILED (bytes=%d isLiveStream=%d streamEnded=%d) — abandoning, curFrame=%d nextFrame=%d\n",
+		LIVE_OBSERVER_LOG("appendNextCommand: read FAILED (bytes=%d isLiveStream=%d streamEnded=%d) — abandoning, curFrame=%d nextFrame=%d\n",
 			bytesRead, m_isLiveStream, m_streamEnded, TheGameLogic->getFrame(), m_nextFrame);
 		DEBUG_LOG(("RecorderClass::appendNextCommand - read failed on frame %d", m_nextFrame/*TheGameLogic->getFrame()*/));
 		return;
