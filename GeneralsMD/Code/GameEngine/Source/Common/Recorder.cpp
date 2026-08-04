@@ -392,7 +392,10 @@ RecorderClass::~RecorderClass() {
  * will set the recorder mode to RECORDERMODETYPE_PLAYBACK.
  */
 void RecorderClass::init() {
-	LIVE_OBSERVER_LOG("RecorderClass::init: enter — m_mode=%d m_isLiveStream=%d\n", m_mode, m_isLiveStream ? 1 : 0);
+	// This pair is deliberately ungated, unlike every other live-observer log site: they exist to
+	// catch m_mode being silently reset to RECORDERMODETYPE_NONE, so gating them on the mode still
+	// being LIVE_OBSERVER would hide exactly the failure they were added to detect.
+	liveObserverLog("RecorderClass::init: enter — m_mode=%d m_isLiveStream=%d\n", m_mode, m_isLiveStream ? 1 : 0);
 	m_originalGameMode = GAME_NONE;
 	if (m_mode != RECORDERMODETYPE_LIVE_OBSERVER)
 		m_mode = RECORDERMODETYPE_NONE;
@@ -425,7 +428,7 @@ void RecorderClass::init() {
 	OptionPreferences optionPref;
 	m_archiveReplays = optionPref.getArchiveReplaysEnabled();
 
-	LIVE_OBSERVER_LOG("RecorderClass::init: exit — m_mode=%d m_isLiveStream=%d\n", m_mode, m_isLiveStream ? 1 : 0);
+	liveObserverLog("RecorderClass::init: exit — m_mode=%d m_isLiveStream=%d\n", m_mode, m_isLiveStream ? 1 : 0);
 }
 
 /**
