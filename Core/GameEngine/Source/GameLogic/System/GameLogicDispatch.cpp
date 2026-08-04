@@ -116,7 +116,11 @@ static void doMoveTo(Object* obj, const Coord3D* pos)
 				if (thePlanSubject[i] == obj)
 					break;
 
-			if (i == thePlanSubjectCount)
+			// TheSuperHackers @fix This increment was unbounded, so the 65th distinct unit given a
+			// move order while a path build is open wrote past the end of a static array. Locally
+			// that needs a stuck BEGIN_PATH_BUILD to reach; a live observer feeds every player's
+			// move orders through here, so it would get there far sooner.
+			if (i == thePlanSubjectCount && thePlanSubjectCount < MAX_PATH_SUBJECTS)
 				thePlanSubject[thePlanSubjectCount++] = obj;
 
 			ai->queueWaypoint(pos);
@@ -2068,9 +2072,15 @@ void GameLogic::logicMessageDispatcher(GameMessage* msg, void* userData)
 	//---------------------------------------------------------------------------------------------
 	case GameMessage::MSG_LOGIC_CRC:
 	{
-		if (TheRecorder && (TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER || TheRecorder->isLiveStream()))
+		// TheSuperHackers @fix A live observer used to be dropped out here along with the streamer,
+		// which meant its CRCs were never compared with the recorded ones at all - so a desynced
+		// observer produced no log line, no UI message and no flag, and simply kept playing a
+		// simulation that had stopped matching the real game. The comparison now runs for an
+		// observer (see RecorderClass::handleCRCMessage, which reports but deliberately does not
+		// pause for a live session); only the streamer keeps the old skip.
+		if (TheRecorder && TheRecorder->isLiveStream() && TheRecorder->getMode() != RECORDERMODETYPE_LIVE_OBSERVER)
 		{
-			// CRC validation is skipped in live observer mode
+			// CRC validation is skipped on the streaming side
 			break;
 		}
 

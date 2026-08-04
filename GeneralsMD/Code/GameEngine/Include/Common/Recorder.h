@@ -227,6 +227,12 @@ public:
 	/// not during the normal sawtooth of maintaining the delay at the boundary.
 	Bool isLiveStalled() const { return m_liveStalled; }
 
+	/// The frame an observer's simulation was first seen to diverge from the recorded one, or 0 if
+	/// it never has. Playback deliberately continues after a divergence — the observer just needs
+	/// to be told that what it is watching is no longer the real game.
+	Bool isLiveDesynced() const { return m_liveDesyncFrame != 0; }
+	UnsignedInt getLiveDesyncFrame() const { return m_liveDesyncFrame; }
+
 	/// Live-stream housekeeping that must keep running even while GameLogic::UPDATE() is
 	/// skipped by the pause — otherwise the pause can never be cleared. Called from
 	/// GameEngine::update() outside the halted path.
@@ -316,6 +322,7 @@ protected:
 	Bool m_liveStalled;				///< held, and no new data has arrived for a while
 	UnsignedInt m_lastSeenLiveEdge;
 	UnsignedInt m_lastLiveEdgeChangeMs;
+	UnsignedInt m_liveDesyncFrame;	///< frame of the first observed CRC divergence, 0 = none
 };
 
 extern RecorderClass *TheRecorder;

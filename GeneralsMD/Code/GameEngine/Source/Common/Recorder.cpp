@@ -375,6 +375,7 @@ RecorderClass::RecorderClass()
 	m_liveStalled = FALSE;
 	m_lastSeenLiveEdge = 0;
 	m_lastLiveEdgeChangeMs = 0;
+	m_liveDesyncFrame = 0;
 	init(); // just for the heck of it.
 }
 
@@ -424,6 +425,7 @@ void RecorderClass::init() {
 	m_liveStalled = FALSE;
 	m_lastSeenLiveEdge = 0;
 	m_lastLiveEdgeChangeMs = 0;
+	m_liveDesyncFrame = 0;
 
 	OptionPreferences optionPref;
 	m_archiveReplays = optionPref.getArchiveReplaysEnabled();
@@ -1375,6 +1377,7 @@ void RecorderClass::endLiveObserverSession() {
 	m_liveStalled = FALSE;
 	m_lastSeenLiveEdge = 0;
 	m_lastLiveEdgeChangeMs = timeGetTime();
+	m_liveDesyncFrame = 0;
 }
 
 Bool RecorderClass::startLiveObserverPlayback(AsciiString filename)
@@ -1396,6 +1399,7 @@ Bool RecorderClass::startLiveObserverPlayback(AsciiString filename)
 	m_liveStalled = FALSE;
 	m_lastSeenLiveEdge = 0;
 	m_lastLiveEdgeChangeMs = timeGetTime();
+	m_liveDesyncFrame = 0;
 	liveObserverLog("startLiveObserverPlayback: mode=LIVE_OBSERVER isLiveStream=1 filename=%s\n", filename.str());
 
 	Bool success = playbackFile(filename);
@@ -1492,6 +1496,24 @@ void RecorderClass::handleCRCMessage(UnsignedInt newCRC, Int playerIndex, Bool f
 
 			// Print Mismatch in case we are simulating replays from console.
 			printf("CRC Mismatch in Frame %d\n", mismatchFrame);
+
+			// TheSuperHackers @fix Record the divergence for a live-observer session, where the
+			// stream keeps arriving and playback keeps running: without this the observer has no
+			// way of knowing its view stopped being the real game. Logged with the live-edge state
+			// too, since the interesting question is always whether we had run out of data.
+			if (m_mode == RECORDERMODETYPE_LIVE_OBSERVER)
+			{
+				m_liveDesyncFrame = mismatchFrame;
+				liveObserverLog("DESYNC: observer diverged from the stream. InGame:%8.8X Replay:%8.8X frame=%d "
+					"curFrame=%d nextFrame=%d liveEdge=%d delayFrames=%d liveWaiting=%d stalled=%d\n",
+					playbackCRC, newCRC, mismatchFrame, TheGameLogic->getFrame(), m_nextFrame,
+					getCachedLiveEdge(), getLiveDelayFrames(), isLiveWaiting() ? 1 : 0, isLiveStalled() ? 1 : 0);
+
+				// Report once, then stop comparing - a desynced simulation diverges further every
+				// frame, so everything after the first mismatch is noise.
+				m_crcInfo.setSawCRCMismatch();
+				return;
+			}
 
 			// TheSuperHackers @tweak Pause the game on mismatch.
 			// But not when a window with focus is opened, because that can make resuming difficult.
@@ -1811,8 +1833,18 @@ void RecorderClass::appendNextCommand() {
 	GameMessage::Type type;
 	Int bytesRead = m_file->read(&type, sizeof(type));
 	if (bytesRead != sizeof(type)) {
-		if (m_isLiveStream && !m_streamEnded)
+		if (m_isLiveStream && !m_streamEnded) {
+			// TheSuperHackers @fix Rewind to the record boundary before giving up. savedPos was
+			// captured and then never used, so a partial read here left the cursor stranded in the
+			// middle of a record - and since nothing ever re-derives the boundary, every record
+			// after it was misparsed for the rest of the session, feeding garbage message types and
+			// object IDs into TheCommandList while playback carried on regardless. A one-way door
+			// straight to a silent desync.
+			m_file->seek(savedPos, File::START);
+			LIVE_OBSERVER_LOG("appendNextCommand: short read of the type field (bytes=%d) at offset %d, rewound\n",
+				bytesRead, savedPos);
 			return;
+		}
 		LIVE_OBSERVER_LOG("appendNextCommand: read FAILED (bytes=%d isLiveStream=%d streamEnded=%d) — abandoning, curFrame=%d nextFrame=%d\n",
 			bytesRead, m_isLiveStream, m_streamEnded, TheGameLogic->getFrame(), m_nextFrame);
 		DEBUG_LOG(("RecorderClass::appendNextCommand - read failed on frame %d", m_nextFrame/*TheGameLogic->getFrame()*/));
@@ -1879,6 +1911,15 @@ void RecorderClass::appendNextCommand() {
 		if (argsLeftForType == 0) {
 			DEBUG_ASSERTCRASH(parserArgType != nullptr, ("parserArgType was null when it shouldn't have been."));
 			if (parserArgType == nullptr) {
+				// Same one-way door as the short read above: bailing here leaves the cursor mid
+				// record (and leaks the parser). Rewind so the next attempt starts on a boundary.
+				if (m_isLiveStream) {
+					m_file->seek(savedPos, File::START);
+					LIVE_OBSERVER_LOG("appendNextCommand: ran out of argument types mid-record at offset %d, rewound\n",
+						savedPos);
+				}
+				deleteInstance(parser);
+				deleteInstance(msg);
 				return;
 			}
 
@@ -2152,6 +2193,16 @@ RecorderClass::CullBadCommandsResult RecorderClass::cullBadCommands() {
         if ((msg->getType() > GameMessage::MSG_BEGIN_NETWORK_MESSAGES) &&
             (msg->getType() < GameMessage::MSG_END_NETWORK_MESSAGES) &&
             (msg->getType() != GameMessage::MSG_LOGIC_CRC)) {
+            deleteInstance(msg);
+        }
+        // TheSuperHackers @fix These two sit outside the network-message range, so the filter above
+        // let them through - but unlike every other message that survives culling, they mutate
+        // simulation state: BEGIN latches a static that makes doMoveTo() queue waypoints instead of
+        // issuing moves, for *every* subsequent move order including the ones arriving from the
+        // stream, and END then executes the accumulated queue. One stray local keypress and the
+        // observer's simulation stops resembling the recording, permanently.
+        else if (msg->getType() == GameMessage::MSG_META_BEGIN_PATH_BUILD ||
+                 msg->getType() == GameMessage::MSG_META_END_PATH_BUILD) {
             deleteInstance(msg);
         }
         else if (msg->getType() == GameMessage::MSG_CLEAR_GAME_DATA)

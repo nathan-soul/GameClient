@@ -7482,7 +7482,15 @@ void InGameUI::drawLiveStatus()
 			AsciiString label;
 			UnsignedInt colour = 0;
 
-			if (!TheLiveObserver->isReady())
+			if (TheRecorder && TheRecorder->isLiveDesynced())
+			{
+				// Not gated behind F6: this is not a fact about the live game, it is a fact about
+				// this client. An observer whose simulation has diverged is watching something that
+				// is no longer the match, and must be told regardless of the spoiler setting.
+				label.format("DESYNCED AT FRAME %d - NO LONGER THE REAL GAME", TheRecorder->getLiveDesyncFrame());
+				colour = 0xFFFF4040; // red
+			}
+			else if (!TheLiveObserver->isReady())
 			{
 				label = "LIVE - CONNECTING...";
 				colour = 0xFFFFFF00; // yellow

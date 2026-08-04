@@ -614,6 +614,19 @@ bool LiveObserver::wsRecv(std::vector<char>& outBuffer)
         return false;
     }
 
+    // TheSuperHackers @fix Only binary payloads belong in the envelope reassembly buffer. meta was
+    // being ignored entirely, so a PING/PONG/TEXT/CLOSE payload surfaced by libcurl would be
+    // appended straight into the byte stream and misparse everything after it - and the relay's
+    // server sends keepalive pings on a timer, which is exactly the kind of thing that shows up
+    // minutes into an otherwise healthy session and never before.
+    if (meta != nullptr && (meta->flags & CURLWS_BINARY) == 0)
+    {
+        liveObserverLog("LiveObserver::wsRecv: dropped a non-binary websocket frame (flags=0x%X, %d bytes)\n",
+            (unsigned)meta->flags, (int)nread);
+        outBuffer.clear();
+        return false;
+    }
+
     outBuffer.resize(nread);
     return nread > 0;
 }
