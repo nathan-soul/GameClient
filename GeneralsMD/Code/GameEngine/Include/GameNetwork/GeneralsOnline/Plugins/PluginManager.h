@@ -43,7 +43,7 @@ public:
 	// ---- IRenderHooks dispatch (called from InGameUI / CommandXlat / WindowXlat) ----
 	static bool HasRenderHooks() { return !s_renderHooks.empty(); }
 	static void DispatchDrawOverlay();
-	static void DispatchRawKeyUp(uint32_t virtualKeyCode, uint32_t modifierFlags);
+	static void DispatchRawKeyUp(uint32_t scanCode, uint32_t modifierFlags);
 	static void DispatchMouseMove(int32_t x, int32_t y);
 	static void DispatchMouseButtonDown(uint8_t buttonIndex, int32_t x, int32_t y, uint32_t modifierFlags);
 	static void DispatchMouseButtonUp(uint8_t buttonIndex, int32_t x, int32_t y, uint32_t modifierFlags);
@@ -72,4 +72,7 @@ private:
 	static std::vector<GORenderCallbacks> s_renderHooks;
 
 	static GOPluginHostAPI BuildHostAPI();
+
+	// The one table every plugin is handed. Process lifetime - see the definition.
+	static const GOPluginHostAPI& GetHostAPI();
 };

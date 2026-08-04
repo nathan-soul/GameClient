@@ -1,5 +1,6 @@
 #include "GameNetwork/GeneralsOnline/Plugins/PluginManager.h"
 #include "GameNetwork/GeneralsOnline/NGMP_include.h"
+#include "Common/NameKeyGenerator.h"
 #include "Common/Player.h"
 #include "Common/PlayerList.h"
 #include "Common/PlayerTemplate.h"
@@ -15,6 +16,10 @@
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Object.h"
 #include "GameLogic/Module/ProductionUpdate.h"
+#include "GameNetwork/NetworkDefs.h" // MAX_SLOTS
+#include "GameNetwork/GeneralsOnline/json.hpp"
+
+#include <stdio.h>
 
 std::vector<GOPluginManager::LoadedPlugin> GOPluginManager::s_plugins;
 std::vector<GOGameplayEventCallbacks> GOPluginManager::s_gameplayEventHooks;
@@ -93,6 +98,33 @@ namespace
 	{
 		Player* p = FindPlayerByIndex(playerIndex);
 		return (p != nullptr && p->isPlayerActive()) ? 1 : 0;
+	}
+
+	// Resolves the real match participants through the engine's own player-slot name keys
+	// ("player0".."player7"), the same way the in-engine observer UI used to. Walking
+	// ThePlayerList by position instead would include the neutral/civilian player, which is a
+	// perfectly ordinary Player - alive, not an observer - and so silently inflates any
+	// "how many players are in this match" count by one.
+	uint32_t HostAPI_GetActivePlayers(uint32_t* outPlayerIndices, uint32_t maxCount)
+	{
+		if (outPlayerIndices == nullptr || maxCount == 0)
+			return 0;
+		if (ThePlayerList == nullptr || TheNameKeyGenerator == nullptr)
+			return 0;
+
+		uint32_t count = 0;
+		for (Int slot = 0; slot < MAX_SLOTS && count < maxCount; ++slot)
+		{
+			AsciiString nameKeyStr;
+			nameKeyStr.format("player%d", slot);
+
+			Player* p = ThePlayerList->findPlayerWithNameKey(TheNameKeyGenerator->nameToKey(nameKeyStr));
+			if (p == nullptr || !p->isPlayerActive() || p->isPlayerObserver())
+				continue;
+
+			outPlayerIndices[count++] = (uint32_t)p->getPlayerIndex();
+		}
+		return count;
 	}
 
 	// ---- Icon drawing. Only valid to call from within a GORenderCallbacks::onDrawOverlay
@@ -332,6 +364,7 @@ GOPluginHostAPI GOPluginManager::BuildHostAPI()
 	api.getPlayerColor = HostAPI_GetPlayerColor;
 	api.getPlayerDisplayName = HostAPI_GetPlayerDisplayName;
 	api.isPlayerActive = HostAPI_IsPlayerActive;
+	api.getActivePlayers = HostAPI_GetActivePlayers;
 	api.drawTemplateIcon2D = HostAPI_DrawTemplateIcon2D;
 	api.drawPowerIcon2D = HostAPI_DrawPowerIcon2D;
 	api.drawText2D = HostAPI_DrawText2D;
@@ -348,6 +381,18 @@ GOPluginHostAPI GOPluginManager::BuildHostAPI()
 	return api;
 }
 
+//-------------------------------------------------------------------------------------------------
+// The single host API table handed to every plugin. Function-local static, so it is built once and
+// then lives for the rest of the process: plugins retain this pointer indefinitely, so it must not
+// be a temporary. Every entry points at a free function, so there is nothing per-plugin about it
+// and one shared instance is correct.
+//-------------------------------------------------------------------------------------------------
+const GOPluginHostAPI& GOPluginManager::GetHostAPI()
+{
+	static const GOPluginHostAPI s_hostAPI = BuildHostAPI();
+	return s_hostAPI;
+}
+
 void GOPluginManager::RegisterGameplayEventHooks(const GOGameplayEventCallbacks* cb)
 {
 	if (cb != nullptr)
@@ -358,6 +403,49 @@ void GOPluginManager::RegisterRenderHooks(const GORenderCallbacks* cb)
 {
 	if (cb != nullptr)
 		s_renderHooks.push_back(*cb);
+}
+
+// Optional sidecar manifest next to the DLL (foo.goplugin.dll -> foo.goplugin.json), matching the
+// shape the anticheat plugins ship. Purely informational: GOPluginInfo from the plugin's own export
+// stays authoritative for ABI version and hook categories, so a missing or malformed manifest is
+// never a reason to refuse a plugin. Returns a fragment to append to the load log line, or "".
+static std::string ReadManifestSummary(const char* dllPath)
+{
+	std::string path(dllPath);
+	const size_t dot = path.rfind(".dll");
+	if (dot == std::string::npos)
+		return std::string();
+	path.replace(dot, 4, ".json");
+
+	FILE* f = fopen(path.c_str(), "rb");
+	if (f == nullptr)
+		return std::string();
+
+	std::string text;
+	char buffer[512];
+	size_t got;
+	while ((got = fread(buffer, 1, sizeof(buffer), f)) > 0)
+		text.append(buffer, got);
+	fclose(f);
+
+	try
+	{
+		nlohmann::json manifest = nlohmann::json::parse(text);
+		const std::string author = manifest.value("plugin_author", std::string());
+		const std::string website = manifest.value("website", std::string());
+		if (author.empty() && website.empty())
+			return std::string();
+
+		std::string summary = " [by " + (author.empty() ? std::string("unknown") : author);
+		if (!website.empty())
+			summary += ", " + website;
+		return summary + "]";
+	}
+	catch (...)
+	{
+		NetworkLog(ELogVerbosity::LOG_RELEASE, "[Plugin] Manifest %s is not valid JSON, ignoring it", path.c_str());
+		return std::string();
+	}
 }
 
 bool GOPluginManager::LoadPlugin(const char* dllPath)
@@ -404,19 +492,49 @@ bool GOPluginManager::LoadPlugin(const char* dllPath)
 	loaded.tick = fnTick;
 	loaded.info = info;
 
-	GOPluginHostAPI hostAPI = BuildHostAPI();
-	if (!fnInitialize(&hostAPI))
+	// Must outlive this call: every plugin keeps the pointer it is handed and calls through it for
+	// the rest of the process (see the lifetime note in PluginABI.h). Building it into a local and
+	// passing its address would hand out a pointer into a stack frame that dies on return - the
+	// plugin's first call after load would then jump through whatever reused that stack.
+	if (!fnInitialize(&GetHostAPI()))
 	{
 		NetworkLog(ELogVerbosity::LOG_RELEASE, "[Plugin] %s Initialize() returned failure", dllPath);
 		FreeLibrary(hModule);
 		return false;
 	}
 
-	NetworkLog(ELogVerbosity::LOG_RELEASE, "[Plugin] Loaded %s v%s (%s) hooks=0x%X",
-		loaded.name.c_str(), loaded.version.c_str(), dllPath, info.hookCategories);
+	NetworkLog(ELogVerbosity::LOG_RELEASE, "[Plugin] Loaded %s v%s (%s) hooks=0x%X%s",
+		loaded.name.c_str(), loaded.version.c_str(), dllPath, info.hookCategories,
+		ReadManifestSummary(dllPath).c_str());
 
 	s_plugins.push_back(loaded);
 	return true;
+}
+
+// Loads every *.goplugin.dll directly inside pluginDir. Returns how many loaded.
+static int LoadPluginsInFolder(const std::string& pluginDir)
+{
+	const std::string searchPattern = pluginDir + "\\*.goplugin.dll";
+
+	WIN32_FIND_DATAA findData;
+	HANDLE hFind = FindFirstFileA(searchPattern.c_str(), &findData);
+	if (hFind == INVALID_HANDLE_VALUE)
+		return 0;
+
+	int loaded = 0;
+	do
+	{
+		if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+			continue;
+
+		const std::string fullPath = pluginDir + "\\" + findData.cFileName;
+		if (GOPluginManager::LoadPlugin(fullPath.c_str()))
+			++loaded;
+	}
+	while (FindNextFileA(hFind, &findData) != 0);
+
+	FindClose(hFind);
+	return loaded;
 }
 
 void GOPluginManager::LoadPluginsFromDirectory(const char* directoryPath)
@@ -424,27 +542,59 @@ void GOPluginManager::LoadPluginsFromDirectory(const char* directoryPath)
 	if (directoryPath == nullptr)
 		return;
 
-	std::string searchPattern = std::string(directoryPath) + "\\*.goplugin.dll";
+	const std::string root(directoryPath);
+
+	// One folder per plugin, holding its DLL plus an optional .json manifest - the same layout the
+	// anticheat plugins already use (plugins\easyanticheat\, plugins\goanticheat\). Keeping every
+	// plugin's files together is what makes that convention worth following.
+	int loaded = 0;
+	int folders = 0;
 
 	WIN32_FIND_DATAA findData;
-	HANDLE hFind = FindFirstFileA(searchPattern.c_str(), &findData);
-	if (hFind == INVALID_HANDLE_VALUE)
+	HANDLE hFind = FindFirstFileA((root + "\\*").c_str(), &findData);
+	if (hFind != INVALID_HANDLE_VALUE)
 	{
-		NetworkLog(ELogVerbosity::LOG_RELEASE, "[Plugin] No plugins found in %s", directoryPath);
-		return;
+		do
+		{
+			if ((findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+				continue;
+			if (strcmp(findData.cFileName, ".") == 0 || strcmp(findData.cFileName, "..") == 0)
+				continue;
+
+			++folders;
+			loaded += LoadPluginsInFolder(root + "\\" + findData.cFileName);
+		}
+		while (FindNextFileA(hFind, &findData) != 0);
+
+		FindClose(hFind);
 	}
 
-	do
+	// A DLL dropped loose in plugins\ is not picked up. Say so loudly rather than silently doing
+	// nothing: a plugin that never runs looks exactly like a plugin that runs and draws nothing,
+	// and telling those apart cost a full round of testing once already.
+	WIN32_FIND_DATAA strayData;
+	HANDLE hStray = FindFirstFileA((root + "\\*.goplugin.dll").c_str(), &strayData);
+	if (hStray != INVALID_HANDLE_VALUE)
 	{
-		if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-			continue;
+		do
+		{
+			if (strayData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+				continue;
 
-		std::string fullPath = std::string(directoryPath) + "\\" + findData.cFileName;
-		LoadPlugin(fullPath.c_str());
+			NetworkLog(ELogVerbosity::LOG_RELEASE,
+				"[Plugin] IGNORED %s\\%s - plugins live in their own folder. Move it to %s\\<name>\\%s",
+				root.c_str(), strayData.cFileName, root.c_str(), strayData.cFileName);
+		}
+		while (FindNextFileA(hStray, &strayData) != 0);
+
+		FindClose(hStray);
 	}
-	while (FindNextFileA(hFind, &findData) != 0);
 
-	FindClose(hFind);
+	if (loaded == 0)
+	{
+		NetworkLog(ELogVerbosity::LOG_RELEASE, "[Plugin] No plugins loaded (%s, %d folder(s) scanned)",
+			root.c_str(), folders);
+	}
 }
 
 void GOPluginManager::UnloadAll()
@@ -529,10 +679,10 @@ void GOPluginManager::DispatchDrawOverlay()
 		if (cb.onDrawOverlay != nullptr) cb.onDrawOverlay();
 }
 
-void GOPluginManager::DispatchRawKeyUp(uint32_t virtualKeyCode, uint32_t modifierFlags)
+void GOPluginManager::DispatchRawKeyUp(uint32_t scanCode, uint32_t modifierFlags)
 {
 	for (GORenderCallbacks& cb : s_renderHooks)
-		if (cb.onRawKeyUp != nullptr) cb.onRawKeyUp(virtualKeyCode, modifierFlags);
+		if (cb.onRawKeyUp != nullptr) cb.onRawKeyUp(scanCode, modifierFlags);
 }
 
 void GOPluginManager::DispatchMouseMove(int32_t x, int32_t y)

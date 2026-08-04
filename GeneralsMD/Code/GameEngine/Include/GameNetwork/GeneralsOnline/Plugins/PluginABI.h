@@ -26,7 +26,7 @@
 // Bump when the layout of any struct below changes. GOPluginInfo::abiVersion and
 // GOPluginHostAPI::abiVersion are checked against this on load; a mismatch fails the plugin load
 // rather than risk silently misreading a function-pointer table with a different layout.
-#define GO_PLUGIN_ABI_VERSION 4 // v4: simulation clock, live production progress, world->screen, object screen bounds, clock-wedge drawing
+#define GO_PLUGIN_ABI_VERSION 5 // v5: getActivePlayers (slot-resolved roster). v4: simulation clock, live production progress, world->screen, object screen bounds, clock-wedge drawing
 
 // ------------------------------------------------------------------------------------------------
 // Hook categories a plugin can use. A plugin advertises which categories it *might* use via
@@ -116,8 +116,10 @@ struct GOGameplayEventCallbacks
 struct GORenderCallbacks
 {
 	void (*onDrawOverlay)();
-	// modifierFlags: bit0 = CTRL, bit1 = SHIFT, bit2 = ALT
-	void (*onRawKeyUp)(uint32_t virtualKeyCode, uint32_t modifierFlags);
+	// scanCode is a DirectInput scan code (DIK_*, e.g. DIK_F9 == 0x43), which is what the engine
+	// itself keys off - NOT a Windows virtual-key code. Comparing against VK_* silently never
+	// matches. modifierFlags: bit0 = CTRL, bit1 = SHIFT, bit2 = ALT.
+	void (*onRawKeyUp)(uint32_t scanCode, uint32_t modifierFlags);
 
 	// TheSuperHackers @feature: Mouse passthrough, same "fires for every event, engine behavior
 	// unaffected" discipline as onRawKeyUp — this is a side-channel notification, never gates or
@@ -134,6 +136,10 @@ struct GORenderCallbacks
 // Host API — handed to the plugin at GO_Plugin_Initialize time. Registration functions may be
 // called multiple times by the same plugin (e.g. to register both gameplay-event and render
 // hooks); each is independent and optional.
+//
+// LIFETIME: the pointer passed to GO_Plugin_Initialize has process lifetime and stays valid until
+// the plugin is unloaded, so a plugin may retain it. Copying the struct by value is still the safer
+// habit - it costs nothing and does not depend on the host getting this right.
 // ------------------------------------------------------------------------------------------------
 struct GOPluginHostAPI
 {
@@ -150,7 +156,18 @@ struct GOPluginHostAPI
 	// match currently loaded, index out of range, observer slot, etc). ---
 	uint32_t (*getPlayerColor)(uint32_t playerIndex);      // colorARGB, same packing as drawText2D/drawRect2D
 	void (*getPlayerDisplayName)(uint32_t playerIndex, char* outBuf, int32_t bufSize);
-	uint8_t (*isPlayerActive)(uint32_t playerIndex);       // TRUE if alive and not an observer
+
+	// TRUE if alive and not an observer. NOTE: this is true for the neutral/civilian player too,
+	// which is a real Player with its own playerIndex - so counting the indices for which this
+	// returns true does NOT give you the match participants. Use getActivePlayers below for that.
+	uint8_t (*isPlayerActive)(uint32_t playerIndex);
+
+	// Writes the playerIndex of each active, non-observer match participant into outPlayerIndices
+	// and returns how many were written (never more than maxCount). This is the roster query to
+	// build UI from: it walks the engine's real player slots, so the neutral/civilian player is not
+	// in it, and the values returned are the same playerIndex the gameplay-event structs carry -
+	// no second numbering scheme to reconcile. Returns 0 when no match is loaded.
+	uint32_t (*getActivePlayers)(uint32_t* outPlayerIndices, uint32_t maxCount);
 
 	// --- Icon drawing. Looks up the named template server-side (where the engine's ThingTemplate/
 	// UpgradeTemplate/CommandButton data safely lives) and draws its button art; the plugin never
