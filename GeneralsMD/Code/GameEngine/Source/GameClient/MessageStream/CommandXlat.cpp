@@ -48,6 +48,9 @@
 #include "Common/Radar.h"
 #include "Common/Recorder.h"
 #include "Common/SpecialPower.h"
+#if defined(GENERALS_ONLINE)
+#include "GameNetwork/GeneralsOnline/Plugins/PluginManager.h"
+#endif
 #include "Common/StatsCollector.h"
 #include "Common/ThingTemplate.h"
 #include "Common/GameLOD.h"
@@ -4010,6 +4013,22 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 						: TheGameText->FETCH_OR_SUBSTITUTE("GUI:LiveStatusOff", L"Live status bar OFF (F6)"));
 			}
 			disp = DESTROY_MESSAGE;
+		}
+
+		// TheSuperHackers @feature Forward every raw key-up to any plugin registered for IRenderHooks
+		// (e.g. an observer-overlay plugin toggling its own panels), regardless of whether the engine
+		// already handled this specific key above — plugin hotkeys are chosen by the plugin and are not
+		// expected to collide with the engine's own (F11/F10/F6/F5).
+		if (GOPluginManager::HasRenderHooks())
+		{
+			uint32_t modifierFlags = 0;
+			if (TheKeyboard != nullptr)
+			{
+				if (TheKeyboard->isCtrl())  modifierFlags |= 1;
+				if (TheKeyboard->isShift()) modifierFlags |= 2;
+				if (TheKeyboard->isAlt())   modifierFlags |= 4;
+			}
+			GOPluginManager::DispatchRawKeyUp((uint32_t)key, modifierFlags);
 		}
 
     break;

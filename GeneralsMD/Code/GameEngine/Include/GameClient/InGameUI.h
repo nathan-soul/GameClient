@@ -487,6 +487,14 @@ public:  // ********************************************************************
 	virtual void postDraw();													///< Logic which needs to occur after the UI renders
 	virtual void postWindowDraw();											///< Logic which needs to occur after the WindowManager has repainted the menus
 
+	// TheSuperHackers @feature Minimal 2D draw primitives backing GOPluginHostAPI::drawText2D/
+	// drawRect2D (see PluginABI.h), called from within GOPluginManager::DispatchDrawOverlay(), i.e.
+	// only ever during postWindowDraw() where screen-space 2D drawing is already set up. Only called
+	// on TheInGameUI (not virtual dispatch relevant), so implemented once here rather than per
+	// game-variant subclass.
+	void drawPluginText2D(Int x, Int y, const char* utf8Text, Color color);
+	void drawPluginRect2D(Int x, Int y, Int width, Int height, Color color, Bool filled);
+
 	/// Ingame video playback
 	virtual void playMovie(const AsciiString& movieName);
 	virtual void stopMovie();

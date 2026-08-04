@@ -63,6 +63,7 @@
 #include "Common/DamageFX.h"
 #include "Common/MultiplayerSettings.h"
 #include "Common/Recorder.h"
+#include "GameNetwork/GeneralsOnline/Plugins/PluginManager.h"
 #include "Common/LiveObserver.h"
 #include "Common/SpecialPower.h"
 #include "Common/TerrainTypes.h"
@@ -305,6 +306,8 @@ GameEngine::GameEngine()
 //-------------------------------------------------------------------------------------------------
 GameEngine::~GameEngine()
 {
+	GOPluginManager::UnloadAll();
+
 	//extern std::vector<std::string>	preloadTextureNamesGlobalHack;
 	//preloadTextureNamesGlobalHack.clear();
 
@@ -862,6 +865,12 @@ void GameEngine::init()
 	// NGMP_CHANGE: Init our settings
 	NGMP_OnlineServicesManager::Settings.Initialize();
 
+	// TheSuperHackers @feature Load every plugin DLL (*.goplugin.dll) found in the plugins
+	// directory. Distinct from AnticheatPlugInterface::LoadPlugin(), which loads exactly one
+	// hardcoded anticheat plugin from lobby-join code — this loads any number of plugins once at
+	// startup, each opting into whichever hook categories it supports (see PluginABI.h).
+	GOPluginManager::LoadPluginsFromDirectory("plugins");
+
 }
 
 /** -----------------------------------------------------------------------------------------------
@@ -1027,6 +1036,11 @@ void GameEngine::update()
 
 			TheAudio->UPDATE();
 			TheGameClient->UPDATE();
+
+			// TheSuperHackers @feature Tick every loaded plugin (GO_Plugin_Tick) once per frame,
+			// unconditionally — not gated behind GameLogic pause state, so a plugin's own polling
+			// (e.g. tracking the active-player roster) is never blocked by a paused simulation.
+			GOPluginManager::Tick();
 
 #if defined(GENERALS_ONLINE)
 			// Propagate local input messages even in live observer mode.

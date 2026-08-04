@@ -69,6 +69,7 @@
 #include "GameClient/GameWindowID.h"
 #include "GameClient/GUICallbacks.h"
 #include "GameClient/InGameUI.h"
+#include "GameNetwork/GeneralsOnline/Plugins/PluginManager.h"
 #include "GameClient/VideoPlayer.h"
 #include "GameClient/Mouse.h"
 #include "GameClient/GadgetStaticText.h"
@@ -3886,6 +3887,54 @@ void InGameUI::postWindowDraw()
 
 	if (m_observerNotificationPointSize > 0)
 		drawObserverNotifications(hudOffsetX, hudOffsetY);
+
+	// TheSuperHackers @feature Per-frame overlay draw hook for IRenderHooks plugins. Called last, in
+	// the same screen-space 2D context as the draw* calls above, so a plugin can use the host's 2D
+	// draw primitives (GOPluginHostAPI::drawText2D/drawRect2D/...) without touching 3D state.
+	if (GOPluginManager::HasRenderHooks())
+		GOPluginManager::DispatchDrawOverlay();
+}
+
+//-------------------------------------------------------------------------------------------------
+// TheSuperHackers @feature Backing implementation for GOPluginHostAPI::drawText2D. Reuses the same
+// font (m_messageFont/m_messagePointSize/m_messageBold) as InGameUI's own chat/UI messages, since a
+// plugin-drawn overlay label is visually the same kind of thing. Creates and frees a DisplayString
+// per call rather than caching one, since this is only ever called from the bounded, low-frequency
+// overlay draw path (not a hot loop), keeping the API simple and stateless from the plugin's side.
+//-------------------------------------------------------------------------------------------------
+void InGameUI::drawPluginText2D(Int x, Int y, const char* utf8Text, Color color)
+{
+	if (utf8Text == nullptr || utf8Text[0] == '\0' || TheDisplayStringManager == nullptr || TheFontLibrary == nullptr)
+		return;
+
+	DisplayString* displayString = TheDisplayStringManager->newDisplayString();
+	if (displayString == nullptr)
+		return;
+
+	displayString->setFont(TheFontLibrary->getFont(m_messageFont,
+		TheGlobalLanguageData ? TheGlobalLanguageData->adjustFontSize(m_messagePointSize) : m_messagePointSize, m_messageBold));
+
+	UnicodeString text;
+	text.translate(AsciiString(utf8Text));
+	displayString->setText(text);
+
+	displayString->draw(x, y, color, GameMakeColor(0, 0, 0, 255));
+
+	TheDisplayStringManager->freeDisplayString(displayString);
+}
+
+//-------------------------------------------------------------------------------------------------
+// TheSuperHackers @feature Backing implementation for GOPluginHostAPI::drawRect2D.
+//-------------------------------------------------------------------------------------------------
+void InGameUI::drawPluginRect2D(Int x, Int y, Int width, Int height, Color color, Bool filled)
+{
+	if (TheDisplay == nullptr)
+		return;
+
+	if (filled)
+		TheDisplay->drawFillRect(x, y, width, height, color);
+	else
+		TheDisplay->drawOpenRect(x, y, width, height, 1.0f, color);
 }
 
 //-------------------------------------------------------------------------------------------------
