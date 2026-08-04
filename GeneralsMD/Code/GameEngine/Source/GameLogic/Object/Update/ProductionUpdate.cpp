@@ -202,9 +202,6 @@ ProductionUpdate::ProductionUpdate( Thing *thing, const ModuleData* moduleData )
 //-------------------------------------------------------------------------------------------------
 ProductionUpdate::~ProductionUpdate()
 {
-	// TheSuperHackers @feature 15/07/2026 Notify overlay: building destroyed/sold
-	if (TheInGameUI)
-		TheInGameUI->onBuildingDestroyed(getObject());
 
 	// destroy any queued productions
 	ProductionEntry *production;
@@ -270,27 +267,19 @@ Bool ProductionUpdate::queueUpgrade( const UpgradeTemplate *upgrade )
 	// sanity check to make sure we can build this upgrade
 	if( upgrade->getUpgradeType() == UPGRADE_TYPE_PLAYER &&
 			TheUpgradeCenter->canAffordUpgrade( player, upgrade ) == FALSE )
-	{
 		return FALSE;
-	}
 	else if( upgrade->getUpgradeType() == UPGRADE_TYPE_OBJECT &&
 					 (getObject()->hasUpgrade( upgrade ) == TRUE ||
 					  getObject()->affectedByUpgrade( upgrade ) == FALSE) )
-	{
 		return FALSE;
-	}
 
 	// you cannot queue the production of an upgrade twice in this queue
 	if( isUpgradeInQueue( upgrade ) == TRUE )
-	{
 		return FALSE;
-	}
 
 	// STOP cheaters by making sure they can actually build this
 	if( !getObject()->canProduceUpgrade(upgrade) )
-	{
 		return FALSE;
-	}
 
 	//
 	// you cannot queue a player upgrade production if you are producing one already somewhere else
@@ -298,9 +287,7 @@ Bool ProductionUpdate::queueUpgrade( const UpgradeTemplate *upgrade )
 	//
 	if( upgrade->getUpgradeType() == UPGRADE_TYPE_PLAYER &&
       (player->hasUpgradeComplete( upgrade ) || player->hasUpgradeInProduction( upgrade )) )
-	{
 		return FALSE;
-	}
 
 	if (m_productionCount >= getProductionUpdateModuleData()->m_maxQueueEntries)
 	{
@@ -319,13 +306,10 @@ Bool ProductionUpdate::queueUpgrade( const UpgradeTemplate *upgrade )
 	production->m_type = PRODUCTION_UPGRADE;
 	production->m_upgradeToResearch = upgrade;
 	production->m_productionID = PRODUCTIONID_INVALID;  // not needed for upgrades, you can only have one of
-														 // this type in the queue
+																	 // this type in the queue
 
 	// tie to the end of the production queue
 	addToProductionQueue( production );
-
-	if (TheInGameUI)
-		TheInGameUI->onUpgradeQueued(getObject()->getControllingPlayer(), upgrade, getObject(), production->getPercentComplete());
 
 	// add this upgrade as in progress in the player
 	player->addUpgrade( upgrade, UPGRADE_STATUS_IN_PRODUCTION );
@@ -374,10 +358,6 @@ void ProductionUpdate::cancelUpgrade( const UpgradeTemplate *upgrade )
 	// refund money back to the player
 	Money *money = player->getMoney();
 	money->deposit( production->m_upgradeToResearch->calcCostToBuild( player ), TRUE, FALSE );
-
-	// TheSuperHackers @feature 17/07/2026 Notify observer overlay of cancelled upgrade
-	if (TheInGameUI)
-		TheInGameUI->onUpgradeCancelled(getObject()->getControllingPlayer(), production->m_upgradeToResearch, getObject());
 
 	// remove this production from the queue
 	removeFromProductionQueue( production );
@@ -471,10 +451,6 @@ Bool ProductionUpdate::queueCreateUnit( const ThingTemplate *unitType, Productio
 	// tie to the end of the production queue
 	addToProductionQueue( production );
 
-	// TheSuperHackers @feature 15/07/2026 Notify observer overlay of queued unit
-	if (TheInGameUI)
-		TheInGameUI->onUnitQueued(getObject()->getControllingPlayer(), unitType, getObject(), production->getPercentComplete(), production->getProductionID());
-
 	return TRUE;  // unit queued
 
 }
@@ -493,13 +469,6 @@ void ProductionUpdate::cancelUnitCreate( ProductionID productionID )
 		// are we at the one we want get rid of it
 		if( production->m_productionID == productionID )
 		{
-
-			// TheSuperHackers @feature 15/07/2026 Notify overlay BEFORE removing from queue
-			if (TheInGameUI && production->m_objectToProduce)
-			{
-				Player* p = getObject()->getControllingPlayer();
-				TheInGameUI->onUnitCancelled(p, production->m_objectToProduce, getObject(), production->m_productionID);
-			}
 
 			// give the player the cost of the object back
 			Player *player = getObject()->getControllingPlayer();
@@ -706,10 +675,6 @@ UpdateSleepTime ProductionUpdate::update()
 		// remove from queue list
 		removeFromProductionQueue( production );
 
-		// TheSuperHackers @feature 15/07/2026 Notify observer overlay of cancelled unit
-		if (TheInGameUI)
-			TheInGameUI->onUnitCancelled(player, production->m_objectToProduce, getObject(), production->m_productionID);
-
 		// delete the production entry
 		deleteInstance(production);
 
@@ -902,10 +867,6 @@ UpdateSleepTime ProductionUpdate::update()
 					// remove this production entry so we can go on to the next if we are totally finished
 					removeFromProductionQueue( production );
 
-					// TheSuperHackers @feature 15/07/2026 Notify overlay: unit completed production
-					if (TheInGameUI)
-						TheInGameUI->onUnitCompleted(player, production->m_objectToProduce, us);
-
 					// delete the production entry
 					deleteInstance(production);
 				}
@@ -1005,10 +966,6 @@ UpdateSleepTime ProductionUpdate::update()
 					}
 				}
 			}
-
-			// TheSuperHackers @feature 17/07/2026 Notify overlay: upgrade completed production
-			if (TheInGameUI)
-				TheInGameUI->onUpgradeCompleted(player, upgrade, us);
 
 			// remove this production entry so we can go on to the next
 			removeFromProductionQueue( production );
@@ -1169,10 +1126,6 @@ UnsignedInt ProductionUpdate::countUnitTypeInQueue( const ThingTemplate *unitTyp
 // ------------------------------------------------------------------------------------------------
 void ProductionUpdate::onDie( const DamageInfo *damageInfo )
 {
-	// TheSuperHackers @feature 15/07/2026 Notify overlay to clear all queued units for this building
-	if (TheInGameUI)
-		TheInGameUI->onBuildingDestroyed(getObject());
-
 	// we need to cancel all of our production on death
 	cancelAndRefundAllProduction();
 }

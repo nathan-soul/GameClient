@@ -259,58 +259,6 @@ Int OptionPreferences::getObserverStatsFontSize(void)
     return fontSize;
 }
 
-Real OptionPreferences::getUnitQueueScale(void)
-{
-    OptionPreferences::const_iterator it = find("UnitQueueScale");
-    if (it == end())
-        return 2.0f;
-    Real scale = (Real)atof(it->second.str());
-    if (scale < 0.25f)
-        scale = 0.25f;
-    if (scale > 8.0f)
-        scale = 8.0f;
-    return scale;
-}
-
-Real OptionPreferences::getProductionQueueScale(void)
-{
-    OptionPreferences::const_iterator it = find("ProductionQueueScale");
-    if (it == end())
-        return 2.0f;
-    Real scale = (Real)atof(it->second.str());
-    if (scale < 0.25f)
-        scale = 0.25f;
-    if (scale > 8.0f)
-        scale = 8.0f;
-    return scale;
-}
-
-Real OptionPreferences::getGeneralsPowerScale(void)
-{
-    OptionPreferences::const_iterator it = find("GeneralsPowerScale");
-    if (it == end())
-        return 2.0f;
-    Real scale = (Real)atof(it->second.str());
-    if (scale < 0.25f)
-        scale = 0.25f;
-    if (scale > 8.0f)
-        scale = 8.0f;
-    return scale;
-}
-
-Int OptionPreferences::getGeneralsPowerFlashDuration(void)
-{
-    OptionPreferences::const_iterator it = find("GeneralsPowerFlashDuration");
-    if (it == end())
-        return 10;
-    Int duration = atoi(it->second.str());
-    if (duration < 1)
-        duration = 1;
-    if (duration > 60)
-        duration = 60;
-    return duration;
-}
-
 void OptionPreferences::setCampaignDifficulty(Int diff)
 {
 	AsciiString prefString;

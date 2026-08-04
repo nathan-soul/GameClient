@@ -614,7 +614,7 @@ private:
 	void drawSystemTime(Int& x, Int& y);
 	void drawGameTime();
 	void drawPlayerInfoList();
-	void drawOverlayExt();  // safe overlay draw (queues + powers) — called every frame, independent of stats font
+	void drawLiveStatus();	// live streaming / live-observer status banner, drawn every frame
 	void drawObserverStats(Int &x, Int &y);
 	Bool m_observerStatsHidden = false;   // hide/show observer overlay
 
@@ -630,14 +630,6 @@ public:
   void addObserverNotificationRaw(const UnicodeString& message, Color color);
   void notifyGeneralPromotion(Player* player, ScienceType science);
   void notifySpecialPowerUsed(Player* player, const SpecialPowerTemplate* powerTemplate);
-  void onSpecialPowerTriggered(Player* player, const SpecialPowerTemplate* spTemplate, const Coord3D& location);
-  void onUnitQueued(Player* player, const ThingTemplate* unitType, Object* producer, Real percentComplete, Int productionID);
-  void onUnitCancelled(Player* player, const ThingTemplate* unitType, Object* producer, Int productionID);
-  void onUnitCompleted(Player* player, const ThingTemplate* unitType, Object* producer);
-  void onUpgradeQueued(Player* player, const UpgradeTemplate* upgradeType, Object* producer, Real percentComplete);
-  void onUpgradeCancelled(Player* player, const UpgradeTemplate* upgradeType, Object* producer);
-  void onUpgradeCompleted(Player* player, const UpgradeTemplate* upgradeType, Object* producer);
-  void onBuildingDestroyed(Object* producer);
   void refreshObserverNotificationResources(void);
   Bool m_observerNotificationsHidden;   // hide/show observer notifications
 
@@ -659,87 +651,13 @@ protected:
 	virtual void xfer(Xfer* xfer) override;
 	virtual void loadPostProcess() override;
 
-public: // TheSuperHackers: overlay methods must be public for file-scope safe* wrappers
-	// TheSuperHackers @feature 14/07/2026 Overlay extension data collection
-	void resolveOverlayPlayers();
-	void gatherOverlayExtData();
-	void drawUnitQueues(Int baseX, Int baseY, Int lineH, Real scale);
-	void drawPowerCooldowns(Int baseX, Int baseY, Int lineH, Real scale);
-	void drawPowerFlashes();
-	void drawUnitQueueClicks();  // click-to-navigate for queue icons
-
-	// TheSuperHackers @feature 19/07/2026 Per-building queues (world-space, Ctrl+Q toggle)
-	enum QueueDisplayMode
-	{
-		QUEUE_DISPLAY_ALWAYS,       // always show above every production building
-		QUEUE_DISPLAY_ON_HOVER,     // only show above building under mouse
-		QUEUE_DISPLAY_HIDDEN        // hidden — fallback to flat queues at screen bottom
-	};
-
-	void drawPerBuildingQueues();
-
-	// TheSuperHackers @feature 17/07/2026 Hotkey-toggles for overlay elements.
-	// Toggled on key-UP (see CommandXlat.cpp MSG_RAW_KEY_UP) so a future hold+arrows
-	// move-mode (step 2) can distinguish tap (=toggle) from hold (=move with arrows).
-	void toggleOverlayPowers() { m_overlayPowersVisible = !m_overlayPowersVisible; }
-	void toggleOverlayQueues() { m_overlayQueuesVisible = !m_overlayQueuesVisible; }
-	Bool isOverlayPowersVisible() const { return m_overlayPowersVisible; }
-	Bool isOverlayQueuesVisible() const { return m_overlayQueuesVisible; }
-
-	// TheSuperHackers @feature 19/07/2026 Per-building queue mode (Ctrl+Q toggle)
-	void cyclePerBuildingQueueMode();
-	QueueDisplayMode getPerBuildingQueueMode() const { return m_perBuildingQueueMode; }
-
-	// TheSuperHackers @feature 19/07/2026 Reposition panel (F7 toggle).
-		// Offset is persisted to Options.ini when exiting reposition mode.
-		void toggleRepositionMode() { 
-			m_repositionMode = !m_repositionMode; 
-			if (!m_repositionMode) {
-				OptionPreferences optPref;
-				AsciiString prefString;
-				prefString.format("%d", m_overlayOffsetX);
-				optPref["OverlayOffsetX"] = prefString;
-				optPref.write();
-			}
-		}
-	Bool isRepositionMode() const { return m_repositionMode; }
-
-	// TheSuperHackers @feature 28/07/2026 F4 master toggle — hides all custom overlay features.
-	void toggleOverlayCustomDisabled() { m_overlayCustomDisabled = !m_overlayCustomDisabled; }
-	Bool isOverlayCustomDisabled() const { return m_overlayCustomDisabled; }
-
+public:
 	// TheSuperHackers @feature 03/08/2026 F6 toggle — live-observer status bar.
-	// Defaults hidden every session (see reset()), unlike the other overlay toggles: the
-	// LIVE -> LIVE - ENDED transition reveals that the real game has finished ~15s before
-	// the observer's own delayed view gets there, which is a spoiler.
+	// Defaults hidden every session (see reset()): the LIVE -> LIVE - ENDED transition
+	// reveals that the real game has finished ~15s before the observer's own delayed view
+	// gets there, which is a spoiler.
 	void toggleLiveObserverStatusVisible() { m_liveObserverStatusVisible = !m_liveObserverStatusVisible; }
 	Bool isLiveObserverStatusVisible() const { return m_liveObserverStatusVisible; }
-
-	void adjustOverlayOffsetX(Int delta)
-	{
-		m_overlayOffsetX += delta;
-		OptionPreferences optPref;
-		AsciiString prefString;
-		prefString.format("%d", m_overlayOffsetX);
-		optPref["OverlayOffsetX"] = prefString;
-		optPref.write();
-	}
-
-	static void collectQueueEntries(Object* obj, void* userData);
-	static void findPowerModule(Object* obj, void* userData);
-
-	// TheSuperHackers @feature 15/07/2026 SEH-safe Impl methods (called via safe* wrappers)
-	void refreshQueueProgress();       // update percentComplete from elapsed frames (observer/replay)
-	void gatherOverlayExtDataImpl();
-	void drawUnitQueuesImpl(Int baseX, Int baseY, Int lineH, Real scale);
-	void drawPowerCooldownsImpl(Int baseX, Int baseY, Int lineH, Real scale);
-	void drawPowerFlashesImpl();
-	void drawUnitQueueClicksImpl();  // click-to-navigate for queue icons
-	void drawRepositionPanelImpl(Real scale);
-	void handleRepositionClicksImpl(Real scale);
-
-	// TheSuperHackers @feature 19/07/2026 Per-building queue Impl (SEH-safe via safeDrawPerBuildingQueues wrapper)
-	void drawPerBuildingQueuesImpl();
 
 protected:
 
@@ -1161,8 +1079,6 @@ protected:
     Int colWidths[numCols] = { 0 };
     Int totalWidth = 0;
     Int totalHeight = 0;
-    Int m_scoreBarLeft;      // Left edge of stats bar (cached from drawObserverStats)
-    Int m_scoreBarRight;     // Right edge of stats bar (cached from drawObserverStats)
     bool isUpdating = false;
 
 	// World Animation Data
@@ -1181,66 +1097,8 @@ protected:
 	int64_t lastFPSUpdate = -1;
 #endif
 
-	// TheSuperHackers @feature 14/07/2026 Spectator overlay: unit queues and power cooldowns
-	static const Int MAX_VISIBLE_QUEUE = 5;
-	static const Int MAX_POWERS_PER_PLAYER = 8;
-	enum BuildingType { BUILDING_WAR_FACTORY, BUILDING_BARRACKS, BUILDING_AIRFIELD, BUILDING_COUNT };
-
-	struct QueueEntry
-	{
-		const ThingTemplate* tmpl;           // unit template (nullptr for upgrades)
-		const UpgradeTemplate* upgradeTmpl;  // upgrade template (nullptr for units)
-		Real percentComplete;
-		Coord3D buildingPos;       // world position of producing building (for click-to-navigate)
-		AsciiString buildingName;  // template name of producing building (for debug logging)
-		Object* producer;          // producing building instance (for removal on destroy)
-		ObjectID producerID;       // cached ObjectID for safe validation (producer may go stale)
-		UnsignedInt queuedFrame;   // frame when unit was queued (for observer/replay progress calc)
-		UnsignedInt buildTime;     // total frames needed to build this unit
-		Int productionID;          // unique production ID from the engine (for precise cancel matching)
-		UnsignedInt sequenceNumber; // global insertion order (for stable display ordering)
-	};
-
-	struct PlayerPowerInfo
-	{
-		const CommandButton* button;
-		UnsignedInt readyFrame;
-		UnsignedInt lastUsedFrame;
-		UnsignedInt cooldownEndFrame;  // Our own cooldown tracker (set by onSpecialPowerTriggered)
-		Bool hasModule;
-	};
-
-	struct PlayerOverlayExt
-	{
-		Bool isPresent;
-		std::vector<QueueEntry> queue;  // flat queue across all building types, sorted by spawn order
-		PlayerPowerInfo powers[MAX_POWERS_PER_PLAYER];
-		Int powerCount;
-		ICoord2D powerUsePos[MAX_POWERS_PER_PLAYER];
-	};
-
-	PlayerOverlayExt m_playerOverlayExt[MAX_SLOTS];
-
-	Int m_overlayPlayerSlots[2];    // Game slot indices for the two 1v1 players
-	Color m_overlayPlayerColors[2]; // Cached player colors for border rendering
-	Int m_queuePanelX[2];           // Reference X edges: radar hi.x (P1), hud lo.x (P2) — frame 2
-	Int m_queuePanelBottomY[2];    // Reference bottom Y edges: radar/hud hi.y — frame 2
-	Bool m_isValid1v1;              // Whether we have exactly 2 active non-observer players
-
-	// TheSuperHackers @feature 17/07/2026 Overlay element visibility (hotkey-toggleable).
-	// Default true; intentionally NOT reset in reset() so streamer preference survives game/replay switches.
-	Bool m_overlayPowersVisible;    // F8: general power cooldown panels (left/right screen edge)
-	Bool m_overlayQueuesVisible;    // F9: unit queue panels (screen bottom)
-	QueueDisplayMode m_perBuildingQueueMode;  // Ctrl+Q: per-building queue display mode
-	UnsignedInt m_queueSequenceCounter;       // monotonic counter for stable entry ordering
-	Int m_overlayOffsetX;           // Horizontal offset in pixels for overlay repositioning
-	Bool m_repositionMode;          // F7 toggle for overlay reposition panel
-	Bool m_overlayCustomDisabled;   // F4: master disable for all custom overlay features
-	Bool m_liveObserverStatusVisible; // F6: live-observer status bar; defaults hidden per session
-	Int m_repositionClickedBtn;     // Which button was clicked (-1 = none), for flash feedback
-	UnsignedInt m_repositionClickFrame; // Frame when button was clicked
-
-	// Future: m_overlayUpgradesVisible for per-faction purchased-upgrade display (e.g. buggy ammo).
+	// TheSuperHackers @feature 03/08/2026 F6: live-observer status bar; defaults hidden per session.
+	Bool m_liveObserverStatusVisible;
 
 	// ----------------------------------------------------------------------------------------------
 	// STATIC Protected Data -------------------------------------------------------------------------------

@@ -266,45 +266,6 @@ bool changeObserverStatsFontSize(ObserverStatsFontChange change)
 	return true;
 }
 
-enum ScaleChange
-{
-	ScaleChange_Increase,
-	ScaleChange_Decrease
-};
-
-static bool changeScale(Real& scale, ScaleChange change, const char* iniKey)
-{
-	const Real step = 0.5f;
-	const Real minVal = 0.25f;
-	const Real maxVal = 8.0f;
-
-	Real newScale = scale;
-	switch (change)
-	{
-	case ScaleChange_Increase:
-		newScale += step;
-		if (newScale > maxVal) newScale = maxVal;
-		break;
-	case ScaleChange_Decrease:
-		newScale -= step;
-		if (newScale < minVal) newScale = minVal;
-		break;
-	}
-
-	if (newScale == scale)
-		return false;
-
-	scale = newScale;
-
-	OptionPreferences optPref;
-	AsciiString prefString;
-	prefString.format("%.2f", newScale);
-	optPref[iniKey] = prefString;
-	optPref.write();
-
-	return true;
-}
-
 bool changeMaxRenderFps(FpsValueChange change)
 {
 	UnsignedInt maxRenderFps = TheFramePacer->getFramesPerSecondLimit();
@@ -3450,58 +3411,6 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 	}
 
 	//-----------------------------------------------------------------------------------------
-	case GameMessage::MSG_META_INCREASE_PRODUCTION_QUEUE_SCALE:
-	{
-		if (changeScale(TheWritableGlobalData->m_productionQueueScale, ScaleChange_Increase, "ProductionQueueScale"))
-			disp = DESTROY_MESSAGE;
-		break;
-	}
-	case GameMessage::MSG_META_DECREASE_PRODUCTION_QUEUE_SCALE:
-	{
-		if (changeScale(TheWritableGlobalData->m_productionQueueScale, ScaleChange_Decrease, "ProductionQueueScale"))
-			disp = DESTROY_MESSAGE;
-		break;
-	}
-	case GameMessage::MSG_META_INCREASE_UNIT_QUEUE_SCALE:
-	{
-		if (changeScale(TheWritableGlobalData->m_unitQueueScale, ScaleChange_Increase, "UnitQueueScale"))
-			disp = DESTROY_MESSAGE;
-		break;
-	}
-	case GameMessage::MSG_META_DECREASE_UNIT_QUEUE_SCALE:
-	{
-		if (changeScale(TheWritableGlobalData->m_unitQueueScale, ScaleChange_Decrease, "UnitQueueScale"))
-			disp = DESTROY_MESSAGE;
-		break;
-	}
-	case GameMessage::MSG_META_INCREASE_GENERALS_POWER_SCALE:
-	{
-		if (changeScale(TheWritableGlobalData->m_generalsPowerScale, ScaleChange_Increase, "GeneralsPowerScale"))
-			disp = DESTROY_MESSAGE;
-		break;
-	}
-	case GameMessage::MSG_META_DECREASE_GENERALS_POWER_SCALE:
-	{
-		if (changeScale(TheWritableGlobalData->m_generalsPowerScale, ScaleChange_Decrease, "GeneralsPowerScale"))
-			disp = DESTROY_MESSAGE;
-		break;
-	}
-
-	//-----------------------------------------------------------------------------------------
-	case GameMessage::MSG_META_MOVE_OVERLAY_LEFT:
-	{
-		if (TheInGameUI) TheInGameUI->adjustOverlayOffsetX(-10);
-		disp = DESTROY_MESSAGE;
-		break;
-	}
-	case GameMessage::MSG_META_MOVE_OVERLAY_RIGHT:
-	{
-		if (TheInGameUI) TheInGameUI->adjustOverlayOffsetX(10);
-		disp = DESTROY_MESSAGE;
-		break;
-	}
-
-	//-----------------------------------------------------------------------------------------
 	case GameMessage::MSG_META_INCREASE_LOGIC_TIME_SCALE:
 	{
 		if (changeLogicTimeScale(FpsValueChange_Increase))
@@ -4089,45 +3998,6 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 
         disp = DESTROY_MESSAGE;
     }
-        // TheSuperHackers @feature 17/07/2026 Spectator-overlay element toggles.
-        // Toggled on key-UP so a future hold+arrows move-mode (step 2) can tell a tap
-        // (=toggle) apart from a hold (=move overlay with arrow keys).
-        else if (key == KEY_F8)
-        {
-            if (TheInGameUI)
-            {
-                TheInGameUI->toggleOverlayPowers();
-                if (TheControlBar && TheControlBar->isObserverControlBarOn())
-                    TheInGameUI->messageNoFormat(TheInGameUI->isOverlayPowersVisible()
-                        ? TheGameText->FETCH_OR_SUBSTITUTE("GUI:OverlayPowersOn", L"Overlay: general powers ON (F8)")
-                        : TheGameText->FETCH_OR_SUBSTITUTE("GUI:OverlayPowersOff", L"Overlay: general powers OFF (F8)"));
-            }
-            disp = DESTROY_MESSAGE;
-        }
-        else if (key == KEY_F9)
-        {
-            if (TheInGameUI)
-            {
-                TheInGameUI->toggleOverlayQueues();
-                if (TheControlBar && TheControlBar->isObserverControlBarOn())
-                    TheInGameUI->messageNoFormat(TheInGameUI->isOverlayQueuesVisible()
-                        ? TheGameText->FETCH_OR_SUBSTITUTE("GUI:OverlayQueuesOn", L"Overlay: unit queues ON (F9)")
-                        : TheGameText->FETCH_OR_SUBSTITUTE("GUI:OverlayQueuesOff", L"Overlay: unit queues OFF (F9)"));
-            }
-            disp = DESTROY_MESSAGE;
-        }
-        else if (key == KEY_F7)
-        {
-            if (TheInGameUI)
-            {
-                TheInGameUI->toggleRepositionMode();
-                if (TheControlBar && TheControlBar->isObserverControlBarOn())
-                    TheInGameUI->messageNoFormat(TheInGameUI->isRepositionMode()
-                        ? TheGameText->FETCH_OR_SUBSTITUTE("GUI:RepositionOn", L"Reposition mode ON (F7)")
-                        : TheGameText->FETCH_OR_SUBSTITUTE("GUI:RepositionOff", L"Reposition mode OFF (F7)"));
-            }
-            disp = DESTROY_MESSAGE;
-		}
 		// TheSuperHackers @feature 03/08/2026 F6 toggle — live-observer status bar.
 		else if (key == KEY_F6)
 		{
@@ -4141,39 +4011,6 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 			}
 			disp = DESTROY_MESSAGE;
 		}
-		// TheSuperHackers @feature 28/07/2026 F4 master toggle — disable all custom overlay features.
-		else if (key == KEY_F4)
-		{
-			if (TheInGameUI)
-			{
-				TheInGameUI->toggleOverlayCustomDisabled();
-				if (TheControlBar && TheControlBar->isObserverControlBarOn())
-					TheInGameUI->messageNoFormat(TheInGameUI->isOverlayCustomDisabled()
-						? L"Overlay: custom features OFF (F4)"
-						: L"Overlay: custom features ON (F4)");
-			}
-			disp = DESTROY_MESSAGE;
-		}
-		// TheSuperHackers @feature 19/07/2026 Ctrl+Q cycles per-building queue display mode.
-        else if (key == KEY_Q && TheKeyboard && TheKeyboard->isCtrl())
-        {
-            if (TheInGameUI)
-            {
-                TheInGameUI->cyclePerBuildingQueueMode();
-                // Only show the mode message for observers — active players don't need to see this.
-                if (TheControlBar && TheControlBar->isObserverControlBarOn())
-                {
-                    InGameUI::QueueDisplayMode mode = TheInGameUI->getPerBuildingQueueMode();
-                    if (mode == InGameUI::QUEUE_DISPLAY_ALWAYS)
-                        TheInGameUI->messageNoFormat(L"Per-building queues: ALWAYS (Ctrl+Q)");
-                    else if (mode == InGameUI::QUEUE_DISPLAY_ON_HOVER)
-                        TheInGameUI->messageNoFormat(L"Per-building queues: ON HOVER (Ctrl+Q)");
-                    else
-                        TheInGameUI->messageNoFormat(L"Per-building queues: HIDDEN (Ctrl+Q)");
-                }
-            }
-            disp = DESTROY_MESSAGE;
-        }
 
     break;
     }

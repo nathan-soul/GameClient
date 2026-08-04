@@ -164,14 +164,6 @@ static const LookupListRec GameMessageMetaTypeNames[] =
 	{ "DECREASE_OBSERVER_STATS_FONT",                           GameMessage::MSG_META_DECREASE_OBSERVER_STATS_FONT },
 	{ "INCREASE_OBSERVER_NOTIFICATION_FONT",                    GameMessage::MSG_META_INCREASE_OBSERVER_NOTIFICATION_FONT },
 	{ "DECREASE_OBSERVER_NOTIFICATION_FONT",                    GameMessage::MSG_META_DECREASE_OBSERVER_NOTIFICATION_FONT },
-	{ "INCREASE_PRODUCTION_QUEUE_SCALE",                        GameMessage::MSG_META_INCREASE_PRODUCTION_QUEUE_SCALE },
-	{ "DECREASE_PRODUCTION_QUEUE_SCALE",                        GameMessage::MSG_META_DECREASE_PRODUCTION_QUEUE_SCALE },
-	{ "INCREASE_UNIT_QUEUE_SCALE",                              GameMessage::MSG_META_INCREASE_UNIT_QUEUE_SCALE },
-	{ "DECREASE_UNIT_QUEUE_SCALE",                              GameMessage::MSG_META_DECREASE_UNIT_QUEUE_SCALE },
-	{ "INCREASE_GENERALS_POWER_SCALE",                          GameMessage::MSG_META_INCREASE_GENERALS_POWER_SCALE },
-	{ "DECREASE_GENERALS_POWER_SCALE",                          GameMessage::MSG_META_DECREASE_GENERALS_POWER_SCALE },
-	{ "MOVE_OVERLAY_LEFT",                                      GameMessage::MSG_META_MOVE_OVERLAY_LEFT },
-	{ "MOVE_OVERLAY_RIGHT",                                     GameMessage::MSG_META_MOVE_OVERLAY_RIGHT },
 	{ "BEGIN_PATH_BUILD",													GameMessage::MSG_META_BEGIN_PATH_BUILD },
 	{ "END_PATH_BUILD",														GameMessage::MSG_META_END_PATH_BUILD },
 	{ "BEGIN_FORCEATTACK",												GameMessage::MSG_META_BEGIN_FORCEATTACK },
@@ -867,90 +859,6 @@ void MetaMap::generateMetaMap()
 		if (map->m_key == MK_NONE)
 		{
 			map->m_key = MK_DOWN;
-			map->m_transition = DOWN;
-			map->m_modState = SHIFT;
-			map->m_usableIn = COMMANDUSABLE_GAME;
-		}
-	}
-	{
-		// TheSuperHackers @feature 28/07/2026 CTRL+Arrow adjusts production building queue scale
-		MetaMapRec* map = TheMetaMap->getMetaMapRec(GameMessage::MSG_META_INCREASE_PRODUCTION_QUEUE_SCALE);
-		if (map->m_key == MK_NONE)
-		{
-			map->m_key = MK_UP;
-			map->m_transition = DOWN;
-			map->m_modState = CTRL;
-			map->m_usableIn = COMMANDUSABLE_GAME;
-		}
-	}
-	{
-		MetaMapRec* map = TheMetaMap->getMetaMapRec(GameMessage::MSG_META_DECREASE_PRODUCTION_QUEUE_SCALE);
-		if (map->m_key == MK_NONE)
-		{
-			map->m_key = MK_DOWN;
-			map->m_transition = DOWN;
-			map->m_modState = CTRL;
-			map->m_usableIn = COMMANDUSABLE_GAME;
-		}
-	}
-	{
-		// TheSuperHackers @feature 28/07/2026 ALT+Arrow adjusts bottom unit queue scale
-		MetaMapRec* map = TheMetaMap->getMetaMapRec(GameMessage::MSG_META_INCREASE_UNIT_QUEUE_SCALE);
-		if (map->m_key == MK_NONE)
-		{
-			map->m_key = MK_UP;
-			map->m_transition = DOWN;
-			map->m_modState = ALT;
-			map->m_usableIn = COMMANDUSABLE_GAME;
-		}
-	}
-	{
-		MetaMapRec* map = TheMetaMap->getMetaMapRec(GameMessage::MSG_META_DECREASE_UNIT_QUEUE_SCALE);
-		if (map->m_key == MK_NONE)
-		{
-			map->m_key = MK_DOWN;
-			map->m_transition = DOWN;
-			map->m_modState = ALT;
-			map->m_usableIn = COMMANDUSABLE_GAME;
-		}
-	}
-	{
-		// TheSuperHackers @feature 28/07/2026 SHIFT+CTRL+Arrow adjusts generals power scale
-		MetaMapRec* map = TheMetaMap->getMetaMapRec(GameMessage::MSG_META_INCREASE_GENERALS_POWER_SCALE);
-		if (map->m_key == MK_NONE)
-		{
-			map->m_key = MK_UP;
-			map->m_transition = DOWN;
-			map->m_modState = SHIFT_CTRL;
-			map->m_usableIn = COMMANDUSABLE_GAME;
-		}
-	}
-	{
-		MetaMapRec* map = TheMetaMap->getMetaMapRec(GameMessage::MSG_META_DECREASE_GENERALS_POWER_SCALE);
-		if (map->m_key == MK_NONE)
-		{
-			map->m_key = MK_DOWN;
-			map->m_transition = DOWN;
-			map->m_modState = SHIFT_CTRL;
-			map->m_usableIn = COMMANDUSABLE_GAME;
-		}
-	}
-	{
-		// TheSuperHackers @feature 28/07/2026 SHIFT+ArrowLeft/Right moves overlay horizontally
-		MetaMapRec* map = TheMetaMap->getMetaMapRec(GameMessage::MSG_META_MOVE_OVERLAY_LEFT);
-		if (map->m_key == MK_NONE)
-		{
-			map->m_key = MK_LEFT;
-			map->m_transition = DOWN;
-			map->m_modState = SHIFT;
-			map->m_usableIn = COMMANDUSABLE_GAME;
-		}
-	}
-	{
-		MetaMapRec* map = TheMetaMap->getMetaMapRec(GameMessage::MSG_META_MOVE_OVERLAY_RIGHT);
-		if (map->m_key == MK_NONE)
-		{
-			map->m_key = MK_RIGHT;
 			map->m_transition = DOWN;
 			map->m_modState = SHIFT;
 			map->m_usableIn = COMMANDUSABLE_GAME;
