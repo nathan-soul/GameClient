@@ -628,11 +628,26 @@ Int RecorderClass::getPreRollSecondsRemaining() const {
 void RecorderClass::stopPlayback() {
 	LIVE_OBSERVER_LOG("stopPlayback: isLiveStream=%d streamEnded=%d mode=%d nextFrame=%d curFrame=%d\n",
 		m_isLiveStream, m_streamEnded, (int)m_mode, m_nextFrame, TheGameLogic->getFrame());
+	Bool wasLiveObserver = (m_mode == RECORDERMODETYPE_LIVE_OBSERVER);
 	if (m_file != nullptr) {
 		m_file->close();
 		m_file = nullptr;
 	}
 	m_fileName.clear();
+
+	if (wasLiveObserver)
+	{
+		LIVE_OBSERVER_LOG("stopPlayback: resetting live session state before exit - mode=%d isLiveStream=%d shellMapOn=%d\n",
+			(int)m_mode, m_isLiveStream ? 1 : 0,
+			TheWritableGlobalData ? (TheWritableGlobalData->m_shellMapOn ? 1 : 0) : -1);
+		m_mode = RECORDERMODETYPE_NONE;
+		m_isLiveStream = FALSE;
+		if (TheWritableGlobalData)
+			TheWritableGlobalData->m_shellMapOn = TRUE;
+		liveObserverLog("stopPlayback: live session state reset - mode=%d isLiveStream=%d shellMapOn=%d\n",
+			(int)m_mode, m_isLiveStream ? 1 : 0,
+			TheWritableGlobalData ? (TheWritableGlobalData->m_shellMapOn ? 1 : 0) : -1);
+	}
 
 	if (!m_doingAnalysis)
 	{
@@ -919,114 +934,17 @@ void RecorderClass::startRecording(GameDifficulty diff, Int originalGameMode, In
 	// Live streaming — initialize and register with relay server
 	try
 	{
-	if (TheGlobalData && TheGlobalData->m_liveStreamEnabled)
+	// The pre-game lobby already assembled the registration — it is the only place that can see
+	// a GeneralsOnline lobby in full, and doing it there is what keeps this file free of any GO
+	// includes. All that is left here, at the moment a match actually begins, is to open the
+	// session and hook the streamer in as a replay sink.
+	LiveStreamer* streamer = liveStreamStartPendingSession();
+	if (streamer)
 	{
-		if (TheLiveStreamer == nullptr)
-		{
-			TheLiveStreamer = createLiveStreamer();
-		}
-		if (TheLiveStreamer)
-		{
-			// Compute game hash from map name and start time
-			AsciiString gameMode;
-			gameMode.format("%d", originalGameMode);
-
-			// Collect player names for the hash and for the game browser.
-			//
-			// Deliberately from the GameInfo slot list rather than ThePlayerList: this runs
-			// on MSG_NEW_GAME, before the game itself has started, so ThePlayerList is not
-			// populated yet and every name came back empty. The slot list is the same source
-			// the replay header's own player list is written from a few lines below, and it
-			// is ready at this point.
-			AsciiString sortedNames;
-			{
-				GameInfo* slotSource = nullptr;
-				if (TheNetwork)
-				{
-#if defined(GENERALS_ONLINE)
-					slotSource = TheNGMPGame;
-#else
-					slotSource = TheGameSpyGame;
-#endif
-					if (TheLAN)
-						slotSource = TheLAN->GetMyGame();
-				}
-				else if (TheSkirmishGameInfo)
-				{
-					slotSource = TheSkirmishGameInfo;
-				}
-
-				if (slotSource)
-				{
-					for (Int si = 0; si < MAX_SLOTS; ++si)
-					{
-						const GameSlot* slot = slotSource->getConstSlot(si);
-						if (slot == nullptr || !slot->isOccupied())
-							continue;
-
-						AsciiString nameAscii;
-						nameAscii.translate(slot->getName());
-						nameAscii.trim();
-						if (nameAscii.isEmpty())
-							continue;
-
-						if (!sortedNames.isEmpty())
-							sortedNames.concat("|");
-						sortedNames.concat(nameAscii);
-					}
-				}
-			}
-
-			UnsignedInt startTimeVal = 0;
-			::time(&startTime);
-			startTimeVal = (UnsignedInt)startTime;
-
-			// m_gameInfo.getMap() rather than TheGlobalData->m_mapName: init() resolved the
-			// real map from m_pendingFile, whereas m_mapName still holds the shell map at
-			// this point — which is why the browser was advertising every game as
-			// "shellmapmd". The hash uses it too, so games on different maps hash apart.
-			AsciiString liveMapName = m_gameInfo.getMap();
-			if (liveMapName.isEmpty())
-				liveMapName = TheGlobalData->m_mapName;
-
-			AsciiString gameHash = LiveStreamer::computeGameHash(
-				liveMapName, gameMode, startTimeVal, sortedNames);
-
-			// Connect to relay server
-			AsciiString relayUrl = TheGlobalData->m_liveStreamRelayUrl;
-			if (relayUrl.isEmpty())
-				relayUrl = LIVE_DEFAULT_RELAY_URL;
-			TheLiveStreamer->init(relayUrl);
-
-			// Get local player name
-			AsciiString localPlayerName;
-			if (ThePlayerList)
-			{
-				Player* localP = ThePlayerList->getLocalPlayer();
-				if (localP)
-				{
-					UnicodeString displayName = localP->getPlayerDisplayName();
-					localPlayerName.translate(displayName);
-				}
-			}
-
-			// Register with the relay. sortedNames is the full active roster, already
-			// gathered above for the game hash — the browser needs all of them, not just
-			// whichever client happens to be doing the streaming.
-			TheLiveStreamer->registerForGame(
-				gameHash,
-				localPlayerName,
-				sortedNames,
-				liveMapName,
-				gameMode,
-				TheGlobalData->m_liveStreamCanStream);
-
-			// Wire up the streamer as a replay sink — it will receive
-			// raw header/body/patch bytes from now on.
-			m_streamSink = TheLiveStreamer;
-
-			DEBUG_LOG(("RecorderClass::startRecording() - Live stream registered, hash=%s", gameHash.str()));
-		}
+		// From now on the streamer receives raw header/body/patch bytes.
+		m_streamSink = streamer;
+		DEBUG_LOG(("RecorderClass::startRecording() - Live stream registered, lobbyId=%s",
+			streamer->getLobbyId().str()));
 	}
 	}
 	catch (...)

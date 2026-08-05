@@ -108,12 +108,12 @@ Bool ReplayMenuIsLiveGamesMode(void) { return s_liveGamesMode; }
 static void liveGamesRequestList(void);
 static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiString& body);
 
-/// Find the screen's heading without knowing its control name.
+/// Depth-first search for the first static-text window carrying any text.
 ///
-/// The layout is inside an archive, so the name cannot be looked up; guessing it and
-/// silently getting nullptr would leave the screen titled LOAD REPLAY. Instead take the
-/// first static-text child that carries text — on this layout that is the heading.
-static GameWindow* findTitleWindow(GameWindow* parent)
+/// The heading is not necessarily a direct child of ParentReplayMenu — the layout nests controls
+/// under GadgetParent — which is exactly why the previous, single-level version of this never
+/// found it and the screen stayed titled LOAD REPLAY.
+static GameWindow* findFirstStaticTextWithText(GameWindow* parent)
 {
 	if (parent == nullptr)
 		return nullptr;
@@ -121,15 +121,65 @@ static GameWindow* findTitleWindow(GameWindow* parent)
 	for (GameWindow* child = parent->winGetChild(); child != nullptr; child = child->winGetNext())
 	{
 		WinInstanceData* data = child->winGetInstanceData();
-		if (data == nullptr)
-			continue;
-		if ((data->m_style & GWS_STATIC_TEXT) == 0)
-			continue;
-		if (child->winGetText().isEmpty())
-			continue;
-		return child;
+		if (data != nullptr &&
+			(data->m_style & GWS_STATIC_TEXT) != 0 &&
+			!child->winGetText().isEmpty())
+		{
+			return child;
+		}
+
+		GameWindow* nested = findFirstStaticTextWithText(child);
+		if (nested != nullptr)
+			return nested;
 	}
+
 	return nullptr;
+}
+
+/// Find the screen's heading.
+///
+/// The layout lives in an archive we cannot read, so the control's name cannot be confirmed from
+/// here — but every other menu in this codebase calls its heading StaticTextTitle
+/// (WOLWelcomeMenu, WOLQuickMatchMenu, EstablishConnectionsWindow), so try that first and only
+/// fall back to searching the subtree. A name lookup is worth preferring because the fallback can
+/// only ever guess: "first static text carrying text" is the heading on this layout by luck, not
+/// by rule.
+///
+/// Logs what it settled on. If the fallback is what fires, that one line names the real control,
+/// which is the only way to turn this guess into a lookup without being able to open the .wnd.
+static GameWindow* findTitleWindow(GameWindow* parent)
+{
+	static const char* const TITLE_CONTROL_NAMES[] = {
+		"ReplayMenu.wnd:StaticTextTitle",
+		"ReplayMenu.wnd:StaticTextHeader",
+		nullptr
+	};
+
+	for (Int i = 0; TITLE_CONTROL_NAMES[i] != nullptr; ++i)
+	{
+		GameWindow* win = TheWindowManager->winGetWindowFromId(
+			parent, (Int)TheNameKeyGenerator->nameToKey(TITLE_CONTROL_NAMES[i]));
+		if (win != nullptr)
+		{
+			liveObserverLog("ReplayMenu: title control found by name '%s'\n", TITLE_CONTROL_NAMES[i]);
+			return win;
+		}
+	}
+
+	GameWindow* fallback = findFirstStaticTextWithText(parent);
+	if (fallback != nullptr)
+	{
+		AsciiString text;
+		text.translate(fallback->winGetText());
+		liveObserverLog("ReplayMenu: title control not found by name; fell back to id='%s' text='%s'\n",
+			KEYNAME((NameKeyType)fallback->winGetWindowId()).str(), text.str());
+	}
+	else
+	{
+		liveObserverLog("ReplayMenu: no title control found at all — heading will not be retitled\n");
+	}
+
+	return fallback;
 }
 
 /// Turn the relay's WebSocket URL into its HTTP origin: wss://host/ -> https://host
@@ -216,24 +266,34 @@ static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiStri
 
 		for (const auto& game : games)
 		{
-			AsciiString gameId = game.value("game_id", std::string("")).c_str();
+			AsciiString gameId = game.value("lobbyid", std::string("")).c_str();
 			if (gameId.isEmpty())
 				continue;
 
-			// An older relay omits map/players/delay. Fall back rather than dropping the
-			// row — the game is still perfectly watchable.
-			std::string mapName = game.value("map", std::string(""));
+			// A relay row is GO's own lobby shape: "mapname" is already a display name, not
+			// the raw path the old field carried, so it needs no leaf/extension stripping.
+			// Missing metadata means the streamer registered without a lobby — still perfectly
+			// watchable, so fall back rather than dropping the row.
+			std::string mapName = game.value("mapname", std::string(""));
 			if (mapName.empty())
 				mapName = "(unknown map)";
 
+			// members[] mirrors GO exactly, empty slots (userid -1) included. Skip those.
 			std::string playerList;
-			if (game.contains("players") && game["players"].is_array())
+			if (game.contains("members") && game["members"].is_array())
 			{
-				for (const auto& p : game["players"])
+				for (const auto& member : game["members"])
 				{
+					if (!member.is_object() || member.value("userid", -1) == -1)
+						continue;
+
+					std::string name = member.value("displayname", std::string(""));
+					if (name.empty())
+						continue;
+
 					if (!playerList.empty())
 						playerList += ", ";
-					playerList += p.get<std::string>();
+					playerList += name;
 				}
 			}
 			if (playerList.empty())
@@ -242,20 +302,6 @@ static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiStri
 			Int viewers = game.value("viewers", 0);
 			Int delaySeconds = game.value("delay_seconds", (Int)LIVE_DELAY_SECONDS_DEFAULT);
 			Int ageSeconds = game.value("age_seconds", 0);
-
-			// The relay stores map_name exactly as the streamer sent it, which is
-			// TheGlobalData->m_mapName — a full path such as
-			// "Maps\Tournament Desert\Tournament Desert.map". Showing that raw is what made
-			// this column unreadable: far too long for the width, and the backslashes render
-			// as missing-glyph boxes. Take the leaf name without its extension.
-			{
-				size_t slash = mapName.find_last_of("\\/");
-				if (slash != std::string::npos)
-					mapName = mapName.substr(slash + 1);
-				size_t dot = mapName.find_last_of('.');
-				if (dot != std::string::npos && dot > 0)
-					mapName = mapName.substr(0, dot);
-			}
 
 			const Color rowColor = GameMakeColor(255, 255, 255, 255);
 			UnicodeString text;

@@ -26,6 +26,7 @@
 #include <atomic>
 #include <vector>
 #include <queue>
+#include <string>
 
 /**
  * Binary message types sent over WebSocket between streamer/observer and relay.
@@ -39,6 +40,64 @@ enum LiveMsgType : unsigned char {
 	LIVE_MSG_ROLE      = 5,
 	LIVE_MSG_ERROR     = 6,
 };
+
+class LiveStreamer;
+
+/**
+ * Everything the relay needs to open a session, assembled by the pre-game lobby.
+ *
+ * The lobby is the only place that can see a GeneralsOnline lobby in full, and the Recorder is
+ * the only place that knows when a match has actually begun. This struct is the handover between
+ * the two: the lobby fills it in and leaves it pending (liveStreamSetPendingRegistration), and
+ * the Recorder sends it without needing to know what a GeneralsOnline lobby even is — which is
+ * what keeps Recorder.cpp free of any GO includes.
+ *
+ * The host's registration is authoritative. Every player in a lobby registers, because every one
+ * of them is a potential source of replay bytes, but only the host describes the game: the lobby
+ * block and the broadcast delay are host-only fields. Without that rule the description of a game
+ * would be whichever client's REGISTER happened to arrive first — they start within milliseconds
+ * of each other, so it was genuinely arbitrary which one won.
+ */
+struct LiveStreamRegistration
+{
+	/// GO's LobbyID as plain decimal. This is the relay's session key and the id an observer
+	/// watches by (/watch/<lobbyId>) — the same value, as the same text, that GO's own /Lobbies
+	/// JSON prints for LobbyID, so a relay session and a GO lobby are trivially matched up.
+	AsciiString lobbyId;
+	/// Local player, for the relay's logs only. Never used to identify the session.
+	AsciiString playerName;
+	/// TRUE when the local player owns this lobby. Gates the two authoritative fields below.
+	Bool isHost;
+	/// Whether this client is willing to upload replay bytes. Per-client by nature — it is this
+	/// machine's bandwidth — so unlike the fields below it is not the host's to decide.
+	Bool canStream;
+
+	/// HOST ONLY. A complete JSON object literal describing the lobby, in GO's own key spelling.
+	/// Already escaped by its builder; empty on every non-host, which sends the lobby id alone.
+	std::string lobbyJson;
+	/// HOST ONLY. The broadcast delay every observer of this game is held behind — the host's
+	/// spoiler window, so it is theirs to set. Negative means "not mine to say".
+	Int delaySeconds;
+
+	LiveStreamRegistration() : isHost(FALSE), canStream(FALSE), delaySeconds(-1) {}
+
+	Bool isValid() const { return !lobbyId.isEmpty(); }
+};
+
+/// Hand a completed registration to the Recorder. Safe to call repeatedly — the last one wins,
+/// so a lobby that changes between the player arriving and the match starting is not a problem.
+void liveStreamSetPendingRegistration(const LiveStreamRegistration& registration);
+
+/// Drop anything pending. Called when a lobby is left without starting a match, so a later,
+/// unrelated recording cannot pick up a stale lobby's registration.
+void liveStreamClearPendingRegistration();
+
+Bool liveStreamHasPendingRegistration();
+
+/// Open the pending session: create TheLiveStreamer, connect it to the relay and send REGISTER.
+/// Returns the streamer for the caller to hook in as a replay sink, or nullptr when nothing is
+/// pending or live streaming is switched off — in which case the game simply records as usual.
+LiveStreamer* liveStreamStartPendingSession();
 
 /**
  * LiveStreamer implements IReplayStreamSink and forwards raw replay bytes
@@ -67,20 +126,11 @@ public:
 	/// Shut down the background thread and close the connection.
 	void close();
 
-	/// Register a game session with the relay server.
-	/// @param playerName the local player, kept for compatibility with older relays
-	/// @param allPlayerNames every active player, '|' separated — this is what the game
-	///        browser lists, since the local player alone never describes a match
-	void registerForGame(
-		const AsciiString& gameHash,
-		const AsciiString& playerName,
-		const AsciiString& allPlayerNames,
-		const AsciiString& mapName,
-		const AsciiString& gameMode,
-		Bool canStream);
+	/// Register a session with the relay server. See LiveStreamRegistration.
+	void registerForGame(const LiveStreamRegistration& registration);
 
-	/// Called when the relay assigns a role ("streamer" or "backup" or "none").
-	void onRoleAssigned(const AsciiString& role, const AsciiString& gameId, uint64_t bodyOffset);
+	/// Called when the relay confirms the session ("streamer" or "backup" or "none").
+	void onRoleAssigned(const AsciiString& role, const AsciiString& lobbyId, uint64_t bodyOffset);
 
 	/// Called when this client becomes the active streamer (takeover from backup).
 	/// NOTE: This is a UI-informational flag ONLY.  It does NOT gate any data flow —
@@ -92,13 +142,8 @@ public:
 	Bool isStreaming() const { return m_isStreaming.load(); }
 	Bool isBackup() const { return m_isBackup.load(); }
 	Bool isConnected() const { return m_connected.load(); }
-	AsciiString getGameId() const { return m_gameId; }
+	AsciiString getLobbyId() const { return m_lobbyId; }
 
-	static AsciiString computeGameHash(
-		const AsciiString& mapName,
-		const AsciiString& gameMode,
-		UnsignedInt startTime,
-		const AsciiString& sortedPlayerNames);
 
 	struct QueuedFrame
 	{
@@ -122,8 +167,7 @@ private:
 	std::atomic<Bool> m_shouldRun;
 
 	AsciiString m_relayUrl;
-	AsciiString m_gameId;
-	AsciiString m_gameHash;
+	AsciiString m_lobbyId;
 	AsciiString m_playerName;
 
 	void* m_curlEasy;
@@ -148,3 +192,12 @@ LiveStreamer* createLiveStreamer();
 
 void liveStreamLog(const char* fmt, ...);
 void liveStreamerInitLog();
+
+/// Escape a string so it can be embedded in a JSON string literal.
+///
+/// The REGISTER payload carries free-form user text (lobby names such as "[eu][*] cazino 2v2")
+/// and Windows paths full of backslashes. Both used to go out raw, which the relay could only
+/// paper over by retrying the parse with every backslash doubled — a hack that a quote or a
+/// newline in a lobby name would still have defeated. UTF-8 bytes are passed through unchanged;
+/// they are already valid inside a JSON string.
+std::string liveStreamJsonEscape(const char* str);

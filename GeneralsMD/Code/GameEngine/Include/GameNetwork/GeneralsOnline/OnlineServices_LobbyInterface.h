@@ -79,6 +79,16 @@ struct LobbyEntry
 	int latency = 0;
 };
 
+/// Assemble the live-stream relay registration from the lobby the local player is currently in,
+/// and leave it pending for the Recorder to send when the match starts (see
+/// liveStreamSetPendingRegistration in Common/LiveStreamer.h).
+///
+/// Called from the pre-game lobby, which is where a full LobbyEntry is visible; the Recorder runs
+/// on MSG_NEW_GAME and only ever sees the finished payload. Cheap and idempotent — call it as
+/// late as possible before starting a match so the roster and map are the ones actually played.
+/// Does nothing when live streaming is off or the local player is not in a lobby.
+void PrepareLiveStreamRegistration();
+
 enum class EJoinLobbyResult
 {
 	JoinLobbyResult_Success, // The room was joined.

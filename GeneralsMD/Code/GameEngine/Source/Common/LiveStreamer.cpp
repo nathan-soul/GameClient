@@ -108,6 +108,69 @@ LiveStreamer* createLiveStreamer()
 }
 
 // ============================================================================
+// Pending registration — the pre-game lobby → Recorder handover
+// ============================================================================
+
+// Only ever touched from the main thread: the lobby fills it in from a UI callback, the Recorder
+// consumes it from MSG_NEW_GAME. The network thread never sees it — by the time any of this
+// reaches the wire it has been copied into the REGISTER payload.
+static LiveStreamRegistration s_pendingRegistration;
+
+void liveStreamSetPendingRegistration(const LiveStreamRegistration& registration)
+{
+    s_pendingRegistration = registration;
+    liveStreamLog("liveStreamSetPendingRegistration lobbyId=%s player='%s' canStream=%d lobbyJsonLen=%u\n",
+        registration.lobbyId.str(), registration.playerName.str(),
+        (int)registration.canStream, (unsigned int)registration.lobbyJson.length());
+}
+
+void liveStreamClearPendingRegistration()
+{
+    if (s_pendingRegistration.isValid())
+        liveStreamLog("liveStreamClearPendingRegistration dropping lobbyId=%s\n",
+            s_pendingRegistration.lobbyId.str());
+
+    s_pendingRegistration = LiveStreamRegistration();
+}
+
+Bool liveStreamHasPendingRegistration()
+{
+    return s_pendingRegistration.isValid();
+}
+
+LiveStreamer* liveStreamStartPendingSession()
+{
+    if (TheGlobalData == nullptr || !TheGlobalData->m_liveStreamEnabled)
+        return nullptr;
+
+    if (!s_pendingRegistration.isValid())
+    {
+        // Normal for skirmish, replays and LAN — there is no lobby to have registered one.
+        liveStreamLog("liveStreamStartPendingSession: nothing pending, not streaming this game\n");
+        return nullptr;
+    }
+
+    if (TheLiveStreamer == nullptr)
+        TheLiveStreamer = createLiveStreamer();
+
+    if (TheLiveStreamer == nullptr)
+        return nullptr;
+
+    AsciiString relayUrl = TheGlobalData->m_liveStreamRelayUrl;
+    if (relayUrl.isEmpty())
+        relayUrl = LIVE_DEFAULT_RELAY_URL;
+
+    TheLiveStreamer->init(relayUrl);
+    TheLiveStreamer->registerForGame(s_pendingRegistration);
+
+    // Consumed. A second recording without a fresh lobby visit must not re-register this one
+    // under the same lobby id — that would merge two unrelated matches into one relay session.
+    liveStreamClearPendingRegistration();
+
+    return TheLiveStreamer;
+}
+
+// ============================================================================
 // IReplayStreamSink implementation
 // ============================================================================
 
@@ -228,81 +291,91 @@ void LiveStreamer::close()
 // Registration
 // ============================================================================
 
-void LiveStreamer::registerForGame(
-    const AsciiString& gameHash,
-    const AsciiString& playerName,
-    const AsciiString& allPlayerNames,
-    const AsciiString& mapName,
-    const AsciiString& gameMode,
-    Bool canStream)
+std::string liveStreamJsonEscape(const char* str)
 {
-    m_gameHash = gameHash;
-    m_playerName = playerName;
+    std::string out;
+    if (str == nullptr)
+        return out;
 
-    liveStreamLog("LiveStreamer::registerForGame hash=%s player='%s' allPlayers='%s' map='%s' canStream=%d\n",
-        gameHash.str(), playerName.str(), allPlayerNames.str(), mapName.str(), (int)canStream);
-
-    // TheSuperHackers @feature 03/08/2026 The streamer owns the broadcast delay — it is
-    // their spoiler window, so it travels with the registration rather than being an
-    // observer-side setting. Sourced from TheGlobalData, which the pre-game lobby writes
-    // through to, so a per-game override in the lobby takes effect without a restart.
-    Int delaySeconds = TheGlobalData
-        ? TheGlobalData->m_liveStreamDelaySeconds
-        : (Int)LIVE_DELAY_SECONDS_DEFAULT;
-
-    // Turn the '|' separated roster into a JSON array. The game browser lists these, so a
-    // match shows both sides rather than just whoever happens to be streaming it.
-    AsciiString playersArray = "[";
+    for (const unsigned char* pc = (const unsigned char*)str; *pc; ++pc)
     {
-        AsciiString remaining = allPlayerNames;
-        Bool first = TRUE;
-        while (!remaining.isEmpty())
+        switch (*pc)
         {
-            AsciiString name;
-            const char* sep = strchr(remaining.str(), '|');
-            if (sep)
-            {
-                name = AsciiString(remaining.str(), (Int)(sep - remaining.str()));
-                remaining = sep + 1;
-            }
-            else
-            {
-                name = remaining;
-                remaining.clear();
-            }
-
-            name.trim();
-            if (name.isEmpty())
-                continue;
-
-            if (!first)
-                playersArray.concat(",");
-            playersArray.concat("\"");
-            playersArray.concat(name);
-            playersArray.concat("\"");
-            first = FALSE;
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b";  break;
+            case '\f': out += "\\f";  break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if (*pc < 0x20)
+                {
+                    char esc[8];
+                    snprintf(esc, sizeof(esc), "\\u%04x", (unsigned int)*pc);
+                    out += esc;
+                }
+                else
+                {
+                    // Includes every byte >= 0x80: a UTF-8 sequence is already legal JSON.
+                    out += (char)*pc;
+                }
+                break;
         }
     }
-    playersArray.concat("]");
 
-    // Build JSON registration payload
-    char regJson[2048];
-    snprintf(regJson, sizeof(regJson),
-        "{\"type\":\"register\",\"game_hash\":\"%s\",\"player_name\":\"%s\",\"players\":%s,"
-        "\"map_name\":\"%s\",\"game_mode\":\"%s\",\"can_stream\":%s,\"delay_seconds\":%d}",
-        gameHash.str(), playerName.str(), playersArray.str(), mapName.str(), gameMode.str(),
-        canStream ? "true" : "false", delaySeconds);
+    return out;
+}
 
-    liveStreamLog("LiveStreamer::registerForGame delay_seconds=%d\n", delaySeconds);
+void LiveStreamer::registerForGame(const LiveStreamRegistration& registration)
+{
+    m_lobbyId = registration.lobbyId;
+    m_playerName = registration.playerName;
+
+    liveStreamLog("LiveStreamer::registerForGame lobbyId=%s player='%s' isHost=%d canStream=%d lobbyJsonLen=%u\n",
+        registration.lobbyId.str(), registration.playerName.str(), (int)registration.isHost,
+        (int)registration.canStream, (unsigned int)registration.lobbyJson.length());
+
+    // Built into a std::string rather than a fixed buffer: the GO-shaped lobby block carries a
+    // lobby name, two map paths and up to eight members, which comfortably outgrew the 2KB
+    // char array this used to use — and a truncated payload is unparseable, not merely lossy.
+    char scratch[64];
+    std::string regJson = "{\"type\":\"register\"";
+
+    regJson += ",\"lobbyid\":\"" + liveStreamJsonEscape(registration.lobbyId.str()) + "\"";
+    regJson += ",\"player_name\":\"" + liveStreamJsonEscape(registration.playerName.str()) + "\"";
+    regJson += registration.canStream ? ",\"can_stream\":true" : ",\"can_stream\":false";
+    regJson += registration.isHost ? ",\"is_host\":true" : ",\"is_host\":false";
+
+    // Both host-only. The relay ignores them from anyone else, but not sending them at all from
+    // a non-host keeps the payload honest about who is claiming to describe the game.
+    if (registration.isHost)
+    {
+        if (registration.delaySeconds >= 0)
+        {
+            snprintf(scratch, sizeof(scratch), ",\"delay_seconds\":%d", registration.delaySeconds);
+            regJson += scratch;
+        }
+
+        if (!registration.lobbyJson.empty())
+        {
+            regJson += ",\"lobby\":";
+            regJson += registration.lobbyJson;
+        }
+    }
+
+    regJson += "}";
+
+    liveStreamLog("LiveStreamer::registerForGame payload=%s\n", regJson.c_str());
 
     // Queue the REGISTER message — the network thread will send it once connected.
     // (Must NOT call sendBinaryFrame directly here because m_connected may still be false.)
-    queueFrame(LIVE_MSG_REGISTER, regJson, strlen(regJson));
+    queueFrame(LIVE_MSG_REGISTER, regJson.c_str(), regJson.length());
 }
 
-void LiveStreamer::onRoleAssigned(const AsciiString& role, const AsciiString& gameId, uint64_t bodyOffset)
+void LiveStreamer::onRoleAssigned(const AsciiString& role, const AsciiString& lobbyId, uint64_t bodyOffset)
 {
-    m_gameId = gameId;
+    m_lobbyId = lobbyId;
     m_isStreaming.store(role == "streamer");
     m_isBackup.store(role == "backup");
 
@@ -310,8 +383,8 @@ void LiveStreamer::onRoleAssigned(const AsciiString& role, const AsciiString& ga
     // this is 0. For a backup taking over, this is the current body length.
     m_bodySentOffset = bodyOffset;
 
-    liveStreamLog("LiveStreamer::onRoleAssigned role=%s gameId=%s streaming=%d bodyOff=%llu\n",
-        role.str(), gameId.str(), (int)m_isStreaming.load(), (unsigned long long)bodyOffset);
+    liveStreamLog("LiveStreamer::onRoleAssigned role=%s lobbyId=%s streaming=%d bodyOff=%llu\n",
+        role.str(), lobbyId.str(), (int)m_isStreaming.load(), (unsigned long long)bodyOffset);
 }
 
 void LiveStreamer::onTakeover(uint64_t bodyOffset)
@@ -321,32 +394,6 @@ void LiveStreamer::onTakeover(uint64_t bodyOffset)
     m_bodySentOffset = bodyOffset;
     liveStreamLog("LiveStreamer::onTakeover promoted to streamer, bodyOff=%llu\n",
         (unsigned long long)bodyOffset);
-}
-
-// ============================================================================
-// Compute game hash
-// ============================================================================
-
-AsciiString LiveStreamer::computeGameHash(
-    const AsciiString& mapName,
-    const AsciiString& gameMode,
-    UnsignedInt startTime,
-    const AsciiString& sortedPlayerNames)
-{
-    AsciiString raw;
-    raw.format("%s|%s|%u|%s", mapName.str(), gameMode.str(), startTime, sortedPlayerNames.str());
-
-    // Simple FNV-1a hash
-    unsigned int hash = 2166136261u;
-    for (const char* pc = raw.str(); *pc; ++pc)
-    {
-        hash ^= (unsigned char)(*pc);
-        hash *= 16777619u;
-    }
-
-    AsciiString result;
-    result.format("%08X", hash);
-    return result;
 }
 
 // ============================================================================
@@ -631,43 +678,53 @@ void LiveStreamer::networkThreadFunc()
                 std::string json(recvBuf.data() + 5, msgLen);
                 liveStreamLog("LiveStreamer: received role: %s\n", json.c_str());
 
-                // Simple JSON parsing for role/action/game_id
-                const char* roleStart = strstr(json.c_str(), "\"role\":\"");
-                const char* actionStart = strstr(json.c_str(), "\"action\":\"");
-                const char* gameIdStart = strstr(json.c_str(), "\"game_id\":\"");
-                const char* bodyOffStart = strstr(json.c_str(), "\"body_offset\":");
+                // Simple JSON parsing for role/action/lobbyid.
+                //
+                // Each key advances by the literal's own strlen rather than a hand-counted
+                // constant. The old hand-counted skip for the id key was one too many, quietly
+                // chopping the first character off every id it read — harmless only because
+                // nothing but a log line ever consumed it.
+                static const char ROLE_KEY[]     = "\"role\":\"";
+                static const char ACTION_KEY[]   = "\"action\":\"";
+                static const char LOBBY_ID_KEY[] = "\"lobbyid\":\"";
+                static const char BODY_OFF_KEY[] = "\"body_offset\":";
+
+                const char* roleStart = strstr(json.c_str(), ROLE_KEY);
+                const char* actionStart = strstr(json.c_str(), ACTION_KEY);
+                const char* lobbyIdStart = strstr(json.c_str(), LOBBY_ID_KEY);
+                const char* bodyOffStart = strstr(json.c_str(), BODY_OFF_KEY);
 
                 AsciiString role("none");
-                AsciiString gameId;
+                AsciiString lobbyId;
                 uint64_t bodyOffset = 0;
 
                 if (roleStart)
                 {
-                    roleStart += 8;
+                    roleStart += strlen(ROLE_KEY);
                     const char* roleEnd = strchr(roleStart, '"');
                     if (roleEnd)
                         role.set(roleStart, roleEnd - roleStart);
                 }
-                if (gameIdStart)
+                if (lobbyIdStart)
                 {
-                    gameIdStart += 12;
-                    const char* gidEnd = strchr(gameIdStart, '"');
-                    if (gidEnd)
-                        gameId.set(gameIdStart, gidEnd - gameIdStart);
+                    lobbyIdStart += strlen(LOBBY_ID_KEY);
+                    const char* idEnd = strchr(lobbyIdStart, '"');
+                    if (idEnd)
+                        lobbyId.set(lobbyIdStart, idEnd - lobbyIdStart);
                 }
                 if (bodyOffStart)
                 {
-                    bodyOffStart += 14; // skip "body_offset":
+                    bodyOffStart += strlen(BODY_OFF_KEY);
                     bodyOffset = (uint64_t)strtoull(bodyOffStart, nullptr, 10);
                 }
-                if (actionStart && actionStart + 10)
+                if (actionStart)
                 {
-                    const char* actPtr = actionStart + 10;
+                    const char* actPtr = actionStart + strlen(ACTION_KEY);
                     if (strncmp(actPtr, "takeover", 8) == 0)
                         onTakeover(bodyOffset);
                 }
 
-                onRoleAssigned(role, gameId, bodyOffset);
+                onRoleAssigned(role, lobbyId, bodyOffset);
             }
             else if (msgType == LIVE_MSG_ERROR)
             {

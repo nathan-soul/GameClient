@@ -31,6 +31,8 @@
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
 
 #include "Common/RandomValue.h"
+#include "Common/Recorder.h"
+#include "Common/LiveObserver.h"
 #include "GameClient/Shell.h"
 #include "GameClient/WindowLayout.h"
 #include "GameClient/GameWindowManager.h"
@@ -530,8 +532,11 @@ void Shell::showShellMap(Bool useShellMap)
 	// we don't want any of this to show if we're loading straight into a file
 	if (TheGlobalData->m_initialFile.isNotEmpty() || !TheGameLogic || !TheGlobalData->m_simulateReplays.empty())
 		return;
+	LIVE_OBSERVER_LOG("Shell::showShellMap: useShellMap=%d globalShellMapOn=%d\n",
+		useShellMap ? 1 : 0, TheGlobalData->m_shellMapOn ? 1 : 0);
 	if (useShellMap && TheGlobalData->m_shellMapOn)
 	{
+		LIVE_OBSERVER_LOG("Shell::showShellMap: taking reload branch\n");
 		// we're already in a shell game, return
 		if (TheGameLogic->isInGame() && TheGameLogic->getGameMode() == GAME_SHELL)
 			return;
@@ -547,6 +552,7 @@ void Shell::showShellMap(Bool useShellMap)
 	}
 	else
 	{
+		LIVE_OBSERVER_LOG("Shell::showShellMap: taking stop-shell branch\n");
 		// we're in a shell game, stop it!
 		if (TheGameLogic->isInGame() && TheGameLogic->getGameMode() == GAME_SHELL)
 			TheGameLogic->exitGame();

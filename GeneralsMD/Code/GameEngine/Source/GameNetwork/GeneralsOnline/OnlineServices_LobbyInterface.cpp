@@ -4,6 +4,8 @@
 #include "GameNetwork/GeneralsOnline/OnlineServices_Init.h"
 #include "GameClient/MapUtil.h"
 #include "GameLogic/GameLogic.h"
+#include "Common/GlobalData.h"
+#include "Common/LiveStreamer.h"
 
 extern void OnKickedFromLobby();
 
@@ -17,6 +19,145 @@ struct JoinLobbyResponse
 
 	NLOHMANN_DEFINE_TYPE_INTRUSIVE(JoinLobbyResponse, success, turn_username, turn_token)
 };
+
+// ============================================================================
+// Live-stream relay registration
+// ============================================================================
+
+/**
+ * Strip the local path prefix that UpdateRoomDataCache() prepends to a lobby's map path.
+ *
+ * GO reports MapPath relative ("my map\\my map.map"); this client immediately rewrites it into a
+ * path it can actually open - "maps\\..." for official maps, and the user's own maps directory
+ * (which sits under their Windows profile) for custom ones. Publishing that would both diverge
+ * from what GO itself reports and leak the local user directory to everyone watching, so this
+ * puts it back into GO's relative form.
+ */
+static std::string LiveStreamRelativeMapPath(const std::string& mapPath)
+{
+	AsciiString lowerPath = mapPath.c_str();
+	lowerPath.toLower();
+
+	// User map dir first: it ends in the official "maps\" prefix on some installs, so testing the
+	// shorter one first would strip only the tail and leave the profile path in place.
+	std::string prefixes[2];
+	if (TheMapCache != nullptr)
+	{
+		AsciiString userMapDir = TheMapCache->getUserMapDir(true);
+		userMapDir.toLower();
+		prefixes[0] = std::string(userMapDir.str()) + "\\";
+	}
+	prefixes[1] = "maps\\";
+
+	for (int i = 0; i < 2; ++i)
+	{
+		const size_t prefixLen = prefixes[i].length();
+		if (prefixLen > 1 && mapPath.length() >= prefixLen &&
+			strncmp(lowerPath.str(), prefixes[i].c_str(), prefixLen) == 0)
+		{
+			return mapPath.substr(prefixLen);
+		}
+	}
+
+	return mapPath;
+}
+
+/**
+ * Build the "lobby" block of the relay REGISTER payload.
+ *
+ * Mirrors GO's own /lobby JSON key-for-key (lowercase, same spelling) rather than inventing
+ * relay-local names, so a client parses the same structure whether a live-game list came from
+ * the relay or, one day, from GO itself. Only the subset a third-party viewer needs goes out -
+ * deliberately not the password, the per-member ports, or the anticheat id - and the relay drops
+ * anything outside its own allow-list even if this ever sends more.
+ *
+ * members[] mirrors GO exactly, empty slots (userid -1) included, because filtering is a display
+ * concern and a future GO-served list would contain them too; hiding them here would just mean
+ * the display layer never learned to.
+ */
+static std::string BuildLiveStreamLobbyJson(const LobbyEntry& lobby)
+{
+	char scratch[128];
+	std::string json = "{";
+
+	// No lobbyid in here: it is the session key and already travels at the top level of REGISTER
+	// as a string. Repeating it as a number inside the block would give one field two types.
+	snprintf(scratch, sizeof(scratch), "\"lobbytype\":%d,", (int)lobby.lobby_type);
+	json += scratch;
+	snprintf(scratch, sizeof(scratch), "\"rngseed\":%d,", lobby.rng_seed);
+	json += scratch;
+	snprintf(scratch, sizeof(scratch), "\"owner\":%lld,", (long long)lobby.owner);
+	json += scratch;
+
+	json += "\"region\":\"" + liveStreamJsonEscape(lobby.region.c_str()) + "\",";
+	json += "\"name\":\"" + liveStreamJsonEscape(lobby.name.c_str()) + "\",";
+	json += "\"mapname\":\"" + liveStreamJsonEscape(lobby.map_name.c_str()) + "\",";
+	json += "\"mappath\":\""
+		+ liveStreamJsonEscape(LiveStreamRelativeMapPath(lobby.map_path).c_str()) + "\",";
+
+	json += "\"members\":[";
+	for (size_t i = 0; i < lobby.members.size(); ++i)
+	{
+		const LobbyMemberEntry& member = lobby.members[i];
+		if (i > 0)
+			json += ",";
+
+		snprintf(scratch, sizeof(scratch), "{\"userid\":%lld,\"displayname\":\"",
+			(long long)member.user_id);
+		json += scratch;
+		json += liveStreamJsonEscape(member.display_name.c_str());
+		json += "\"}";
+	}
+	json += "]}";
+
+	return json;
+}
+
+void PrepareLiveStreamRegistration()
+{
+	if (TheGlobalData == nullptr || !TheGlobalData->m_liveStreamEnabled)
+		return;
+
+	NGMP_OnlineServices_LobbyInterface* pLobbyInterface =
+		NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
+	if (pLobbyInterface == nullptr || !pLobbyInterface->IsInLobby())
+	{
+		// Nothing to stream against. Clear rather than leave the previous lobby's registration
+		// pending, or the next recording would open a relay session under a stale lobby id.
+		liveStreamClearPendingRegistration();
+		return;
+	}
+
+	const LobbyEntry& lobby = pLobbyInterface->GetCurrentLobby();
+
+	LiveStreamRegistration registration;
+	// LobbyID, as plain decimal, is the relay's session key. Every peer in the lobby holds it
+	// identically (it comes off the service, not computed locally) and it is the same text GO's
+	// own JSON prints, so a relay session and a GO lobby can be matched by eye or by code with
+	// no conversion. Unlike the RNG seed it also cannot collide between two concurrent matches.
+	registration.lobbyId.format("%lld", (long long)lobby.lobbyID);
+	registration.canStream = TheGlobalData->m_liveStreamCanStream;
+	registration.isHost = pLobbyInterface->IsHost();
+
+	// Only the host describes the game. Every player registers — each is a potential source of
+	// replay bytes — but a non-host sends its lobby id and nothing more, so there is no race
+	// over whose description of the match the relay ends up publishing. It also means the
+	// broadcast delay is one number chosen by the host, not eight clients disagreeing.
+	if (registration.isHost)
+	{
+		registration.lobbyJson = BuildLiveStreamLobbyJson(lobby);
+		registration.delaySeconds = TheGlobalData->m_liveStreamDelaySeconds;
+	}
+
+	NGMP_OnlineServices_AuthInterface* pAuthInterface =
+		NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_AuthInterface>();
+	if (pAuthInterface != nullptr)
+	{
+		registration.playerName = pAuthInterface->GetDisplayName().c_str();
+	}
+
+	liveStreamSetPendingRegistration(registration);
+}
 
 UnicodeString NGMP_OnlineServices_LobbyInterface::GetCurrentLobbyDisplayName()
 {
@@ -554,6 +695,7 @@ void NGMP_OnlineServices_LobbyInterface::SearchForLobbies(std::function<void()> 
 				lobbyEntryIter["MaximumCameraHeight"].get_to(lobbyEntry.max_cam_height);
 				lobbyEntryIter["ExeCRC"].get_to(lobbyEntry.exe_crc);
 				lobbyEntryIter["IniCRC"].get_to(lobbyEntry.ini_crc);
+				lobbyEntryIter["RNGSeed"].get_to(lobbyEntry.rng_seed);
 				lobbyEntryIter["MatchID"].get_to(lobbyEntry.match_id);
 				lobbyEntryIter["LobbyType"].get_to(lobbyEntry.lobby_type);
 				lobbyEntryIter["Region"].get_to(lobbyEntry.region);
@@ -1239,6 +1381,11 @@ void NGMP_OnlineServices_LobbyInterface::LeaveCurrentLobby()
 
 	// reset local data
 	ResetCachedRoomData();
+
+	// Leaving without starting a match means the registration the pre-game lobby prepared is
+	// now stale. Drop it, so a later recording cannot open a relay session under a lobby id
+	// this player is no longer in.
+	liveStreamClearPendingRegistration();
 }
 
 

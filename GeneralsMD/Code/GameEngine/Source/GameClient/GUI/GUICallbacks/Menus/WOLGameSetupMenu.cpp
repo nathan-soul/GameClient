@@ -2095,6 +2095,11 @@ void WOLGameSetupMenuInit( WindowLayout *layout, void *userData )
 			GameSpyCloseOverlay(GSOVERLAY_BUDDY);
 			GameSpyCloseOverlay(GSOVERLAY_PLAYERINFO);
 
+			// Capture the lobby for the live-stream relay while it is still visible: this is the
+			// last moment the full LobbyEntry (name, map, region, members) exists, and the
+			// Recorder that actually sends it runs long after this screen is gone.
+			PrepareLiveStreamRegistration();
+
 			*TheNGMPGame = *myGame;
 			TheNGMPGame->startGame(0);
 		});
@@ -2892,6 +2897,9 @@ void WOLGameSetupMenuUpdate( WindowLayout * layout, void *userData)
 					if (buttonBuddy)
 						buttonBuddy->winEnable(FALSE);
 					GameSpyCloseOverlay(GSOVERLAY_BUDDY);
+
+					// See the game-start packet handler above — same reason, other entry point.
+					PrepareLiveStreamRegistration();
 
 					*TheNGMPGame = *myGame;
 					TheNGMPGame->startGame(0);

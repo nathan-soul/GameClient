@@ -1263,6 +1263,11 @@ void WOLQuickMatchMenuInit( WindowLayout *layout, void *userData )
 				GameSpyCloseOverlay(GSOVERLAY_BUDDY);
 				GameSpyCloseOverlay(GSOVERLAY_PLAYERINFO);
 
+				// Quick Match never shows the pre-game lobby screen, but it is still a GO lobby
+				// underneath, so it captures the same registration here — otherwise QM matches
+				// would silently be the one mode that never streams.
+				PrepareLiveStreamRegistration();
+
 				*TheNGMPGame = *myGame;
 				TheNGMPGame->startGame(0);
 			});
@@ -2564,5 +2569,5 @@ WindowMsgHandledType WOLQuickMatchMenuSystem( GameWindow *window, UnsignedInt ms
 
 	return MSG_HANDLED;
 }
-
+
 

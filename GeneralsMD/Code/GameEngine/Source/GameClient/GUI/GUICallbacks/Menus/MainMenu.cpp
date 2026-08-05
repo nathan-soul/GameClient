@@ -475,6 +475,35 @@ static void initLabelVersion()
 	}
 }
 
+#if defined(GENERALS_ONLINE)
+//-------------------------------------------------------------------------------------------------
+/** Find a window with the given id among this parent's descendants only.
+ *
+ * Deliberately not GameWindowManager::winGetWindowFromId(), which also walks the given window's
+ * *siblings* — with a main-menu layout still pending destruction it could hand back the button
+ * belonging to the outgoing layout, which is the same class of bug this lookup exists to avoid.
+ * The question being asked is strictly "does THIS parent already own one?".
+ */
+//-------------------------------------------------------------------------------------------------
+static GameWindow* findDescendantById( GameWindow *parent, Int id )
+{
+	if( parent == nullptr )
+		return nullptr;
+
+	for( GameWindow *child = parent->winGetChild(); child != nullptr; child = child->winGetNext() )
+	{
+		if( child->winGetWindowId() == id )
+			return child;
+
+		GameWindow *nested = findDescendantById( child, id );
+		if( nested != nullptr )
+			return nested;
+	}
+
+	return nullptr;
+}
+#endif
+
 //-------------------------------------------------------------------------------------------------
 /** Initialize the main menu */
 //-------------------------------------------------------------------------------------------------
@@ -631,16 +660,21 @@ void MainMenuInit( WindowLayout *layout, void *userData )
 			liveY += liveH + 4;
 		}
 
-		// TheSuperHackers @fix 03/08/2026 Reuse the button when this screen is initialised
-		// again over the same parent, rather than creating a second one.
+		// TheSuperHackers @fix 05/08/2026 Ask the window system whether this parent already has
+		// the button, instead of inferring it from a static pointer.
 		//
-		// Returning from a game used to leave the previous button drawn but dead: the
-		// pointer had been repointed at a newly created one, so clicks on the old matched
-		// nothing. Destroying it on shutdown looked like the fix but is not safe here —
-		// winDestroy is deferred via processDestroyList, and the layout tears its own
-		// children down, so ownership of a code-created child during teardown is not ours to
-		// assume. Keying off the parent avoids destroying anything: a surviving layout
-		// reuses its button, and a replaced layout took its own with it.
+		// The pointer cannot answer the question. MainMenuShutdown() nulls it without destroying
+		// anything (see the comment there — destroying is genuinely unsafe during layout
+		// teardown), so "null" means only "shutdown ran", not "the button is gone". When the
+		// shell keeps the layout alive across a menu round-trip, the button survives while the
+		// pointer does not, and init duly created a second one on top of the first: a dead
+		// leftover button, which is the symptom this was supposed to have fixed.
+		//
+		// Giving the button its own window id makes the question answerable. A lookup that finds
+		// nothing means this parent really has no button, whether the layout was rebuilt or a
+		// fresh pointer happens to land on a freed one's address.
+		buttonLiveObserver = findDescendantById(parentMainMenu, (Int)buttonLiveObserverID);
+
 		if (buttonLiveObserver == nullptr)
 		{
 			buttonLiveObserver = TheWindowManager->gogoGadgetPushButton(parentMainMenu,
@@ -648,11 +682,17 @@ void MainMenuInit( WindowLayout *layout, void *userData )
 				liveX, liveY, liveW, liveH,
 				&instDataLive, nullptr, TRUE);
 
-			// Adopt the real menu's look instead of the placeholder red/yellow that
-			// defaultVisual leaves behind. Guarded: gogoGadget* can fail, and the very next
-			// use of this pointer was already null-checked while this one was not.
+			// gogoGadget* leaves a code-created gadget with no id of its own, which is what made
+			// it unfindable above. Set it before anything else can look for it.
 			if (buttonLiveObserver)
+			{
+				buttonLiveObserver->winSetWindowId((Int)buttonLiveObserverID);
+
+				// Adopt the real menu's look instead of the placeholder red/yellow that
+				// defaultVisual leaves behind. Guarded: gogoGadget* can fail, and the very next
+				// use of this pointer was already null-checked while this one was not.
 				buttonLiveObserver->winCopyVisualsFrom(buttonOnline);
+			}
 		}
 
 		// The submenu is animated by a transition group defined in MainMenu.wnd, which a
@@ -759,15 +799,17 @@ void MainMenuShutdown( WindowLayout *layout, void *userData )
 	CancelPatchCheckCallback();
 
 #if defined(GENERALS_ONLINE)
-	// Drop the reference without destroying anything — the layout owns this window and tears
-	// it down with the rest of its children. MainMenuInit() builds a new button only when
-	// this is null, which covers both cases: shutdown ran, so the old layout and its button
-	// are gone and a fresh one is needed; or init ran twice without a shutdown in between,
-	// where the existing button is still live and must be reused rather than duplicated.
+	// Drop the reference without destroying anything — the layout owns this window and tears it
+	// down with the rest of its children.
 	//
 	// Deliberately not winDestroy(): that is deferred through processDestroyList while the
 	// layout is tearing the same children down, and a crash on returning to the menu is what
 	// came of assuming ownership here.
+	//
+	// Nulling here is only hygiene against a dangling pointer between screens; it is NOT how
+	// MainMenuInit() decides whether to build a button. It cannot be — the layout sometimes
+	// survives this call and takes its button with it. Init looks the button up by id on the
+	// actual parent instead.
 	buttonLiveObserver = nullptr;
 #endif
 

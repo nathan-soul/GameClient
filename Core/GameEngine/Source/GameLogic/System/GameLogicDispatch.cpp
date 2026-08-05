@@ -258,6 +258,19 @@ void GameLogic::clearGameData(Bool showScoreScreen)
 
 	setClearingGameData(TRUE);
 
+	// A live-observer session is only ever torn down lazily, at the start of the *next* watch-live
+	// join (see MainMenu.cpp's doLiveObserverGameStart()) - nothing on the normal game-end path used
+	// to close it, so InGameUI::drawLiveStatus() kept showing the last session's "LIVE - ..." banner
+	// until the next join happened to clean it up. clearGameData() is the single choke point every
+	// game-end path (quit to menu, quit to desktop, stream ended naturally) converges on, so close it
+	// here instead.
+	if (TheLiveObserver)
+	{
+		TheLiveObserver->close();
+		delete TheLiveObserver;
+		TheLiveObserver = nullptr;
+	}
+
 	//	m_background = TheWindowManager->winCreateLayout("Menus/BlankWindow.wnd");
 	//	DEBUG_ASSERTCRASH(m_background,("We Couldn't Load Menus/BlankWindow.wnd"));
 	//	m_background->hide(FALSE);
