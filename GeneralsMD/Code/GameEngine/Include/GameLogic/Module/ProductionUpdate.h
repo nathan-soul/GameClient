@@ -35,6 +35,7 @@
 #include "GameLogic/Module/UpdateModule.h"
 
 // FORWARD REFERENCES //////////////////////////////////////////////////////////////////////////////
+class Player;
 class ProductionEntry;
 class ThingTemplate;
 class UpgradeTemplate;
@@ -83,6 +84,12 @@ public:
 	/// get the unique (to the producer object) production ID
 	ProductionID getProductionID() const { return m_productionID; }
 
+	/// the player who owned the producing building when this entry was queued - captured once at
+	/// queue time so a later capture of the producer doesn't change who a cancel/complete gameplay
+	/// event is attributed to. May be null for entries that predate this field (e.g. loaded from an
+	/// older save); callers should fall back to the producer's current controller in that case.
+	Player *getQueuingPlayer() const { return m_queuingPlayer; }
+
 	Int getProductionQuantity() const { return m_productionQuantityTotal; } //How many I try to make
 	Int getProductionQuantityRemaining() const { return m_productionQuantityTotal - m_productionQuantityProduced; }//How many I have made
 
@@ -100,6 +107,7 @@ protected:
 		const UpgradeTemplate *m_upgradeToResearch;			///< what upgrade we're researching
 	};
 	ProductionID m_productionID;											///< our very own production ID!
+	Player *m_queuingPlayer;													///< who owned the producer when this was queued (see getQueuingPlayer)
 	Real m_percentComplete;														///< percent our construction is complete
 	Int m_framesUnderConstruction;										///< counter for how many frames we've been under construction (incremented once per update)
 	Int m_productionQuantityTotal;										///< it is now possible to construct multiple units simultaneously.

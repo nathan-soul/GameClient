@@ -127,6 +127,17 @@ namespace
 		return count;
 	}
 
+	// Mirrors the same check the engine's own observer-only UI uses (e.g. InGameUI's observer
+	// stats/notifications gating) - dead also counts as observing, since a dead player becomes
+	// spectator-like. Plugins that display information about other players must gate on this.
+	uint8_t HostAPI_IsLocalPlayerObserver()
+	{
+		if (ThePlayerList == nullptr)
+			return 0;
+		Player* localPlayer = ThePlayerList->getLocalPlayer();
+		return (localPlayer != nullptr && (localPlayer->isPlayerObserver() || localPlayer->isPlayerDead())) ? 1 : 0;
+	}
+
 	// ---- Icon drawing. Only valid to call from within a GORenderCallbacks::onDrawOverlay
 	// callback — same 2D-context requirement as drawText2D/drawRect2D. ----
 
@@ -365,6 +376,7 @@ GOPluginHostAPI GOPluginManager::BuildHostAPI()
 	api.getPlayerDisplayName = HostAPI_GetPlayerDisplayName;
 	api.isPlayerActive = HostAPI_IsPlayerActive;
 	api.getActivePlayers = HostAPI_GetActivePlayers;
+	api.isLocalPlayerObserver = HostAPI_IsLocalPlayerObserver;
 	api.drawTemplateIcon2D = HostAPI_DrawTemplateIcon2D;
 	api.drawPowerIcon2D = HostAPI_DrawPowerIcon2D;
 	api.drawText2D = HostAPI_DrawText2D;

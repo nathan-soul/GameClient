@@ -26,7 +26,7 @@
 // Bump when the layout of any struct below changes. GOPluginInfo::abiVersion and
 // GOPluginHostAPI::abiVersion are checked against this on load; a mismatch fails the plugin load
 // rather than risk silently misreading a function-pointer table with a different layout.
-#define GO_PLUGIN_ABI_VERSION 5 // v5: getActivePlayers (slot-resolved roster). v4: simulation clock, live production progress, world->screen, object screen bounds, clock-wedge drawing
+#define GO_PLUGIN_ABI_VERSION 6 // v6: isLocalPlayerObserver. v5: getActivePlayers (slot-resolved roster). v4: simulation clock, live production progress, world->screen, object screen bounds, clock-wedge drawing
 
 // ------------------------------------------------------------------------------------------------
 // Hook categories a plugin can use. A plugin advertises which categories it *might* use via
@@ -168,6 +168,13 @@ struct GOPluginHostAPI
 	// in it, and the values returned are the same playerIndex the gameplay-event structs carry -
 	// no second numbering scheme to reconcile. Returns 0 when no match is loaded.
 	uint32_t (*getActivePlayers)(uint32_t* outPlayerIndices, uint32_t maxCount);
+
+		// TRUE if the local client is observing/spectating the match rather than playing in it (dead
+		// counts as observing, matching the engine's own observer-UI gating). A render/tick plugin
+		// that shows information about other players (queues, cooldowns, etc.) MUST gate on this
+		// before drawing/acting - without it, that information is visible to a live match participant,
+		// which is a gameplay-advantage/cheat vector, not just a display bug. (v6)
+		uint8_t (*isLocalPlayerObserver)();
 
 	// --- Icon drawing. Looks up the named template server-side (where the engine's ThingTemplate/
 	// UpgradeTemplate/CommandButton data safely lives) and draws its button art; the plugin never

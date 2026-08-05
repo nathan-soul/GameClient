@@ -188,6 +188,7 @@ ProductionEntry::ProductionEntry()
 	m_objectToProduce = nullptr;
 	m_upgradeToResearch = nullptr;
 	m_productionID = (ProductionID)1;
+	m_queuingPlayer = nullptr;
 	m_percentComplete = 0.0f;
 	m_framesUnderConstruction = 0;
 	m_next = nullptr;
@@ -341,6 +342,8 @@ Bool ProductionUpdate::queueUpgrade( const UpgradeTemplate *upgrade )
 	production->m_upgradeToResearch = upgrade;
 	production->m_productionID = PRODUCTIONID_INVALID;  // not needed for upgrades, you can only have one of
 																	 // this type in the queue
+	production->m_queuingPlayer = player;  // captured now so a later capture of this building doesn't
+																					// change who cancel/complete events are attributed to
 
 	// tie to the end of the production queue
 	addToProductionQueue( production );
@@ -401,7 +404,11 @@ void ProductionUpdate::cancelUpgrade( const UpgradeTemplate *upgrade )
 
 	if (GOPluginManager::HasGameplayEventHooks())
 	{
-		GOUpgradeEvent ev = buildUpgradeEvent(player, production->m_upgradeToResearch, getObject(), production->getPercentComplete());
+		// Attribute this event to whoever queued it, not the producer's current controller - the
+		// producer may have been captured since queueing, and a plugin's queue tracking is keyed by
+		// the playerIndex the queue event originally carried.
+		Player *eventPlayer = (production->getQueuingPlayer() != nullptr) ? production->getQueuingPlayer() : player;
+		GOUpgradeEvent ev = buildUpgradeEvent(eventPlayer, production->m_upgradeToResearch, getObject(), production->getPercentComplete());
 		GOPluginManager::DispatchUpgradeCancelled(ev);
 	}
 
@@ -493,6 +500,8 @@ Bool ProductionUpdate::queueCreateUnit( const ThingTemplate *unitType, Productio
 	production->m_objectToProduce = unitType;
 	production->m_productionID = productionID;
 	production->m_exitDoor = exitDoor;
+	production->m_queuingPlayer = player;  // captured now so a later capture of this building doesn't
+																					// change who cancel/complete events are attributed to
 
 	// tie to the end of the production queue
 	addToProductionQueue( production );
@@ -529,7 +538,9 @@ void ProductionUpdate::cancelUnitCreate( ProductionID productionID )
 
 			if (GOPluginManager::HasGameplayEventHooks())
 			{
-				GOUnitEvent ev = buildUnitEvent(player, production->m_objectToProduce, getObject(), production->getPercentComplete(), production->getProductionID());
+				// See cancelUpgrade above for why this uses the queuing player, not the current controller.
+				Player *eventPlayer = (production->getQueuingPlayer() != nullptr) ? production->getQueuingPlayer() : player;
+				GOUnitEvent ev = buildUnitEvent(eventPlayer, production->m_objectToProduce, getObject(), production->getPercentComplete(), production->getProductionID());
 				GOPluginManager::DispatchUnitCancelled(ev);
 			}
 
@@ -912,7 +923,9 @@ UpdateSleepTime ProductionUpdate::update()
 
 							if (GOPluginManager::HasGameplayEventHooks())
 							{
-								GOUnitEvent ev = buildUnitEvent(creationBuilding->getControllingPlayer(), production->m_objectToProduce, creationBuilding, 100.0f, production->getProductionID());
+								// See cancelUpgrade above for why this uses the queuing player, not the current controller.
+								Player *eventPlayer = (production->getQueuingPlayer() != nullptr) ? production->getQueuingPlayer() : creationBuilding->getControllingPlayer();
+								GOUnitEvent ev = buildUnitEvent(eventPlayer, production->m_objectToProduce, creationBuilding, 100.0f, production->getProductionID());
 								GOPluginManager::DispatchUnitCompleted(ev);
 							}
 
@@ -1033,7 +1046,11 @@ UpdateSleepTime ProductionUpdate::update()
 
 			if (GOPluginManager::HasGameplayEventHooks())
 			{
-				GOUpgradeEvent ev = buildUpgradeEvent(player, upgrade, us, 100.0f);
+				// See cancelUpgrade: attribute to the original queuing player, not the producer's
+				// current controller, so a capture between queue and completion doesn't orphan a
+				// plugin's tracked queue entry.
+				Player *eventPlayer = (production->getQueuingPlayer() != nullptr) ? production->getQueuingPlayer() : player;
+				GOUpgradeEvent ev = buildUpgradeEvent(eventPlayer, upgrade, us, 100.0f);
 				GOPluginManager::DispatchUpgradeCompleted(ev);
 			}
 
