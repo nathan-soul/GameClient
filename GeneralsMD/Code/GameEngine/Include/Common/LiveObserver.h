@@ -91,6 +91,11 @@ private:
 	/// Connect via WebSocket (called from network thread).
 	bool connectToRelay();
 
+	/// Fetch a single-use watch ticket for m_gameId, using the logged-in session token.
+	/// Returns false when unauthenticated or when the ticket request fails; the caller
+	/// falls back to the plain relay URL in that case.
+	bool fetchWatchTicket(AsciiString& outConnectUrl);
+
 	/// Send data over WebSocket binary (called from network thread).
 	bool wsSendBinary(const unsigned char* data, size_t len);
 

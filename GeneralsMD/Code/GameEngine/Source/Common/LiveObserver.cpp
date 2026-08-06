@@ -26,6 +26,8 @@
 #include "Common/FileSystem.h"
 #include "Common/file.h"
 #include "GameClient/ClientInstance.h"
+#include "GameNetwork/GeneralsOnline/NGMP_interfaces.h"
+#include "GameNetwork/GeneralsOnline/json.hpp"
 
 #include "GameNetwork/GeneralsOnline/Vendor/libcurl/curl.h"
 #include "GameNetwork/GeneralsOnline/Vendor/libcurl/multi.h"
@@ -35,6 +37,7 @@
 #include <cstdarg>
 #include <cstring>
 #include <fstream>		// cacert.pem presence check, see connectToRelay
+#include <string>
 
 // ============================================================================
 // liveObserverLog
@@ -293,6 +296,104 @@ LiveObserver* createLiveObserver()
 // ============================================================================
 // Network setup
 // ============================================================================
+
+bool LiveObserver::fetchWatchTicket(AsciiString& outConnectUrl)
+{
+    NGMP_OnlineServices_AuthInterface* authInterface =
+        NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_AuthInterface>();
+    if (authInterface == nullptr || !authInterface->IsLoggedIn())
+    {
+        liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s skipped (not logged in)\n",
+            m_gameId.str());
+        return false;
+    }
+
+    const char* urlStr = m_relayUrl.str();
+    const char* watchPos = strstr(urlStr, "/watch/");
+    if (watchPos == nullptr)
+    {
+        liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s failed (invalid relay URL)\n",
+            m_gameId.str());
+        return false;
+    }
+
+    std::string origin(urlStr, watchPos - urlStr);
+    if (origin.compare(0, 6, "wss://") == 0)
+        origin.replace(0, 6, "https://");
+	else if (origin.compare(0, 5, "ws://") == 0)
+		origin.replace(0, 5, "http://");
+	else
+	{
+		liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s failed (invalid scheme)\n",
+			m_gameId.str());
+		return false;
+	}
+
+    const std::string ticketUrl = origin + "/watch/" + m_gameId.str() + "/ticket";
+    std::string body;
+	CURL* easy = curl_easy_init();
+	if (easy == nullptr)
+	{
+		liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s failed (curl init)\n",
+			m_gameId.str());
+		return false;
+	}
+
+    curl_easy_setopt(easy, CURLOPT_URL, ticketUrl.c_str());
+    curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, liveRelayWriteCb);
+    curl_easy_setopt(easy, CURLOPT_WRITEDATA, &body);
+    curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(easy, CURLOPT_TIMEOUT, 10L);
+    curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, 5L);
+
+    std::ifstream certFile("cacert.pem");
+    if (certFile.good())
+    {
+        certFile.close();
+        curl_easy_setopt(easy, CURLOPT_CAINFO, "cacert.pem");
+        curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 1L);
+        curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 2L);
+    }
+    else
+    {
+        curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 0L);
+        curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 0L);
+    }
+
+    std::string authorization = "Authorization: Bearer " + authInterface->GetAuthToken();
+    curl_slist* headers = curl_slist_append(nullptr, authorization.c_str());
+    curl_easy_setopt(easy, CURLOPT_HTTPHEADER, headers);
+
+    CURLcode result = curl_easy_perform(easy);
+    long status = 0;
+    curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &status);
+    bool success = false;
+    if (result == CURLE_OK && status == 200)
+    {
+        try
+        {
+            nlohmann::json response = nlohmann::json::parse(body);
+            if (response.is_object() && response.contains("url") && response["url"].is_string())
+            {
+                const std::string url = response["url"].get<std::string>();
+                if (!url.empty())
+                {
+                    outConnectUrl = url.c_str();
+                    success = true;
+                }
+            }
+        }
+        catch (const nlohmann::json::exception&)
+        {
+        }
+    }
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(easy);
+    liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s %s (status=%ld, result=%d)\n",
+        m_gameId.str(), success ? "succeeded" : "failed", status, (int)result);
+    return success;
+}
 
 void LiveObserver::connect(const AsciiString& watchUrl)
 {
@@ -644,6 +745,10 @@ bool LiveObserver::connectToRelay()
         m_curlMulti = nullptr;
     }
 
+	AsciiString connectUrl;
+	if (!fetchWatchTicket(connectUrl))
+		connectUrl = m_relayUrl;
+
     CURL* easy = curl_easy_init();
     if (!easy)
     {
@@ -651,7 +756,7 @@ bool LiveObserver::connectToRelay()
         return false;
     }
 
-    curl_easy_setopt(easy, CURLOPT_URL, m_relayUrl.str());
+    curl_easy_setopt(easy, CURLOPT_URL, connectUrl.str());
     curl_easy_setopt(easy, CURLOPT_CONNECT_ONLY, 2L);
 
     // TheSuperHackers @fix 03/08/2026 wss:// relays need a CA bundle. This libcurl is built

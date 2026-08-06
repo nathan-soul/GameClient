@@ -640,8 +640,17 @@ void RecorderClass::stopPlayback() {
 		LIVE_OBSERVER_LOG("stopPlayback: resetting live session state before exit - mode=%d isLiveStream=%d shellMapOn=%d\n",
 			(int)m_mode, m_isLiveStream ? 1 : 0,
 			TheWritableGlobalData ? (TheWritableGlobalData->m_shellMapOn ? 1 : 0) : -1);
+		if (TheLiveObserver)
+		{
+			liveObserverLog("stopPlayback: closing live observer before leaving game\n");
+			TheLiveObserver->close();
+			delete TheLiveObserver;
+			TheLiveObserver = nullptr;
+		}
 		m_mode = RECORDERMODETYPE_NONE;
 		m_isLiveStream = FALSE;
+		m_gameInfo.clearSlotList();
+		m_gameInfo.reset();
 		if (TheWritableGlobalData)
 			TheWritableGlobalData->m_shellMapOn = TRUE;
 		liveObserverLog("stopPlayback: live session state reset - mode=%d isLiveStream=%d shellMapOn=%d\n",
@@ -1286,9 +1295,23 @@ void RecorderClass::endLiveObserverSession() {
 		m_file = nullptr;
 	}
 	m_fileName.clear();
+
+	// This is the non-exiting counterpart to stopPlayback(). The caller is already
+	// transitioning through the shell and will start the next session separately, but
+	// every recorder value belonging to the old live replay must be forgotten now.
+	m_mode = RECORDERMODETYPE_NONE;
+	m_isLiveStream = FALSE;
+	m_streamEnded = FALSE;
+	m_streamSink = nullptr;
+	m_currentReplayFilename.clear();
+	m_playbackFrameCount = 0;
+	m_originalGameMode = GAME_NONE;
+	m_crcInfo = CRCInfo();
+	m_gameInfo.clearSlotList();
+	m_gameInfo.reset();
 	m_nextFrame = 0;
 
-	m_streamEnded = FALSE;
+	m_liveWaiting = FALSE;
 	m_preRollComplete = FALSE;
 	m_liveStreamAutoPaused = FALSE;
 	m_userPaused = FALSE;

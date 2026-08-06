@@ -1231,9 +1231,9 @@ static void doLiveObserverGameStart(const AsciiString& fullWatchUrl)
 	// Block until the HEADER arrives and is written to _live.rep.
 	// readReplayHeader + playbackFile will parse everything we need
 	// (slot list, map, game options) from the header bytes.
-	liveObserverLog("doLiveObserverGameStart: waiting for HEADER (blocking, up to 15s)...\n");
+	liveObserverLog("doLiveObserverGameStart: waiting for HEADER (blocking, up to 20s)...\n");
 	Int waited = 0;
-	while (!TheLiveObserver->isReady() && waited < 15000)
+	while (!TheLiveObserver->isReady() && waited < 20000)
 	{
 		Sleep(100);
 		waited += 100;
