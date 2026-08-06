@@ -76,8 +76,7 @@ void liveObserverLog(const char* fmt, ...) {
 
 void liveObserverInitLog(const char* lobbyId) {
     liveObserverLog("=== Live Observer Init ===\n");
-    liveObserverLog("Lobby: %s
-", lobbyId ? lobbyId : "(empty)");
+    liveObserverLog("Lobby: %s\n", lobbyId ? lobbyId : "(empty)");
     liveObserverLog("Observer mode activated\n");
 }
 
@@ -414,8 +413,7 @@ bool LiveObserver::fetchWatchTicket(AsciiString& outConnectUrl)
     Int statusCode = 0;
     if (!liveServicesRequest(url, TRUE, "", body, statusCode))
     {
-        liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s failed (request not sent)
-",
+        liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s failed (request not sent)\n",
             m_gameId.str());
         return false;
     }
@@ -424,8 +422,7 @@ bool LiveObserver::fetchWatchTicket(AsciiString& outConnectUrl)
     {
         // 404 is the ordinary "that stream is over" answer: the game was listed a moment ago,
         // but the relay has closed it since. Anything else is a real failure.
-        liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s refused (status=%d) %s
-",
+        liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s refused (status=%d) %s\n",
             m_gameId.str(), statusCode, body.str());
         return false;
     }
@@ -448,8 +445,7 @@ bool LiveObserver::fetchWatchTicket(AsciiString& outConnectUrl)
     {
     }
 
-    liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s %s (status=%d)
-",
+    liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s %s (status=%d)\n",
         m_gameId.str(), success ? "succeeded" : "failed", statusCode);
     return success;
 }
@@ -471,16 +467,14 @@ void LiveObserver::connect(const AsciiString& lobbyId)
         // anyway: a shared "_live.rep" is the worst possible name to collide on.
         m_liveFilename.format("unknown_Instance%.2u_live.rep",
             rts::ClientInstance::getInstanceId());
-        liveObserverLog("LiveObserver::connect: no lobby id supplied
-");
+        liveObserverLog("LiveObserver::connect: no lobby id supplied\n");
     }
     else
     {
         m_liveFilename.format("%s_live.rep", m_gameId.str());
     }
 
-    liveObserverLog("LiveObserver::connect game=%s (file=%s)
-",
+    liveObserverLog("LiveObserver::connect game=%s (file=%s)\n",
         m_gameId.str(), m_liveFilename.str());
 
     m_networkThread = std::thread(&LiveObserver::networkThreadFunc, this);
@@ -807,8 +801,7 @@ bool LiveObserver::connectToRelay()
 	AsciiString connectUrl;
 	if (!fetchWatchTicket(connectUrl))
 	{
-		liveObserverLog("LiveObserver::connectToRelay game=%s aborted (no watch ticket)
-",
+		liveObserverLog("LiveObserver::connectToRelay game=%s aborted (no watch ticket)\n",
 			m_gameId.str());
 		return false;
 	}
@@ -890,8 +883,7 @@ bool LiveObserver::connectToRelay()
     m_curlEasy = easy;
     m_curlMulti = multi;
     m_connected.store(true);
-    liveObserverLog("LiveObserver::connectToRelay connected (game=%s)
-", m_gameId.str());
+    liveObserverLog("LiveObserver::connectToRelay connected (game=%s)\n", m_gameId.str());
     return true;
 }
 

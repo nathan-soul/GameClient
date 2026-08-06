@@ -1190,8 +1190,7 @@ void StartLiveObserverSession(const AsciiString& lobbyId)
 	m_liveObserverStartLobbyId = lobbyId;
 	startLiveObserverGame = TRUE;
 
-	liveObserverLog("StartLiveObserverSession: queued lobby %s
-", lobbyId.str());
+	liveObserverLog("StartLiveObserverSession: queued lobby %s\n", lobbyId.str());
 }
 
 // Initialize the live observer, connect to relay, wait for HEADER,
@@ -1200,8 +1199,7 @@ static void doLiveObserverGameStart(const AsciiString& lobbyId)
 {
 	liveObserverInitLog(lobbyId.str());
 	liveObserverLog("=== doLiveObserverGameStart (from menu) ===\n");
-	liveObserverLog("Lobby: %s
-", lobbyId.str());
+	liveObserverLog("Lobby: %s\n", lobbyId.str());
 	liveObserverLog("doLiveObserverGameStart: entry — TheNetwork=%p isInMultiplayerGame=%d\n",
 		(void*)TheNetwork, TheGameLogic->isInMultiplayerGame() ? 1 : 0);
 

@@ -442,8 +442,7 @@ void LiveStreamer::queueFrame(LiveMsgType type, const void* data, size_t len)
             {
                 m_queueOverflowed = true;
                 liveStreamLog("LiveStreamer::queueFrame queue exceeded %u bytes with no relay "
-                    "connection - dropping stream data from here on
-",
+                    "connection - dropping stream data from here on\n",
                     (unsigned int)LIVE_STREAM_MAX_QUEUED_BYTES);
             }
             return;
@@ -563,8 +562,7 @@ bool LiveStreamer::requestStreamUrl(AsciiString& outUrl)
     Int statusCode = 0;
     if (!liveServicesRequest(url, TRUE, postBody.c_str(), body, statusCode))
     {
-        liveStreamLog("LiveStreamer::requestStreamUrl lobby=%s failed (request not sent)
-",
+        liveStreamLog("LiveStreamer::requestStreamUrl lobby=%s failed (request not sent)\n",
             m_lobbyId.str());
         return false;
     }
@@ -574,8 +572,7 @@ bool LiveStreamer::requestStreamUrl(AsciiString& outUrl)
         // 404 means GO does not think we are in an in-progress match, 503 that the deployment
         // has no relay configured. Neither is retryable from here: the match simply records
         // locally, as it would with streaming switched off.
-        liveStreamLog("LiveStreamer::requestStreamUrl lobby=%s refused (status=%d) %s
-",
+        liveStreamLog("LiveStreamer::requestStreamUrl lobby=%s refused (status=%d) %s\n",
             m_lobbyId.str(), statusCode, body.str());
         return false;
     }
@@ -589,8 +586,7 @@ bool LiveStreamer::requestStreamUrl(AsciiString& outUrl)
             if (!streamUrl.empty())
             {
                 outUrl = streamUrl.c_str();
-                liveStreamLog("LiveStreamer::requestStreamUrl lobby=%s got a stream URL
-",
+                liveStreamLog("LiveStreamer::requestStreamUrl lobby=%s got a stream URL\n",
                     m_lobbyId.str());
                 return true;
             }
@@ -600,8 +596,7 @@ bool LiveStreamer::requestStreamUrl(AsciiString& outUrl)
     {
     }
 
-    liveStreamLog("LiveStreamer::requestStreamUrl lobby=%s failed (no url in reply)
-",
+    liveStreamLog("LiveStreamer::requestStreamUrl lobby=%s failed (no url in reply)\n",
         m_lobbyId.str());
     return false;
 }
