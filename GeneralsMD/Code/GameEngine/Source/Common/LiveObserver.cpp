@@ -74,9 +74,10 @@ void liveObserverLog(const char* fmt, ...) {
 #endif // LIVE_OBSERVER_LOGGING
 }
 
-void liveObserverInitLog(const char* watchUrl) {
+void liveObserverInitLog(const char* lobbyId) {
     liveObserverLog("=== Live Observer Init ===\n");
-    liveObserverLog("LiveWatchUrl: %s\n", watchUrl ? watchUrl : "(empty)");
+    liveObserverLog("Lobby: %s
+", lobbyId ? lobbyId : "(empty)");
     liveObserverLog("Observer mode activated\n");
 }
 
@@ -405,7 +406,7 @@ bool LiveObserver::fetchWatchTicket(AsciiString& outConnectUrl)
     // GO owns admission to a livestream: it checks the session, confirms the lobby really is
     // being streamed, and asks the relay for a single-use ticket on the player's behalf. What
     // comes back is a complete connect URL, so nothing here needs to know the relay's address
-    // -- which is why this no longer derives an origin from m_relayUrl.
+    // -- which is why nothing here derives an origin from a caller-supplied URL.
     AsciiString url;
     url.format("%s/observe/%s", liveServicesEndpoint("Livestreams").str(), m_gameId.str());
 
@@ -453,37 +454,34 @@ bool LiveObserver::fetchWatchTicket(AsciiString& outConnectUrl)
     return success;
 }
 
-void LiveObserver::connect(const AsciiString& watchUrl)
+void LiveObserver::connect(const AsciiString& lobbyId)
 {
-    m_relayUrl = watchUrl;
     m_shouldRun.store(true);
 
-    // Extract game ID from the watch URL (everything after "/watch/")
+    // The lobby id is all this needs. Where to connect is not knowable here and never was
+    // ours to assemble: admission runs through GO, which mints a single-use ticket for this
+    // player and answers with the complete relay URL (see fetchWatchTicket). This used to be
+    // handed a fabricated wss://<relay>/watch/<id>, purely so the id could be parsed back out
+    // of it -- and that URL could not be connected to, because an unticketed /watch is
+    // refused by the relay.
+    m_gameId = lobbyId.isEmpty() ? AsciiString("unknown") : lobbyId;
+    if (lobbyId.isEmpty())
     {
-        const char* urlStr = watchUrl.str();
-        const char* watchPos = strstr(urlStr, "/watch/");
-        if (watchPos)
-        {
-            const char* gameIdStart = watchPos + 7; // skip "/watch/"
-            m_gameId.set(gameIdStart);
-            m_liveFilename.format("%s_live.rep", m_gameId.str());
-        }
-        else
-        {
-            // A watch URL without /watch/ cannot identify a game, so the connection is
-            // going to fail anyway. Previously this fell back to the bare "_live.rep" —
-            // one filename shared by every such session regardless of which game it was,
-            // which is the worst possible name to collide on.
-            m_gameId = "unknown";
-            m_liveFilename.format("unknown_Instance%.2u_live.rep",
-                rts::ClientInstance::getInstanceId());
-            liveObserverLog("LiveObserver::connect: watch URL has no /watch/ segment: %s\n",
-                watchUrl.str());
-        }
+        // No id means no session to ask GO about. Keep the filename unique to this instance
+        // anyway: a shared "_live.rep" is the worst possible name to collide on.
+        m_liveFilename.format("unknown_Instance%.2u_live.rep",
+            rts::ClientInstance::getInstanceId());
+        liveObserverLog("LiveObserver::connect: no lobby id supplied
+");
+    }
+    else
+    {
+        m_liveFilename.format("%s_live.rep", m_gameId.str());
     }
 
-    liveObserverLog("LiveObserver::connect to %s (game=%s, file=%s)\n",
-        watchUrl.str(), m_gameId.str(), m_liveFilename.str());
+    liveObserverLog("LiveObserver::connect game=%s (file=%s)
+",
+        m_gameId.str(), m_liveFilename.str());
 
     m_networkThread = std::thread(&LiveObserver::networkThreadFunc, this);
 }
@@ -803,9 +801,17 @@ bool LiveObserver::connectToRelay()
         m_curlMulti = nullptr;
     }
 
+	// No ticket, no connection. There is deliberately no fallback: the relay refuses any
+	// /watch without a valid ?ticket=, so connecting anyway would turn "GO would not admit
+	// you" into a connect that opens and is then rejected -- which reads as a relay fault.
 	AsciiString connectUrl;
 	if (!fetchWatchTicket(connectUrl))
-		connectUrl = m_relayUrl;
+	{
+		liveObserverLog("LiveObserver::connectToRelay game=%s aborted (no watch ticket)
+",
+			m_gameId.str());
+		return false;
+	}
 
     CURL* easy = curl_easy_init();
     if (!easy)
@@ -884,7 +890,8 @@ bool LiveObserver::connectToRelay()
     m_curlEasy = easy;
     m_curlMulti = multi;
     m_connected.store(true);
-    liveObserverLog("LiveObserver::connectToRelay connected to %s\n", m_relayUrl.str());
+    liveObserverLog("LiveObserver::connectToRelay connected (game=%s)
+", m_gameId.str());
     return true;
 }
 

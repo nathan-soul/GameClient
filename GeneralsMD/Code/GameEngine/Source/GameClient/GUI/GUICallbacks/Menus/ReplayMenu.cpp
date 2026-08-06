@@ -349,29 +349,10 @@ static Bool liveGamesConnectSelected(void)
 	if (selected < 0 || selected >= (Int)s_liveGameIds.size())
 		return FALSE;
 
-	AsciiString base = TheGlobalData ? TheGlobalData->m_liveStreamRelayUrl : AsciiString::TheEmptyString;
-	if (base.isEmpty())
-		base = LIVE_DEFAULT_RELAY_URL;
-
-	// Strip any path so /watch/<id> hangs off the origin.
-	{
-		const char* str = base.str();
-		const char* sep = strstr(str, "://");
-		if (sep)
-		{
-			const char* slash = strchr(sep + 3, '/');
-			if (slash)
-				base = AsciiString(str, (Int)(slash - str));
-		}
-	}
-
-	AsciiString watchUrl;
-	watchUrl.format("%s/watch/%s", base.str(), s_liveGameIds[selected].str());
-
-	// Record the intent, then return to the main menu, which performs the connection once it
-	// is the active screen again. Connecting from here would run while this layout is being
-	// torn down, and the start path expects a settled shell.
-	StartLiveObserverSession(watchUrl);
+	// Hand over the lobby id alone. Where to connect is GO's answer, not ours: it mints a
+	// single-use watch ticket and returns the relay URL that carries it, so a URL built here
+	// from a configured relay address could never have been connected to.
+	StartLiveObserverSession(s_liveGameIds[selected]);
 	TheShell->pop();
 	return TRUE;
 }

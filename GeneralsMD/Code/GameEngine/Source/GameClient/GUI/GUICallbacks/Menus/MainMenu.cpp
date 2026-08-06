@@ -161,7 +161,7 @@ static NameKeyType buttonLiveObserverID = NAMEKEY_INVALID;
 static GameWindow *buttonLiveObserver = nullptr;
 static GameWindow *liveObserverDialogPanel = nullptr;
 static Bool startLiveObserverGame = FALSE;
-static AsciiString m_liveObserverStartUrl;
+static AsciiString m_liveObserverStartLobbyId;
 
 // TheSuperHackers @feature 03/08/2026 Live game browser. Replaces typing a game ID by hand,
 // which offered no way to discover a game and no feedback on a typo.
@@ -170,7 +170,7 @@ static AsciiString m_liveObserverStartUrl;
 // GadgetListBoxSetItemData, so nothing depends on the lifetime of a void* we hand the gadget.
 
 // Forward declaration
-static void doLiveObserverGameStart(const AsciiString& fullWatchUrl);
+static void doLiveObserverGameStart(const AsciiString& lobbyId);
 
 #endif
 
@@ -1072,7 +1072,7 @@ void MainMenuUpdate( WindowLayout *layout, void *userData )
 	if (startLiveObserverGame && TheShell->isAnimFinished() && TheTransitionHandler->isFinished())
 	{
 		startLiveObserverGame = FALSE;
-		doLiveObserverGameStart(m_liveObserverStartUrl);
+		doLiveObserverGameStart(m_liveObserverStartLobbyId);
 	}
 
 #endif
@@ -1168,9 +1168,9 @@ void PrintOffsetsFromControlBarParent();
 // Only records the intent. doLiveObserverGameStart() blocks waiting for the relay's HEADER
 // before starting playback, so it must not run while another screen is still up — the
 // MainMenuUpdate hook below fires it once the shell animation and transition have settled.
-void StartLiveObserverSession(const AsciiString& watchUrl)
+void StartLiveObserverSession(const AsciiString& lobbyId)
 {
-	if (watchUrl.isEmpty())
+	if (lobbyId.isEmpty())
 		return;
 
 	// Match the environment doLiveObserverGameStart() expects, exactly as the main menu's
@@ -1187,19 +1187,21 @@ void StartLiveObserverSession(const AsciiString& watchUrl)
 	rts::ClientInstance::setMultiInstance(TRUE);
 	rts::ClientInstance::skipPrimaryInstance();
 
-	m_liveObserverStartUrl = watchUrl;
+	m_liveObserverStartLobbyId = lobbyId;
 	startLiveObserverGame = TRUE;
 
-	liveObserverLog("StartLiveObserverSession: queued %s\n", watchUrl.str());
+	liveObserverLog("StartLiveObserverSession: queued lobby %s
+", lobbyId.str());
 }
 
 // Initialize the live observer, connect to relay, wait for HEADER,
 // then start live playback via Recorder::playbackFile on the shared file.
-static void doLiveObserverGameStart(const AsciiString& fullWatchUrl)
+static void doLiveObserverGameStart(const AsciiString& lobbyId)
 {
-	liveObserverInitLog(fullWatchUrl.str());
+	liveObserverInitLog(lobbyId.str());
 	liveObserverLog("=== doLiveObserverGameStart (from menu) ===\n");
-	liveObserverLog("URL: %s\n", fullWatchUrl.str());
+	liveObserverLog("Lobby: %s
+", lobbyId.str());
 	liveObserverLog("doLiveObserverGameStart: entry — TheNetwork=%p isInMultiplayerGame=%d\n",
 		(void*)TheNetwork, TheGameLogic->isInMultiplayerGame() ? 1 : 0);
 
@@ -1226,7 +1228,7 @@ static void doLiveObserverGameStart(const AsciiString& fullWatchUrl)
 	}
 
 	liveObserverLog("doLiveObserverGameStart: connecting to relay...\n");
-	TheLiveObserver->connect(fullWatchUrl);
+	TheLiveObserver->connect(lobbyId);
 
 	// Block until the HEADER arrives and is written to _live.rep.
 	// readReplayHeader + playbackFile will parse everything we need

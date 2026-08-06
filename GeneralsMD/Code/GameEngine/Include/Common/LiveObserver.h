@@ -48,10 +48,10 @@ public:
 	LiveObserver();
 	~LiveObserver();
 
-	/// Connect to the relay and begin receiving replay data.
-	/// Non-blocking; spawns a background thread.
-	/// @param watchUrl Full WebSocket URL (e.g. ws://host:port/watch/GAMEID)
-	void connect(const AsciiString& watchUrl);
+	/// Begin receiving replay data. Non-blocking; spawns a background thread.
+	/// Start watching a livestream by GO lobby id. The relay URL comes from GO, which mints
+	/// the single-use watch ticket -- callers neither know nor build it.
+	void connect(const AsciiString& lobbyId);
 
 	/// Returns true once the HEADER has been received and playback can start.
 	Bool isReady() const { return m_headerReceived.load(); }
@@ -92,9 +92,9 @@ private:
 	/// Connect via WebSocket (called from network thread).
 	bool connectToRelay();
 
-	/// Fetch a single-use watch ticket for m_gameId, using the logged-in session token.
-	/// Returns false when unauthenticated or when the ticket request fails; the caller
-	/// falls back to the plain relay URL in that case.
+	/// Ask GO for a single-use watch ticket for m_gameId, using the logged-in session token.
+	/// On success outConnectUrl is the complete relay URL to connect to, ticket included.
+	/// There is no fallback: without a ticket the relay refuses the connection.
 	bool fetchWatchTicket(AsciiString& outConnectUrl);
 
 	/// Send data over WebSocket binary (called from network thread).
@@ -123,7 +123,6 @@ private:
 	Int m_parseAbsOffset;                     // absolute file offset of m_parseTail[0]
 	Bool m_parseCorrupt;                      // latched: watermark frozen, see advanceParseCursor
 
-	AsciiString m_relayUrl;
 	AsciiString m_gameId;
 
 	File* m_liveFile;
@@ -185,7 +184,7 @@ Bool liveServicesRequest(const AsciiString& url, Bool bPost, const char* szPostB
 /// The connection itself has to happen once the main menu is the active screen again — it
 /// waits for the relay's HEADER and then starts playback, which needs the shell settled. So
 /// this only records the intent; MainMenuUpdate performs it after the caller pops back.
-void StartLiveObserverSession(const AsciiString& watchUrl);
+void StartLiveObserverSession(const AsciiString& lobbyId);
 
 /// Switch the replay menu into live-games mode before pushing it (ReplayMenu.cpp).
 void ReplayMenuEnterLiveGamesMode(void);
@@ -216,7 +215,7 @@ void ReplayMenuEnterLiveGamesMode(void);
 #define LIVE_OBSERVER_BUILD_TAG "2026-08-05-session-teardown-and-shell-map-reset"
 
 void liveObserverLog(const char* fmt, ...);
-void liveObserverInitLog(const char* watchUrl);
+void liveObserverInitLog(const char* lobbyId);
 
 // Gates the ad hoc LIVE_OBSERVER instrumentation so it only fires for an actual live-observer
 // session, instead of on every game start (including the streamer's own local game), which used to
