@@ -24,6 +24,8 @@
 #include "Common/GameCommon.h"		// LIVE_DELAY_SECONDS_DEFAULT / _MAX
 #include "GameClient/ClientInstance.h"
 
+#include "GameNetwork/GeneralsOnline/json.hpp"	// parses GO's register reply
+
 #include "GameNetwork/GeneralsOnline/Vendor/libcurl/curl.h"
 #include "GameNetwork/GeneralsOnline/Vendor/libcurl/multi.h"
 #include "GameNetwork/GeneralsOnline/Vendor/libcurl/websockets.h"
@@ -88,6 +90,10 @@ LiveStreamer::LiveStreamer()
     : m_isStreaming(false)
     , m_isBackup(false)
     , m_connected(false)
+    , m_queuedBytes(0)
+    , m_queueOverflowed(false)
+    , m_isHost(FALSE)
+    , m_delaySeconds(-1)
     , m_shouldRun(false)
     , m_curlEasy(nullptr)
     , m_curlMulti(nullptr)
@@ -138,6 +144,11 @@ Bool liveStreamHasPendingRegistration()
     return s_pendingRegistration.isValid();
 }
 
+// Ceiling on replay bytes held while waiting for a relay connection. Roughly a few minutes of
+// a busy match: enough that a slow registration costs nothing, small enough that a refused one
+// cannot grow without bound for the rest of the game.
+static const size_t LIVE_STREAM_MAX_QUEUED_BYTES = 8u * 1024u * 1024u;
+
 LiveStreamer* liveStreamStartPendingSession()
 {
     if (TheGlobalData == nullptr || !TheGlobalData->m_liveStreamEnabled)
@@ -160,8 +171,11 @@ LiveStreamer* liveStreamStartPendingSession()
     if (relayUrl.isEmpty())
         relayUrl = LIVE_DEFAULT_RELAY_URL;
 
-    TheLiveStreamer->init(relayUrl);
+    // Register first, then start the thread. registerForGame only fills in fields and queues
+    // the REGISTER frame, and the network thread needs those fields to ask GO for a token --
+    // doing it the other way round raced the connect.
     TheLiveStreamer->registerForGame(s_pendingRegistration);
+    TheLiveStreamer->init(relayUrl);
 
     // Consumed. A second recording without a fresh lobby visit must not re-register this one
     // under the same lobby id — that would merge two unrelated matches into one relay session.
@@ -331,6 +345,8 @@ void LiveStreamer::registerForGame(const LiveStreamRegistration& registration)
 {
     m_lobbyId = registration.lobbyId;
     m_playerName = registration.playerName;
+    m_isHost = registration.isHost;
+    m_delaySeconds = registration.delaySeconds;
 
     liveStreamLog("LiveStreamer::registerForGame lobbyId=%s player='%s' isHost=%d canStream=%d lobbyJsonLen=%u\n",
         registration.lobbyId.str(), registration.playerName.str(), (int)registration.isHost,
@@ -345,6 +361,9 @@ void LiveStreamer::registerForGame(const LiveStreamRegistration& registration)
     regJson += ",\"lobbyid\":\"" + liveStreamJsonEscape(registration.lobbyId.str()) + "\"";
     regJson += ",\"player_name\":\"" + liveStreamJsonEscape(registration.playerName.str()) + "\"";
     regJson += registration.canStream ? ",\"can_stream\":true" : ",\"can_stream\":false";
+    // is_host is sent for the relay's logs only. It no longer grants anything: the relay
+    // compares our stream token's user against the owner GO recorded for the session, so a
+    // client cannot claim host authority by asserting it here.
     regJson += registration.isHost ? ",\"is_host\":true" : ",\"is_host\":false";
 
     // Both host-only. The relay ignores them from anyone else, but not sending them at all from
@@ -410,6 +429,27 @@ void LiveStreamer::queueFrame(LiveMsgType type, const void* data, size_t len)
     }
     {
         std::lock_guard<std::mutex> lock(m_sendMutex);
+
+        // Everything queued before the connection exists is held in memory. That is deliberate
+        // -- it is what lets the replay sink attach at match start and stream the header the
+        // moment the relay accepts us -- but it has to be bounded, because a registration GO
+        // refuses means nothing ever drains this. REGISTER itself is always kept: dropping it
+        // would make a connection that does succeed useless.
+        if (type != LIVE_MSG_REGISTER &&
+            m_queuedBytes + frame.data.size() > LIVE_STREAM_MAX_QUEUED_BYTES)
+        {
+            if (!m_queueOverflowed)
+            {
+                m_queueOverflowed = true;
+                liveStreamLog("LiveStreamer::queueFrame queue exceeded %u bytes with no relay "
+                    "connection - dropping stream data from here on
+",
+                    (unsigned int)LIVE_STREAM_MAX_QUEUED_BYTES);
+            }
+            return;
+        }
+
+        m_queuedBytes += frame.data.size();
         m_outgoingQueue.push(std::move(frame));
     }
 }
@@ -501,6 +541,71 @@ bool LiveStreamer::wsRecv(std::vector<char>& outBuffer)
     return nread > 0;
 }
 
+bool LiveStreamer::requestStreamUrl(AsciiString& outUrl)
+{
+    // The host reports the broadcast delay here rather than in the REGISTER frame. GO records
+    // it and forwards it to the relay when the session is created, which is before any source
+    // connects -- so every observer of this game is held behind the same number, settled
+    // before the first byte of replay data exists. A non-host sends no delay at all, so a
+    // player who is merely a second source cannot redefine the host's spoiler window.
+    std::string postBody = "{}";
+    if (m_isHost && m_delaySeconds >= 0)
+    {
+        char scratch[64];
+        snprintf(scratch, sizeof(scratch), "{\"delay_seconds\":%d}", m_delaySeconds);
+        postBody = scratch;
+    }
+
+    AsciiString url;
+    url.format("%s/register", liveServicesEndpoint("Livestreams").str());
+
+    AsciiString body;
+    Int statusCode = 0;
+    if (!liveServicesRequest(url, TRUE, postBody.c_str(), body, statusCode))
+    {
+        liveStreamLog("LiveStreamer::requestStreamUrl lobby=%s failed (request not sent)
+",
+            m_lobbyId.str());
+        return false;
+    }
+
+    if (statusCode != 200)
+    {
+        // 404 means GO does not think we are in an in-progress match, 503 that the deployment
+        // has no relay configured. Neither is retryable from here: the match simply records
+        // locally, as it would with streaming switched off.
+        liveStreamLog("LiveStreamer::requestStreamUrl lobby=%s refused (status=%d) %s
+",
+            m_lobbyId.str(), statusCode, body.str());
+        return false;
+    }
+
+    try
+    {
+        nlohmann::json response = nlohmann::json::parse(body.str());
+        if (response.is_object() && response.contains("url") && response["url"].is_string())
+        {
+            const std::string streamUrl = response["url"].get<std::string>();
+            if (!streamUrl.empty())
+            {
+                outUrl = streamUrl.c_str();
+                liveStreamLog("LiveStreamer::requestStreamUrl lobby=%s got a stream URL
+",
+                    m_lobbyId.str());
+                return true;
+            }
+        }
+    }
+    catch (const nlohmann::json::exception&)
+    {
+    }
+
+    liveStreamLog("LiveStreamer::requestStreamUrl lobby=%s failed (no url in reply)
+",
+        m_lobbyId.str());
+    return false;
+}
+
 bool LiveStreamer::connectToRelay()
 {
     if (m_curlEasy)
@@ -521,17 +626,14 @@ bool LiveStreamer::connectToRelay()
         return false;
     }
 
-    // Append /register if not already in the URL
-    AsciiString url = m_relayUrl;
+    // The relay no longer accepts an unauthenticated /register. GO registers the livestream,
+    // mints a single-use stream token for this player, and hands back the complete connect
+    // URL -- so the relay's address is GO's to decide, not ours to assemble.
+    AsciiString url;
+    if (!requestStreamUrl(url))
     {
-        Int len = (Int)strlen(url.str());
-        if (len < 9 || strcmp(url.str() + len - 9, "/register") != 0)
-        {
-            if (len > 0 && url.str()[len - 1] == '/')
-                url.concat("register");
-            else
-                url.concat("/register");
-        }
+        curl_easy_cleanup(easy);
+        return false;
     }
 
     curl_easy_setopt(easy, CURLOPT_URL, url.str());
@@ -653,6 +755,7 @@ void LiveStreamer::networkThreadFunc()
                 }
                 else if (frame.type == LIVE_MSG_END)
                     liveStreamLog("LiveStreamer: sent END\n");
+                m_queuedBytes -= frame.data.size();
                 m_outgoingQueue.pop();
             }
         }
@@ -758,6 +861,7 @@ void LiveStreamer::networkThreadFunc()
                 break;
             }
             liveStreamLog("LiveStreamer: final drain sent type=%d (%zu bytes)\n", (int)frame.type, frame.data.size());
+            m_queuedBytes -= frame.data.size();
             m_outgoingQueue.pop();
         }
     }

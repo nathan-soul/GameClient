@@ -37,7 +37,7 @@
 #include "Common/GameEngine.h"
 #include "Common/GameState.h"
 #include "Common/GlobalData.h"		// m_liveStreamRelayUrl
-#include "Common/LiveObserver.h"	// liveRelayBeginFetch / PollFetch / FetchInFlight
+#include "Common/LiveObserver.h"	// liveRelayBeginFetch / PollFetch / FetchInFlight, liveServices*
 #include "Common/Recorder.h"
 #include "Common/version.h"
 #include "GameNetwork/GeneralsOnline/json.hpp"	// parses the relay's /games reply
@@ -182,49 +182,15 @@ static GameWindow* findTitleWindow(GameWindow* parent)
 	return fallback;
 }
 
-/// Turn the relay's WebSocket URL into its HTTP origin: wss://host/ -> https://host
-/// Derived rather than configured separately so the two cannot drift apart.
-static AsciiString liveGamesHttpBase(void)
-{
-	AsciiString relay = TheGlobalData ? TheGlobalData->m_liveStreamRelayUrl : AsciiString::TheEmptyString;
-	if (relay.isEmpty())
-		relay = LIVE_DEFAULT_RELAY_URL;
-
-	AsciiString scheme, remainder;
-	const char* str = relay.str();
-	const char* sep = strstr(str, "://");
-	if (sep)
-	{
-		AsciiString rawScheme(str, (Int)(sep - str));
-		remainder = sep + 3;
-		// wss is TLS and ws is not, so they cannot share a mapping.
-		scheme = (stricmp(rawScheme.str(), "wss") == 0 || stricmp(rawScheme.str(), "https") == 0)
-			? "https" : "http";
-	}
-	else
-	{
-		scheme = "http";
-		remainder = str;
-	}
-
-	const char* slash = strchr(remainder.str(), '/');
-	if (slash)
-		remainder = AsciiString(remainder.str(), (Int)(slash - remainder.str()));
-
-	AsciiString base;
-	base.format("%s://%s", scheme.str(), remainder.str());
-	return base;
-}
-
 static void liveGamesRequestList(void)
 {
 	if (liveRelayFetchInFlight())
 		return;
 
-	AsciiString uri;
-	uri.format("%s/games", liveGamesHttpBase().str());
+	// GO owns the list of what is being streamed -- the relay no longer publishes one, and
+	// could not anyway: it cannot tell which of its sessions a given player is allowed to see.
 	s_lastLiveFetchMs = timeGetTime();
-	liveRelayBeginFetch(uri);
+	liveRelayBeginFetch(liveServicesEndpoint("Livestreams"));
 }
 
 static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiString& body)
@@ -247,15 +213,23 @@ static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiStri
 
 	if (!success || statusCode != 200)
 	{
+		// Watching now needs a GeneralsOnline session, because GO is what admits an observer
+		// to a stream. Say so rather than blaming the connection.
+		const Bool signedOut = (statusCode == 401 || statusCode == 403 || liveServicesAuthToken().empty());
 		GadgetListBoxAddEntryText(listboxReplayFiles,
-			UnicodeString(L"Could not reach the relay server"),
+			signedOut ? UnicodeString(L"Sign in to GeneralsOnline to watch live games")
+					  : UnicodeString(L"Could not reach GeneralsOnline"),
 			GameMakeColor(255, 120, 120, 255), -1);
 		return;
 	}
 
 	try
 	{
-		nlohmann::json games = nlohmann::json::parse(body.str());
+		// GO answers with { "livestreams": [ ... ] }, where each entry is already filtered to
+		// what this player may watch -- lobbies in progress whose relay session is live.
+		nlohmann::json response = nlohmann::json::parse(body.str());
+		nlohmann::json games = (response.is_object() && response.contains("livestreams"))
+			? response["livestreams"] : nlohmann::json::array();
 		if (!games.is_array() || games.empty())
 		{
 			GadgetListBoxAddEntryText(listboxReplayFiles,
@@ -266,7 +240,11 @@ static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiStri
 
 		for (const auto& game : games)
 		{
-			AsciiString gameId = game.value("lobbyid", std::string("")).c_str();
+			// lobby_id is a number in GO's JSON, and the relay keys its sessions by the same
+			// value as decimal text -- so it is formatted, not read as a string.
+			AsciiString gameId;
+			if (game.contains("lobby_id") && game["lobby_id"].is_number_integer())
+				gameId.format("%lld", (long long)game["lobby_id"].get<long long>());
 			if (gameId.isEmpty())
 				continue;
 
@@ -274,20 +252,21 @@ static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiStri
 			// the raw path the old field carried, so it needs no leaf/extension stripping.
 			// Missing metadata means the streamer registered without a lobby — still perfectly
 			// watchable, so fall back rather than dropping the row.
-			std::string mapName = game.value("mapname", std::string(""));
+			std::string mapName = game.value("map_name", std::string(""));
 			if (mapName.empty())
 				mapName = "(unknown map)";
 
-			// members[] mirrors GO exactly, empty slots (userid -1) included. Skip those.
+			// GO sends players[] already reduced to the humans in the lobby, so unlike the
+			// relay's members[] there are no empty slots to filter out here.
 			std::string playerList;
-			if (game.contains("members") && game["members"].is_array())
+			if (game.contains("players") && game["players"].is_array())
 			{
-				for (const auto& member : game["members"])
+				for (const auto& player : game["players"])
 				{
-					if (!member.is_object() || member.value("userid", -1) == -1)
+					if (!player.is_string())
 						continue;
 
-					std::string name = member.value("displayname", std::string(""));
+					const std::string name = player.get<std::string>();
 					if (name.empty())
 						continue;
 
@@ -299,9 +278,13 @@ static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiStri
 			if (playerList.empty())
 				playerList = "?";
 
-			Int viewers = game.value("viewers", 0);
-			Int delaySeconds = game.value("delay_seconds", (Int)LIVE_DELAY_SECONDS_DEFAULT);
-			Int ageSeconds = game.value("age_seconds", 0);
+			// delay_seconds and age_seconds are nullable in GO's contract, so a present-but-null
+			// value has to be treated as absent -- value() would throw on it.
+			Int viewers = game.value("observer_count", 0);
+			Int delaySeconds = (game.contains("delay_seconds") && game["delay_seconds"].is_number_integer())
+				? game["delay_seconds"].get<Int>() : (Int)LIVE_DELAY_SECONDS_DEFAULT;
+			Int ageSeconds = (game.contains("age_seconds") && game["age_seconds"].is_number_integer())
+				? game["age_seconds"].get<Int>() : 0;
 
 			const Color rowColor = GameMakeColor(255, 255, 255, 255);
 			UnicodeString text;

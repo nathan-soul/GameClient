@@ -26,6 +26,7 @@
 #include <mutex>
 #include <atomic>
 #include <vector>
+#include <string>
 
 class File;
 
@@ -157,6 +158,27 @@ Bool liveRelayPollFetch(AsciiString& outBody, Bool& outSuccess, Int& outStatusCo
 
 /// TRUE while a request is outstanding.
 Bool liveRelayFetchInFlight();
+
+// ---------------------------------------------------------------------------
+// GO services calls
+//
+// Livestreams are orchestrated by GO, not by the relay: GO owns the list of what is being
+// streamed and mints the single-use credentials for both watching and streaming. The relay
+// only honours a credential GO issued, so every one of these calls needs the player's session
+// token — which is why the browser now requires a sign-in that it previously did not.
+
+/// Full URL for a GO services endpoint, e.g. liveServicesEndpoint("Livestreams").
+AsciiString liveServicesEndpoint(const char* szEndpoint);
+
+/// The signed-in player's session token, or an empty string when not signed in.
+std::string liveServicesAuthToken();
+
+/// Blocking authenticated request against GO services. For callers already on a worker thread
+/// (the observer's and streamer's own network threads) — never call this from the main loop.
+/// Returns FALSE when not signed in or when the request could not be made at all; outStatusCode
+/// carries GO's reply otherwise, which the caller must still check.
+Bool liveServicesRequest(const AsciiString& url, Bool bPost, const char* szPostBody,
+	AsciiString& outBody, Int& outStatusCode);
 
 /// Queue a live-observer session for the given watch URL (implemented in MainMenu.cpp).
 ///

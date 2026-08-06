@@ -120,7 +120,48 @@ namespace
 		return size * nmemb;
 	}
 
-	void liveRelayFetchThread(std::string url)
+	// Shared setup for every GO services call made from this file. Identical CA handling and
+	// timeouts whether the caller is the browser's background fetch, the observer asking for a
+	// watch ticket, or the streamer registering a stream — one place to get this right.
+	//
+	// Returns the header list, which the caller owns and must curl_slist_free_all().
+	curl_slist* liveServicesConfigureCurl(CURL* easy, std::string* outBody, const std::string& authToken)
+	{
+		curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, liveRelayWriteCb);
+		curl_easy_setopt(easy, CURLOPT_WRITEDATA, outBody);
+		curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L);
+		// Keep this short: these run behind a menu the user is looking at, or in the moment a
+		// match starts, and a hung service must not leave either of them hanging.
+		curl_easy_setopt(easy, CURLOPT_TIMEOUT, 10L);
+		curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, 5L);
+
+		// Same CA handling as connectToRelay — this libcurl is OpenSSL-backed and has
+		// no trust anchors of its own, so https:// fails without an explicit bundle.
+		std::ifstream certFile("cacert.pem");
+		if (certFile.good())
+		{
+			certFile.close();
+			curl_easy_setopt(easy, CURLOPT_CAINFO, "cacert.pem");
+			curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 1L);
+			curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 2L);
+		}
+		else
+		{
+			curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 0L);
+			curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 0L);
+		}
+
+		curl_slist* headers = curl_slist_append(nullptr, "Accept: application/json");
+		if (!authToken.empty())
+		{
+			const std::string authHeader = "Authorization: Bearer " + authToken;
+			headers = curl_slist_append(headers, authHeader.c_str());
+		}
+		curl_easy_setopt(easy, CURLOPT_HTTPHEADER, headers);
+		return headers;
+	}
+
+	void liveRelayFetchThread(std::string url, std::string authToken)
 	{
 		std::string body;
 		bool success = false;
@@ -130,35 +171,14 @@ namespace
 		if (easy)
 		{
 			curl_easy_setopt(easy, CURLOPT_URL, url.c_str());
-			curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, liveRelayWriteCb);
-			curl_easy_setopt(easy, CURLOPT_WRITEDATA, &body);
-			curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L);
-			// Keep this short: it runs behind a menu the user is looking at, and a hung
-			// relay must not leave the list saying "Loading" indefinitely.
-			curl_easy_setopt(easy, CURLOPT_TIMEOUT, 10L);
-			curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, 5L);
-
-			// Same CA handling as connectToRelay — this libcurl is OpenSSL-backed and has
-			// no trust anchors of its own, so https:// fails without an explicit bundle.
-			std::ifstream certFile("cacert.pem");
-			if (certFile.good())
-			{
-				certFile.close();
-				curl_easy_setopt(easy, CURLOPT_CAINFO, "cacert.pem");
-				curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 1L);
-				curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 2L);
-			}
-			else
-			{
-				curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 0L);
-				curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 0L);
-			}
+			curl_slist* headers = liveServicesConfigureCurl(easy, &body, authToken);
 
 			CURLcode res = curl_easy_perform(easy);
 			curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &status);
 			success = (res == CURLE_OK);
 			if (!success)
 				liveObserverLog("liveRelayFetch: curl failed (result=%d) for %s\n", (int)res, url.c_str());
+			curl_slist_free_all(headers);
 			curl_easy_cleanup(easy);
 		}
 
@@ -173,16 +193,99 @@ namespace
 	}
 }
 
+std::string liveServicesAuthToken()
+{
+	NGMP_OnlineServices_AuthInterface* pAuthInterface =
+		NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_AuthInterface>();
+	if (pAuthInterface == nullptr || !pAuthInterface->IsLoggedIn())
+		return std::string();
+
+	return pAuthInterface->GetAuthToken();
+}
+
+AsciiString liveServicesEndpoint(const char* szEndpoint)
+{
+	// Static on the manager, so this resolves whether or not the player has signed in.
+	return AsciiString(NGMP_OnlineServicesManager::GetAPIEndpoint(szEndpoint).c_str());
+}
+
+Bool liveServicesRequest(const AsciiString& url, Bool bPost, const char* szPostBody,
+	AsciiString& outBody, Int& outStatusCode)
+{
+	outBody = AsciiString::TheEmptyString;
+	outStatusCode = 0;
+
+	const std::string authToken = liveServicesAuthToken();
+	if (authToken.empty())
+	{
+		liveObserverLog("liveServicesRequest: %s refused (not signed in)\n", url.str());
+		return FALSE;
+	}
+
+	CURL* easy = curl_easy_init();
+	if (easy == nullptr)
+	{
+		liveObserverLog("liveServicesRequest: %s failed (curl init)\n", url.str());
+		return FALSE;
+	}
+
+	std::string body;
+	curl_easy_setopt(easy, CURLOPT_URL, url.str());
+	curl_slist* headers = liveServicesConfigureCurl(easy, &body, authToken);
+
+	if (bPost)
+	{
+		// GO reads the body itself rather than through a model binder, so an empty POST still
+		// needs a real (zero-length) body rather than no body at all.
+		const char* szBody = (szPostBody != nullptr) ? szPostBody : "";
+		headers = curl_slist_append(headers, "Content-Type: application/json");
+		curl_easy_setopt(easy, CURLOPT_HTTPHEADER, headers);
+		curl_easy_setopt(easy, CURLOPT_POST, 1L);
+		curl_easy_setopt(easy, CURLOPT_POSTFIELDS, szBody);
+		curl_easy_setopt(easy, CURLOPT_POSTFIELDSIZE, (long)strlen(szBody));
+	}
+
+	const CURLcode res = curl_easy_perform(easy);
+	long status = 0;
+	curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &status);
+	curl_slist_free_all(headers);
+	curl_easy_cleanup(easy);
+
+	outBody = body.c_str();
+	outStatusCode = (Int)status;
+
+	if (res != CURLE_OK)
+	{
+		liveObserverLog("liveServicesRequest: %s failed (result=%d)\n", url.str(), (int)res);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
 Bool liveRelayBeginFetch(const AsciiString& url)
 {
 	bool expected = false;
 	if (!s_fetchInFlight.compare_exchange_strong(expected, true))
 		return FALSE;	// one already running
 
+	// Read the token here, on the calling thread: the auth interface is not safe to reach from
+	// the fetch thread, and it is a plain string by the time it crosses over.
+	const std::string authToken = liveServicesAuthToken();
+	if (authToken.empty())
+	{
+		// GO gates the livestream list behind a GameClient session, so there is nothing to ask
+		// for when signed out. Release the in-flight flag rather than leaving the browser
+		// believing a request is running.
+		s_fetchInFlight.store(false);
+		liveObserverLog("liveRelayFetch: skipped %s (not signed in)\n", url.str());
+		return FALSE;
+	}
+
 	s_fetchReady.store(false);
 	liveObserverLog("liveRelayFetch: GET %s\n", url.str());
 
-	std::thread(liveRelayFetchThread, std::string(url.str())).detach();
+	std::thread(liveRelayFetchThread, std::string(url.str()), authToken).detach();
 	return TRUE;
 }
 
@@ -299,99 +402,54 @@ LiveObserver* createLiveObserver()
 
 bool LiveObserver::fetchWatchTicket(AsciiString& outConnectUrl)
 {
-    NGMP_OnlineServices_AuthInterface* authInterface =
-        NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_AuthInterface>();
-    if (authInterface == nullptr || !authInterface->IsLoggedIn())
+    // GO owns admission to a livestream: it checks the session, confirms the lobby really is
+    // being streamed, and asks the relay for a single-use ticket on the player's behalf. What
+    // comes back is a complete connect URL, so nothing here needs to know the relay's address
+    // -- which is why this no longer derives an origin from m_relayUrl.
+    AsciiString url;
+    url.format("%s/observe/%s", liveServicesEndpoint("Livestreams").str(), m_gameId.str());
+
+    AsciiString body;
+    Int statusCode = 0;
+    if (!liveServicesRequest(url, TRUE, "", body, statusCode))
     {
-        liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s skipped (not logged in)\n",
+        liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s failed (request not sent)
+",
             m_gameId.str());
         return false;
     }
 
-    const char* urlStr = m_relayUrl.str();
-    const char* watchPos = strstr(urlStr, "/watch/");
-    if (watchPos == nullptr)
+    if (statusCode != 200)
     {
-        liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s failed (invalid relay URL)\n",
-            m_gameId.str());
+        // 404 is the ordinary "that stream is over" answer: the game was listed a moment ago,
+        // but the relay has closed it since. Anything else is a real failure.
+        liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s refused (status=%d) %s
+",
+            m_gameId.str(), statusCode, body.str());
         return false;
     }
 
-    std::string origin(urlStr, watchPos - urlStr);
-    if (origin.compare(0, 6, "wss://") == 0)
-        origin.replace(0, 6, "https://");
-	else if (origin.compare(0, 5, "ws://") == 0)
-		origin.replace(0, 5, "http://");
-	else
-	{
-		liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s failed (invalid scheme)\n",
-			m_gameId.str());
-		return false;
-	}
-
-    const std::string ticketUrl = origin + "/watch/" + m_gameId.str() + "/ticket";
-    std::string body;
-	CURL* easy = curl_easy_init();
-	if (easy == nullptr)
-	{
-		liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s failed (curl init)\n",
-			m_gameId.str());
-		return false;
-	}
-
-    curl_easy_setopt(easy, CURLOPT_URL, ticketUrl.c_str());
-    curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, liveRelayWriteCb);
-    curl_easy_setopt(easy, CURLOPT_WRITEDATA, &body);
-    curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(easy, CURLOPT_TIMEOUT, 10L);
-    curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, 5L);
-
-    std::ifstream certFile("cacert.pem");
-    if (certFile.good())
-    {
-        certFile.close();
-        curl_easy_setopt(easy, CURLOPT_CAINFO, "cacert.pem");
-        curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 1L);
-        curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 2L);
-    }
-    else
-    {
-        curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 0L);
-        curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 0L);
-    }
-
-    std::string authorization = "Authorization: Bearer " + authInterface->GetAuthToken();
-    curl_slist* headers = curl_slist_append(nullptr, authorization.c_str());
-    curl_easy_setopt(easy, CURLOPT_HTTPHEADER, headers);
-
-    CURLcode result = curl_easy_perform(easy);
-    long status = 0;
-    curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &status);
     bool success = false;
-    if (result == CURLE_OK && status == 200)
+    try
     {
-        try
+        nlohmann::json response = nlohmann::json::parse(body.str());
+        if (response.is_object() && response.contains("url") && response["url"].is_string())
         {
-            nlohmann::json response = nlohmann::json::parse(body);
-            if (response.is_object() && response.contains("url") && response["url"].is_string())
+            const std::string ticketUrl = response["url"].get<std::string>();
+            if (!ticketUrl.empty())
             {
-                const std::string url = response["url"].get<std::string>();
-                if (!url.empty())
-                {
-                    outConnectUrl = url.c_str();
-                    success = true;
-                }
+                outConnectUrl = ticketUrl.c_str();
+                success = true;
             }
         }
-        catch (const nlohmann::json::exception&)
-        {
-        }
+    }
+    catch (const nlohmann::json::exception&)
+    {
     }
 
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(easy);
-    liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s %s (status=%ld, result=%d)\n",
-        m_gameId.str(), success ? "succeeded" : "failed", status, (int)result);
+    liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s %s (status=%d)
+",
+        m_gameId.str(), success ? "succeeded" : "failed", statusCode);
     return success;
 }
 

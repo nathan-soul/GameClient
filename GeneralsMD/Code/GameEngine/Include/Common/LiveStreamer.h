@@ -153,6 +153,11 @@ public:
 
 private:
 	void networkThreadFunc();
+
+	/// Ask GO to register this livestream and mint our single-use stream token, returning the
+	/// relay URL to connect to. Blocking, so network thread only.
+	bool requestStreamUrl(AsciiString& outUrl);
+
 	bool connectToRelay();
 	bool wsSendBinary(const unsigned char* data, size_t len);
 	bool wsRecv(std::vector<char>& outBuffer);
@@ -168,6 +173,10 @@ private:
 
 	AsciiString m_relayUrl;
 	AsciiString m_lobbyId;
+	/// Host-only fields kept from the registration, because the stream is registered with GO
+	/// from the network thread and the registration struct is gone by then.
+	Bool m_isHost;
+	Int m_delaySeconds;
 	AsciiString m_playerName;
 
 	void* m_curlEasy;
@@ -177,6 +186,12 @@ private:
 	mutable std::mutex m_sendMutex;
 
 	std::queue<QueuedFrame> m_outgoingQueue;
+	/// Bytes currently sitting in m_outgoingQueue, and whether the budget has been blown.
+	/// Frames are queued before the relay connection exists (that is what lets the sink attach
+	/// the moment a match starts), so a registration GO refuses would otherwise let the queue
+	/// grow for the entire match with nothing ever draining it.
+	size_t m_queuedBytes;
+	bool m_queueOverflowed;
 
 	// Header accumulation — buffered until onHeaderComplete()
 	std::vector<char> m_headerBuffer;
