@@ -329,7 +329,11 @@ public:
 #else
 	#if defined(_DEBUG)
 		const static EEnvironment g_Environment = EEnvironment::DEV;
-		#pragma message ("Building for DEV environment")
+		#if defined(USE_BATTY_ENV)
+			#pragma message ("Building for DEV environment (batty: " GENERALS_ONLINE_BATTY_API_HOST ")")
+		#else
+			#pragma message ("Building for DEV environment (localhost:9000)")
+		#endif
 	#else
 		const static EEnvironment g_Environment = EEnvironment::PROD;
 		#pragma message ("Building for PROD environment")

@@ -227,7 +227,13 @@ std::string NGMP_OnlineServicesManager::GetAPIEndpoint(const char* szEndpoint)
 {
 	if (g_Environment == EEnvironment::DEV)
 	{
+#if defined(USE_BATTY_ENV)
+		// The {environment} path segment is a route placeholder GO never reads, so "dev" here
+		// reaches the same service the relay calls under "prod" — no need to keep them in step.
+		return std::format(GENERALS_ONLINE_BATTY_API_HOST "/env/dev/contract/1/{}", szEndpoint);
+#else
 		return std::format("https://localhost:9000/env/dev/contract/1/{}", szEndpoint);
+#endif
 	}
 	else if (g_Environment == EEnvironment::TEST)
 	{

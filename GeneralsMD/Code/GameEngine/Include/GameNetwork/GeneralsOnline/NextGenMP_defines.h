@@ -29,6 +29,22 @@
 //#define USE_TEST_ENV 1
 #endif
 
+// Point the DEV environment at the batty test deployment instead of a GO service running on
+// this machine. Debug-only, and Debug is required rather than incidental: it is what selects
+// the DEV environment, what makes GenerateGamecode() return the fixed ILOVECODE that batty's
+// Debug GO build accepts (the browser login is compiled out on that path), and what makes GO
+// skip the exe CRC check that would otherwise reject a locally built client.
+// Comment this out to go back to a GO service on localhost.
+#if defined(_DEBUG)
+#define USE_BATTY_ENV 1
+#endif
+
+// Host for USE_BATTY_ENV. Traefik serves GO under /go on this name and strips the prefix, so
+// the service still sees its own /env/... routes. The relay lives beside it under /relay, but
+// the client never needs that: GO hands out fully-formed relay URLs when a stream is
+// registered or observed.
+#define GENERALS_ONLINE_BATTY_API_HOST "https://batty.youbantoo.club/go"
+
 #define HTTP_UPLOAD_TIMEOUT 600000
 
 //#define GENERALS_ONLINE_GAMETYPE_GENERALS
