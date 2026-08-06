@@ -166,6 +166,27 @@ Bool liveRelayFetchInFlight();
 // only honours a credential GO issued, so every one of these calls needs the player's session
 // token — which is why the browser now requires a sign-in that it previously did not.
 
+/// One live game, as GO describes it, already parsed and display-ready.
+///
+/// The browser renders these. Keeping GO's JSON shape out of the menu means the wire format
+/// is known in exactly one place, and a contract change is a change here rather than in a
+/// GUI callback.
+struct LiveGameEntry
+{
+	AsciiString lobbyId;      ///< GO's LobbyID as decimal text; also the relay's session key.
+	AsciiString mapName;      ///< Display name, never a path.
+	AsciiString players;      ///< Human players, comma separated.
+	Int observerCount;
+	Int delaySeconds;
+	Int ageSeconds;
+
+	LiveGameEntry() : observerCount(0), delaySeconds(0), ageSeconds(0) {}
+};
+
+/// Parse a GO /Livestreams reply into entries. FALSE when the body is not usable at all;
+/// an empty list with TRUE simply means nobody is streaming.
+Bool liveServicesParseLivestreams(const AsciiString& body, std::vector<LiveGameEntry>& outGames);
+
 /// Full URL for a GO services endpoint, e.g. liveServicesEndpoint("Livestreams").
 AsciiString liveServicesEndpoint(const char* szEndpoint);
 

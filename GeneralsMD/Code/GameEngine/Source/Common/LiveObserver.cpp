@@ -209,6 +209,83 @@ AsciiString liveServicesEndpoint(const char* szEndpoint)
 	return AsciiString(NGMP_OnlineServicesManager::GetAPIEndpoint(szEndpoint).c_str());
 }
 
+Bool liveServicesParseLivestreams(const AsciiString& body, std::vector<LiveGameEntry>& outGames)
+{
+	outGames.clear();
+
+	try
+	{
+		// GO answers with { "livestreams": [ ... ] }, already filtered to what this player may
+		// watch -- lobbies in progress whose relay session is live.
+		nlohmann::json response = nlohmann::json::parse(body.str());
+		if (!response.is_object() || !response.contains("livestreams"))
+			return FALSE;
+
+		const nlohmann::json& games = response["livestreams"];
+		if (!games.is_array())
+			return FALSE;
+
+		for (const auto& game : games)
+		{
+			if (!game.is_object())
+				continue;
+
+			LiveGameEntry entry;
+
+			// lobby_id is a number in GO's JSON, and the relay keys its sessions by the same
+			// value as decimal text -- so it is formatted, not read as a string.
+			if (game.contains("lobby_id") && game["lobby_id"].is_number_integer())
+				entry.lobbyId.format("%lld", (long long)game["lobby_id"].get<long long>());
+			if (entry.lobbyId.isEmpty())
+				continue;
+
+			// map_name is already a display name, not the raw path the old relay field carried,
+			// so it needs no leaf/extension stripping. A game missing metadata is still watchable,
+			// so fall back rather than dropping the row.
+			const std::string mapName = game.value("map_name", std::string(""));
+			entry.mapName = mapName.empty() ? "(unknown map)" : mapName.c_str();
+
+			// players[] arrives already reduced to the humans in the lobby, so unlike the relay's
+			// old members[] there are no empty slots to filter out.
+			std::string playerList;
+			if (game.contains("players") && game["players"].is_array())
+			{
+				for (const auto& player : game["players"])
+				{
+					if (!player.is_string())
+						continue;
+
+					const std::string name = player.get<std::string>();
+					if (name.empty())
+						continue;
+
+					if (!playerList.empty())
+						playerList += ", ";
+					playerList += name;
+				}
+			}
+			entry.players = playerList.empty() ? "?" : playerList.c_str();
+
+			// delay_seconds and age_seconds are nullable in GO's contract, so present-but-null has
+			// to be treated as absent -- value() would throw on it.
+			entry.observerCount = game.value("observer_count", 0);
+			entry.delaySeconds = (game.contains("delay_seconds") && game["delay_seconds"].is_number_integer())
+				? game["delay_seconds"].get<Int>() : (Int)LIVE_DELAY_SECONDS_DEFAULT;
+			entry.ageSeconds = (game.contains("age_seconds") && game["age_seconds"].is_number_integer())
+				? game["age_seconds"].get<Int>() : 0;
+
+			outGames.push_back(entry);
+		}
+	}
+	catch (const nlohmann::json::exception&)
+	{
+		outGames.clear();
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
 Bool liveServicesRequest(const AsciiString& url, Bool bPost, const char* szPostBody,
 	AsciiString& outBody, Int& outStatusCode)
 {

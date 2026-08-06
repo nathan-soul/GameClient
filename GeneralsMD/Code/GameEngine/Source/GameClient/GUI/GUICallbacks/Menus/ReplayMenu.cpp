@@ -40,7 +40,6 @@
 #include "Common/LiveObserver.h"	// liveRelayBeginFetch / PollFetch / FetchInFlight, liveServices*
 #include "Common/Recorder.h"
 #include "Common/version.h"
-#include "GameNetwork/GeneralsOnline/json.hpp"	// parses the relay's /games reply
 #include <vector>
 #include "GameClient/WindowLayout.h"
 #include "GameClient/Gadget.h"
@@ -223,121 +222,69 @@ static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiStri
 		return;
 	}
 
-	try
+	// The wire format is LiveObserver's business; this only lays rows out.
+	std::vector<LiveGameEntry> games;
+	if (!liveServicesParseLivestreams(body, games))
 	{
-		// GO answers with { "livestreams": [ ... ] }, where each entry is already filtered to
-		// what this player may watch -- lobbies in progress whose relay session is live.
-		nlohmann::json response = nlohmann::json::parse(body.str());
-		nlohmann::json games = (response.is_object() && response.contains("livestreams"))
-			? response["livestreams"] : nlohmann::json::array();
-		if (!games.is_array() || games.empty())
-		{
-			GadgetListBoxAddEntryText(listboxReplayFiles,
-				UnicodeString(L"No live games right now"),
-				GameMakeColor(200, 200, 200, 255), -1);
-			return;
-		}
-
-		for (const auto& game : games)
-		{
-			// lobby_id is a number in GO's JSON, and the relay keys its sessions by the same
-			// value as decimal text -- so it is formatted, not read as a string.
-			AsciiString gameId;
-			if (game.contains("lobby_id") && game["lobby_id"].is_number_integer())
-				gameId.format("%lld", (long long)game["lobby_id"].get<long long>());
-			if (gameId.isEmpty())
-				continue;
-
-			// A relay row is GO's own lobby shape: "mapname" is already a display name, not
-			// the raw path the old field carried, so it needs no leaf/extension stripping.
-			// Missing metadata means the streamer registered without a lobby — still perfectly
-			// watchable, so fall back rather than dropping the row.
-			std::string mapName = game.value("map_name", std::string(""));
-			if (mapName.empty())
-				mapName = "(unknown map)";
-
-			// GO sends players[] already reduced to the humans in the lobby, so unlike the
-			// relay's members[] there are no empty slots to filter out here.
-			std::string playerList;
-			if (game.contains("players") && game["players"].is_array())
-			{
-				for (const auto& player : game["players"])
-				{
-					if (!player.is_string())
-						continue;
-
-					const std::string name = player.get<std::string>();
-					if (name.empty())
-						continue;
-
-					if (!playerList.empty())
-						playerList += ", ";
-					playerList += name;
-				}
-			}
-			if (playerList.empty())
-				playerList = "?";
-
-			// delay_seconds and age_seconds are nullable in GO's contract, so a present-but-null
-			// value has to be treated as absent -- value() would throw on it.
-			Int viewers = game.value("observer_count", 0);
-			Int delaySeconds = (game.contains("delay_seconds") && game["delay_seconds"].is_number_integer())
-				? game["delay_seconds"].get<Int>() : (Int)LIVE_DELAY_SECONDS_DEFAULT;
-			Int ageSeconds = (game.contains("age_seconds") && game["age_seconds"].is_number_integer())
-				? game["age_seconds"].get<Int>() : 0;
-
-			const Color rowColor = GameMakeColor(255, 255, 255, 255);
-			UnicodeString text;
-			AsciiString tmp;
-
-			// Four columns, laid out for the replay list. Reuse them as
-			// map / running-for / delay / players. Append column 0 and use the row index it
-			// returns for the rest, exactly as PopulateReplayFileListbox does — passing a
-			// precomputed row instead is what merged these cells together.
-			text.translate(AsciiString(mapName.c_str()));
-			const Int row = GadgetListBoxAddEntryText(listboxReplayFiles, text, rowColor, -1, 0);
-			if (row < 0)
-				continue;
-
-			tmp.format("%dm in", ageSeconds / 60);
-			text.translate(tmp);
-			GadgetListBoxAddEntryText(listboxReplayFiles, text, rowColor, row, 1);
-
-			tmp.format("%ds delay", delaySeconds);
-			text.translate(tmp);
-			GadgetListBoxAddEntryText(listboxReplayFiles, text, rowColor, row, 2);
-
-			tmp.format("%s (%d watching)", playerList.c_str(), viewers);
-			text.translate(tmp);
-			GadgetListBoxAddEntryText(listboxReplayFiles, text, rowColor, row, 3);
-
-			// Index by the row the listbox actually used, so a lookup on selection cannot
-			// drift out of step with the rows if one is ever skipped.
-			if ((Int)s_liveGameIds.size() <= row)
-				s_liveGameIds.resize(row + 1);
-			s_liveGameIds[row] = gameId;
-		}
-
-		if (!previouslySelected.isEmpty())
-		{
-			for (Int i = 0; i < (Int)s_liveGameIds.size(); ++i)
-			{
-				if (s_liveGameIds[i] == previouslySelected)
-				{
-					GadgetListBoxSetSelected(listboxReplayFiles, i);
-					break;
-				}
-			}
-		}
-	}
-	catch (...)
-	{
-		// Malformed JSON degrades to an explanatory row; it must never take the menu down.
-		GadgetListBoxReset(listboxReplayFiles);
-		s_liveGameIds.clear();
 		GadgetListBoxAddEntryText(listboxReplayFiles,
-			UnicodeString(L"Unexpected reply from relay server"),
+			UnicodeString(L"Unexpected reply from GeneralsOnline"),
 			GameMakeColor(255, 120, 120, 255), -1);
+		return;
+	}
+
+	if (games.empty())
+	{
+		GadgetListBoxAddEntryText(listboxReplayFiles,
+			UnicodeString(L"No live games right now"),
+			GameMakeColor(200, 200, 200, 255), -1);
+		return;
+	}
+
+	for (std::vector<LiveGameEntry>::const_iterator it = games.begin(); it != games.end(); ++it)
+	{
+		const LiveGameEntry& game = *it;
+		const Color rowColor = GameMakeColor(255, 255, 255, 255);
+		UnicodeString text;
+		AsciiString tmp;
+
+		// Four columns, laid out for the replay list. Reuse them as
+		// map / running-for / delay / players. Append column 0 and use the row index it
+		// returns for the rest, exactly as PopulateReplayFileListbox does — passing a
+		// precomputed row instead is what merged these cells together.
+		text.translate(game.mapName);
+		const Int row = GadgetListBoxAddEntryText(listboxReplayFiles, text, rowColor, -1, 0);
+		if (row < 0)
+			continue;
+
+		tmp.format("%dm in", game.ageSeconds / 60);
+		text.translate(tmp);
+		GadgetListBoxAddEntryText(listboxReplayFiles, text, rowColor, row, 1);
+
+		tmp.format("%ds delay", game.delaySeconds);
+		text.translate(tmp);
+		GadgetListBoxAddEntryText(listboxReplayFiles, text, rowColor, row, 2);
+
+		tmp.format("%s (%d watching)", game.players.str(), game.observerCount);
+		text.translate(tmp);
+		GadgetListBoxAddEntryText(listboxReplayFiles, text, rowColor, row, 3);
+
+		// Index by the row the listbox actually used, so a lookup on selection cannot
+		// drift out of step with the rows if one is ever skipped.
+		if ((Int)s_liveGameIds.size() <= row)
+			s_liveGameIds.resize(row + 1);
+		s_liveGameIds[row] = game.lobbyId;
+	}
+
+	if (!previouslySelected.isEmpty())
+	{
+		for (Int i = 0; i < (Int)s_liveGameIds.size(); ++i)
+		{
+			if (s_liveGameIds[i] == previouslySelected)
+			{
+				GadgetListBoxSetSelected(listboxReplayFiles, i);
+				break;
+			}
+		}
 	}
 }
 
