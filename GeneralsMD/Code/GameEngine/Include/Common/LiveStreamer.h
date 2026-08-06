@@ -120,8 +120,9 @@ public:
 	virtual void onBodyFlush() override;
 	virtual void onRecordingEnded() override;
 
-	/// Connect to the relay server (non-blocking, spawns background thread).
-	void init(const AsciiString& relayUrl);
+	/// Start the network thread, which registers the stream with GO and connects to whatever
+	/// relay URL GO returns. Non-blocking.
+	void init();
 
 	/// Shut down the background thread and close the connection.
 	void close();
@@ -171,7 +172,6 @@ private:
 	std::atomic<Bool> m_connected;
 	std::atomic<Bool> m_shouldRun;
 
-	AsciiString m_relayUrl;
 	AsciiString m_lobbyId;
 	/// Host-only fields kept from the registration, because the stream is registered with GO
 	/// from the network thread and the registration struct is gone by then.

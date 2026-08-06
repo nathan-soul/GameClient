@@ -167,15 +167,15 @@ LiveStreamer* liveStreamStartPendingSession()
     if (TheLiveStreamer == nullptr)
         return nullptr;
 
-    AsciiString relayUrl = TheGlobalData->m_liveStreamRelayUrl;
-    if (relayUrl.isEmpty())
-        relayUrl = LIVE_DEFAULT_RELAY_URL;
-
     // Register first, then start the thread. registerForGame only fills in fields and queues
     // the REGISTER frame, and the network thread needs those fields to ask GO for a token --
     // doing it the other way round raced the connect.
+    //
+    // No relay address is chosen here. GO registers the livestream, mints this player's
+    // single-use stream token and returns the connect URL, so the relay's location is GO's
+    // to decide (see LiveStreamer::requestStreamUrl).
     TheLiveStreamer->registerForGame(s_pendingRegistration);
-    TheLiveStreamer->init(relayUrl);
+    TheLiveStreamer->init();
 
     // Consumed. A second recording without a fresh lobby visit must not re-register this one
     // under the same lobby id — that would merge two unrelated matches into one relay session.
@@ -279,12 +279,11 @@ void LiveStreamer::onRecordingEnded()
 // Network setup
 // ============================================================================
 
-void LiveStreamer::init(const AsciiString& relayUrl)
+void LiveStreamer::init()
 {
-    m_relayUrl = relayUrl;
     m_shouldRun.store(true);
 
-    liveStreamLog("LiveStreamer::init connecting to %s\n", relayUrl.str());
+    liveStreamLog("LiveStreamer::init lobby=%s, asking GO for a stream URL\n", m_lobbyId.str());
 
     m_networkThread = std::thread(&LiveStreamer::networkThreadFunc, this);
 }
