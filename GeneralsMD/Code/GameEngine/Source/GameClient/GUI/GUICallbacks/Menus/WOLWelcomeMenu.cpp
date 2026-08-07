@@ -227,9 +227,9 @@ static GameWindow* findDescendantById( GameWindow *parent, Int id )
 /** Build the Watch Live button, since WOLWelcomeMenu.wnd has no such control.
  *
  * The layout lives inside an archive we cannot edit, so the button has to be created in code —
- * the same approach the main menu used while it hosted this entry point. Its position is taken
- * from an existing button at runtime rather than hardcoded, because a layout we cannot open is
- * exactly the wrong thing to write absolute coordinates against.
+ * the same approach the main menu used while it hosted this entry point. Its position was
+ * tuned on screen (2026-08-07) and is baked in here in the layout's 800x600 design space; it
+ * is no longer movable.
  *
  * The lookup before creating is not paranoia: the shell sometimes keeps a layout alive across a
  * menu round-trip, so init can run again on a parent that already owns the button. Asking the
@@ -244,16 +244,20 @@ static void createWatchLiveButton( void )
 	if (buttonWatchLive != nullptr)
 		return;
 
-	// Sit one row under Custom Match: someone browsing for a game to watch is looking in the
-	// same place as someone browsing for one to play.
-	Int liveX = 0, liveY = 0, liveW = 180, liveH = 26;
-	GameWindow *anchor = (buttonLobby != nullptr) ? buttonLobby : buttonQuickMatch;
+	// Baked-in position and size (design space), scaled like the .wnd parser scales
+	// SCREENRECTs. The parent window's runtime size is the design size scaled by the same
+	// ratio, so deriving the scale from it stays consistent without asking the display.
+	Int pw = 800, ph = 600;
+	parentWOLWelcome->winGetSize(&pw, &ph);
+	const Real xScale = (Real)pw / 800.0f;
+	const Real yScale = (Real)ph / 600.0f;
+
+	Int liveX = (Int)(63 * xScale), liveY = (Int)(520 * yScale);
+	Int liveW = (Int)(176 * xScale), liveH = (Int)(36 * yScale);
+	GameWindow *anchor = (buttonbuttonOptions != nullptr) ? buttonbuttonOptions
+		: (buttonLobby != nullptr) ? buttonLobby : buttonQuickMatch;
 	if (anchor == nullptr)
 		return;		// no anchor means no idea where to put it; better absent than misplaced
-
-	anchor->winGetPosition(&liveX, &liveY);
-	anchor->winGetSize(&liveW, &liveH);
-	liveY += liveH + 4;
 
 	WinInstanceData instData;
 	instData.init();

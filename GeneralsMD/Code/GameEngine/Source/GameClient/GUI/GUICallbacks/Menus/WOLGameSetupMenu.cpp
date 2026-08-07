@@ -58,6 +58,10 @@
 #include "GameClient/GameWindowTransitions.h"
 #include "GameNetwork/GameSpy/LobbyUtils.h"
 
+#if defined(GENERALS_ONLINE)
+#include "Common/LiveObserver.h"	// liveObserverLog for diagnostics
+#endif
+
 #include "GameNetwork/GameSpy/BuddyDefs.h"
 #include "GameNetwork/GameSpy/PeerDefs.h"
 #include "GameNetwork/GameSpy/PeerThread.h"
@@ -295,6 +299,11 @@ static void commitStreamDelayEntry(void)
 	optionPref.setLiveStreamDelaySeconds(seconds);
 	optionPref.write();
 }
+
+// ------------------------------------------------------------------------------------------------
+// The stream controls' positions are baked in, in the layout's 800x600 design space; they were
+// tuned on screen and are no longer movable. See the creation code in WOLGameSetupMenuInit.
+// ------------------------------------------------------------------------------------------------
 #endif
 
 static GameWindow *comboBoxPlayer[MAX_SLOTS] = {NULL,NULL,NULL,NULL,
@@ -1595,86 +1604,53 @@ void InitWOLGameGadgets()
   // TheGlobalData (which RecorderClass::startRecording() reads when the match begins) and to
   // OptionPreferences, so today's choice becomes tomorrow's default.
   {
-    // Derive every coordinate from controls the layout already positions, rather than
-    // inventing any. GameSpyGameOptionsMenu.wnd lives inside an archive we cannot read, so
-    // absolute numbers would be a guess — and a guess that silently overlaps a neighbour or
-    // falls off the panel, since nothing here reports being out of bounds.
+    // The stream controls sit in the top bar of this screen, in the same row as the game-name
+    // label, to its right. Their positions were tuned on screen (2026-08-07) and are baked in
+    // here in the layout's 800x600 design space; they are no longer movable. Positions and
+    // sizes are scaled like the .wnd parser scales SCREENRECTs, because code-created windows
+    // are not scaled automatically.
     //
-    // Two rows are added below the existing options:
-    //   [x] Stream this game          <- takes the Limit Superweapons checkbox's geometry
-    //   Delay (s):        [   ]       <- takes the Starting Cash label + combo geometry
-    // Using the label/field pair from the Starting Cash row means the delay field lines up
-    // with the column above it instead of being eyeballed.
-    GameWindow* labelStartingCash = TheWindowManager->winGetWindowFromId(parentWOLGameSetup,
-      TheNameKeyGenerator->nameToKey("GameSpyGameOptionsMenu.wnd:StartingCashLabel"));
+    // Layout, from right to left:
+    //   [x] Enable Stream   Delay  [   ]
+    Int pw = 800, ph = 600;
+    parentWOLGameSetup->winGetSize(&pw, &ph);
+    const Real xScale = (Real)pw / 800.0f;
+    const Real yScale = (Real)ph / 600.0f;
 
-    // Start below whichever existing option sits lowest, so we cannot land on top of one.
-    Int rowH = 24;
-    Int lowestBottom = 0;
-    GameWindow* existingOptions[] = { checkBoxUseStats, checkBoxLimitSuperweapons,
-                                      comboBoxStartingCash, checkBoxLimitArmies, labelStartingCash };
-    for (Int i = 0; i < (Int)(sizeof(existingOptions) / sizeof(existingOptions[0])); ++i)
-    {
-      if (existingOptions[i] == NULL)
-        continue;
-      Int ox = 0, oy = 0, ow = 0, oh = 0;
-      existingOptions[i]->winGetPosition(&ox, &oy);
-      existingOptions[i]->winGetSize(&ow, &oh);
-      if (oy + oh > lowestBottom)
-        lowestBottom = oy + oh;
-      if (oh > 0)
-        rowH = oh + 4;
-    }
+    const Int designH = 24;
+    Int checkW = (Int)(175 * xScale), checkH = (Int)(designH * yScale);
+    Int labelW = (Int)(60 * xScale), labelH = (Int)(designH * yScale);
+    Int fieldW = (Int)(60 * xScale), fieldH = (Int)(designH * yScale);
+    Int checkX = (Int)(537 * xScale), checkY = (Int)(50 * yScale);
+    Int labelX = (Int)(650 * xScale), labelY = (Int)(50 * yScale);
+    Int fieldX = (Int)(691 * xScale), fieldY = (Int)(50 * yScale);
 
-    // Row 1: the checkbox, matching the Limit Superweapons checkbox's x and width.
-    Int checkX = 20, checkY = lowestBottom + 4, checkW = 180, checkH = 20;
-    if (checkBoxLimitSuperweapons)
-    {
-      Int cy = 0;
-      checkBoxLimitSuperweapons->winGetPosition(&checkX, &cy);
-      checkBoxLimitSuperweapons->winGetSize(&checkW, &checkH);
-    }
-
+    // WIN_STATUS_IMAGE is what picks the image draw path in gogoGadget*() — without it the
+    // gadget draws a plain rectangle with the (copied but never styled) default colors, which
+    // is the debug-placeholder look. The real controls in this layout are all image-based, so
+    // the created ones must be too for winCopyVisualsFrom() below to have anything to draw.
+    const UnsignedInt streamControlStatus = WIN_STATUS_ENABLED | WIN_STATUS_IMAGE;
     WinInstanceData checkInstData;
     checkInstData.init();
     checkInstData.m_style = GWS_CHECK_BOX | GWS_MOUSE_TRACK;
-    checkInstData.m_textLabelString = "Stream this game";
+    checkInstData.m_textLabelString = "Enable Stream";
     checkInstData.setTooltipText(L"Broadcast this game so others can watch it live");
     checkBoxStreamGame = TheWindowManager->gogoGadgetCheckbox(parentWOLGameSetup,
-      WIN_STATUS_ENABLED,
+      streamControlStatus,
       checkX, checkY, checkW, checkH,
       &checkInstData, nullptr, TRUE);
 
-    // Row 2: label and field, taking their x/width from the Starting Cash pair so the two
-    // rows share a column. Falls back to sensible offsets if either control is missing.
-    const Int fieldRowY = checkY + rowH;
-    Int labelX = checkX, labelW = 100, labelH = checkH;
-    Int fieldX = checkX + 110, fieldW = 60, fieldH = checkH;
-    if (labelStartingCash)
-    {
-      Int ly = 0;
-      labelStartingCash->winGetPosition(&labelX, &ly);
-      labelStartingCash->winGetSize(&labelW, &labelH);
-    }
-    if (comboBoxStartingCash)
-    {
-      Int cy = 0, cw = 0, ch = 0;
-      comboBoxStartingCash->winGetPosition(&fieldX, &cy);
-      comboBoxStartingCash->winGetSize(&cw, &ch);
-      // A combo box is wider than a 3-digit number needs; keep its left edge, not its width.
-      fieldW = (cw > 0 && cw < 80) ? cw : 60;
-      fieldH = (ch > 0) ? ch : checkH;
-    }
+    // Label and field sit in the bar next to the checkbox, in the same row.
 
     TextData labelTextData;
     memset(&labelTextData, 0, sizeof(labelTextData));
     WinInstanceData labelInstData;
     labelInstData.init();
     labelInstData.m_style = GWS_STATIC_TEXT | GWS_MOUSE_TRACK;
-    labelInstData.m_textLabelString = "Stream delay (s):";
+    labelInstData.m_textLabelString = "Delay";
     staticTextStreamDelay = TheWindowManager->gogoGadgetStaticText(parentWOLGameSetup,
-      WIN_STATUS_ENABLED,
-      labelX, fieldRowY, labelW, labelH,
+      streamControlStatus,
+      labelX, labelY, labelW, labelH,
       &labelInstData, &labelTextData, nullptr, TRUE);
 
     EntryData entryData;
@@ -1686,8 +1662,8 @@ void InitWOLGameGadgets()
     entryInstData.m_style = GWS_ENTRY_FIELD | GWS_MOUSE_TRACK;
     entryInstData.setTooltipText(L"How far behind the live game observers are held");
     textEntryStreamDelay = TheWindowManager->gogoGadgetTextEntry(parentWOLGameSetup,
-      WIN_STATUS_ENABLED,
-      fieldX, fieldRowY, fieldW, fieldH,
+      streamControlStatus,
+      fieldX, fieldY, fieldW, fieldH,
       &entryInstData, &entryData, nullptr, TRUE);
 
     // Adopt the look of the options they sit beside, rather than the placeholder scheme
@@ -1698,6 +1674,18 @@ void InitWOLGameGadgets()
       staticTextStreamDelay->winCopyVisualsFrom(
         TheWindowManager->winGetWindowFromId(parentWOLGameSetup,
           TheNameKeyGenerator->nameToKey("GameSpyGameOptionsMenu.wnd:StartingCashLabel")));
+    // Match the checkbox's font — the same size every other label on this screen renders at.
+    // The label's own source font resolves lazily and can leave the placeholder in place,
+    // which renders smaller than the rest. The text is also centered in the box so a tall
+    // font cannot clip its bottom.
+    if (staticTextStreamDelay && checkBoxStreamGame)
+      staticTextStreamDelay->winSetFont(checkBoxStreamGame->winGetFont());
+    if (staticTextStreamDelay)
+    {
+      TextData* labelData = (TextData*)staticTextStreamDelay->winGetUserData();
+      if (labelData)
+        labelData->centeredVertically = TRUE;
+    }
     if (textEntryStreamDelay)
       textEntryStreamDelay->winCopyVisualsFrom(textEntryChat);
 

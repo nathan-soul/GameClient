@@ -44,6 +44,7 @@
 #include "GameClient/WindowLayout.h"
 #include "GameClient/Gadget.h"
 #include "GameClient/GadgetListBox.h"
+#include "GameClient/GadgetStaticText.h"	// GadgetStaticTextSetText retitles the live-browser heading
 #include "GameClient/Shell.h"
 #include "GameClient/KeyDefs.h"
 #include "GameClient/GameWindowManager.h"
@@ -151,6 +152,9 @@ static GameWindow* findTitleWindow(GameWindow* parent)
 	static const char* const TITLE_CONTROL_NAMES[] = {
 		"ReplayMenu.wnd:StaticTextTitle",
 		"ReplayMenu.wnd:StaticTextHeader",
+		// ReplayMenu.wnd's heading has an empty control name — the layout declares it as
+		// NAME = "ReplayMenu.wnd:" — so the two conventional names above can never match it.
+		"ReplayMenu.wnd:",
 		nullptr
 	};
 
@@ -158,7 +162,11 @@ static GameWindow* findTitleWindow(GameWindow* parent)
 	{
 		GameWindow* win = TheWindowManager->winGetWindowFromId(
 			parent, (Int)TheNameKeyGenerator->nameToKey(TITLE_CONTROL_NAMES[i]));
-		if (win != nullptr)
+		// "ReplayMenu.wnd:" is shared by TWO controls — the heading static text and a large
+		// panel. Only a static text can be the heading; accepting the first name match would
+		// retitle the panel and the screen would stay LOAD REPLAY.
+		if (win != nullptr && win->winGetInstanceData() != nullptr &&
+			(win->winGetInstanceData()->m_style & GWS_STATIC_TEXT) != 0)
 		{
 			liveObserverLog("ReplayMenu: title control found by name '%s'\n", TITLE_CONTROL_NAMES[i]);
 			return win;
@@ -648,7 +656,11 @@ void ReplayMenuInit( WindowLayout *layout, void *userData )
 		if (s_liveTitleWindow)
 		{
 			s_savedTitleText = s_liveTitleWindow->winGetText();
-			s_liveTitleWindow->winSetText(UnicodeString(L"LIVE GAMES"));
+			// GadgetStaticTextSetText, not winSetText: a static text draws from its TextData
+			// display string, and only the gadget's GGM_SET_LABEL handler updates that —
+			// winSetText changes the instance-data text, which the static-text draw never
+			// reads, so the heading would stay LOAD REPLAY.
+			GadgetStaticTextSetText(s_liveTitleWindow, UnicodeString(L"LIVE GAMES"));
 		}
 		if (buttonLoad)
 		{
@@ -729,7 +741,7 @@ void ReplayMenuShutdown( WindowLayout *layout, void *userData )
 	if (s_liveGamesMode)
 	{
 		if (s_liveTitleWindow)
-			s_liveTitleWindow->winSetText(s_savedTitleText);
+			GadgetStaticTextSetText(s_liveTitleWindow, s_savedTitleText);
 		if (buttonLoad && !s_savedLoadText.isEmpty())
 			buttonLoad->winSetText(s_savedLoadText);
 		if (buttonDelete && !s_savedDeleteText.isEmpty())
