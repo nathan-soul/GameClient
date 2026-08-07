@@ -78,6 +78,56 @@ public:
 	/// Close the connection and shut down the background thread.
 	void close();
 
+	// ---- Session policy: the broadcast delay and the buffering gate --------------------
+	//
+	// All of this belongs to the session, not to the Recorder. The delay arrives with the
+	// session (the relay's ROLE frame), the pre-roll latches against it, and every bit of it
+	// must be forgotten when the session ends. It used to live on RecorderClass, where
+	// ending a session meant hand-resetting a dozen fields in two separate places — and any
+	// one of them surviving leaked straight into the next session. Here there is nothing to
+	// reset: the state dies with the object.
+
+	/// Re-evaluate the gate for this tick and apply the resulting pause.
+	///
+	/// userPaused is the player's own intent, which outlives any one session and therefore
+	/// stays with the Recorder. The two are OR'd together here so neither can silently
+	/// override the other: buffering can never undo a manual pause, nor the reverse.
+	void updatePlaybackGate(UnsignedInt curFrame, Bool userPaused);
+
+	/// Whether playback must wait rather than consume more records. Valid once
+	/// updatePlaybackGate() has run this tick; the Recorder applies it, it does not decide it.
+	Bool shouldHoldPlayback() const { return m_holdPlayback; }
+
+	/// Latches TRUE once the initial buffer has been built, for the rest of the session.
+	Bool isPreRollComplete() const { return m_preRollComplete; }
+
+	/// Whole seconds until the initial buffer is built; 0 once pre-roll is complete.
+	Int getPreRollSecondsRemaining() const;
+
+	/// True only when playback is held *and* the source has genuinely stopped producing —
+	/// not during the normal sawtooth of maintaining the delay at the boundary.
+	Bool isStalled() const { return m_stalled; }
+
+	/// TRUE while playback sits inside the broadcast delay, i.e. as close to the live game as
+	/// it is ever allowed to get. Fast-forward is refused here so it can only ever close a
+	/// backlog, never catch up to the real game and spoil it. Both fast-forward key handlers
+	/// ask this rather than recomputing the gap from a live edge and a delay of their own.
+	Bool isWithinBroadcastDelay(UnsignedInt curFrame) const;
+
+	/// The broadcast delay this session was started with. Configured in *seconds* — that is
+	/// what a streamer thinks in, and it stays correct if the logic tick rate changes (this
+	/// build runs at 60, not the original 30) — with frames derived from it.
+	UnsignedInt getDelaySeconds() const { return m_delaySeconds.load(); }
+	UnsignedInt getDelayFrames() const { return m_delaySeconds.load() * LOGICFRAMES_PER_SECOND; }
+
+	/// Record the frame at which this client's simulation was first seen to diverge from the
+	/// streamed one. Playback deliberately continues afterwards — the observer just needs to
+	/// be told that what it is watching is no longer the real game. Only the first divergence
+	/// is of interest; a desynced simulation diverges further every frame after it.
+	void noteDesync(UnsignedInt frame) { if (m_desyncFrame == 0) m_desyncFrame = frame; }
+	Bool isDesynced() const { return m_desyncFrame != 0; }
+	UnsignedInt getDesyncFrame() const { return m_desyncFrame; }
+
 private:
 	/// Background thread for network I/O.
 	void networkThreadFunc();
@@ -113,6 +163,31 @@ private:
 	std::atomic<Bool> m_shouldRun;
 	std::atomic<Bool> m_headerReceived;
 	std::atomic<Bool> m_streamEnded;
+
+	// How long the live edge must sit still before a hold counts as a stall rather than
+	// normal delay maintenance. At the boundary the hold toggles every few ticks, so the
+	// status bar needs this to avoid reading WAITING FOR FRAMES during healthy playback.
+	enum { LIVE_STALL_THRESHOLD_MS = 1000 };
+
+	// Let the game actually get on its feet before holding it. GameClient::step() — and so
+	// TheDisplay->step() — is only called on ticks where logic runs, so holding immediately
+	// at frame 1 leaves a loaded but never-composed scene: a black screen. A couple of
+	// seconds of warmup costs a rounding error against a 3600-frame delay.
+	enum { LIVE_PREROLL_WARMUP_FRAMES = 120 };
+
+	// Buffering-gate state. Game thread only — updatePlaybackGate() is the sole writer.
+	Bool m_holdPlayback;			// playback must wait; the Recorder acts on this
+	Bool m_preRollComplete;			// latches TRUE once the initial buffer is first built
+	Bool m_autoPaused;				// the buffering logic owns the current pause
+	Bool m_stalled;					// held, and no new data has arrived for a while
+	UnsignedInt m_lastSeenLiveEdge;
+	UnsignedInt m_lastLiveEdgeChangeMs;
+	UnsignedInt m_desyncFrame;		// frame of the first observed CRC divergence, 0 = none
+
+	// Written by the network thread when the relay's ROLE frame arrives, read by the game
+	// thread on every tick. Atomic because those genuinely are two different threads: as a
+	// plain UnsignedInt on the Recorder this crossed the boundary unsynchronised.
+	std::atomic<UnsignedInt> m_delaySeconds;
 
 	// Watermarks published by the network thread, read by the game thread.
 	std::atomic<UnsignedInt> m_maxCompleteFrame;
@@ -200,12 +275,21 @@ std::string liveServicesAuthToken();
 Bool liveServicesRequest(const AsciiString& url, Bool bPost, const char* szPostBody,
 	AsciiString& outBody, Int& outStatusCode);
 
-/// Queue a live-observer session for the given watch URL (implemented in MainMenu.cpp).
+/// Queue a live-observer session for the given lobby (implemented in MainMenu.cpp).
 ///
-/// The connection itself has to happen once the main menu is the active screen again — it
-/// waits for the relay's HEADER and then starts playback, which needs the shell settled. So
-/// this only records the intent; MainMenuUpdate performs it after the caller pops back.
+/// Only records the intent. The connection blocks on the relay's HEADER and then starts a
+/// game, neither of which may happen while a screen is still animating — so the screen the
+/// player lands on performs it, via LiveObserverStartPendingSession() below.
 void StartLiveObserverSession(const AsciiString& lobbyId);
+
+/// Start a queued live-observer session if one is pending and the shell has settled; a no-op
+/// otherwise. Returns TRUE when playback actually started, which means the calling screen
+/// should now stand itself down so the running game is visible.
+///
+/// Pumped from every shell screen the browser can be reached from — today the main menu and
+/// the Online welcome screen — because a session is queued from whichever one the player
+/// happens to be on, and only that screen can tear itself down afterwards.
+Bool LiveObserverStartPendingSession(void);
 
 /// Switch the replay menu into live-games mode before pushing it (ReplayMenu.cpp).
 void ReplayMenuEnterLiveGamesMode(void);
@@ -233,7 +317,7 @@ void ReplayMenuEnterLiveGamesMode(void);
 // apart, which is precisely the confusion this tag exists to prevent. Any file using it must
 // include this header — that also brings the LIVE_OBSERVER_LOGGING resolution above, without
 // which logging silently stays off in a DEFAULT build.
-#define LIVE_OBSERVER_BUILD_TAG "2026-08-05-session-teardown-and-shell-map-reset"
+#define LIVE_OBSERVER_BUILD_TAG "2026-08-07-live-observer-owns-the-session"
 
 void liveObserverLog(const char* fmt, ...);
 void liveObserverInitLog(const char* lobbyId);

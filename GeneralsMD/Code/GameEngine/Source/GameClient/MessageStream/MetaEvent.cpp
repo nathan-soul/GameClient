@@ -36,6 +36,7 @@
 #include "Common/Player.h"
 #include "Common/PlayerList.h"
 #include "Common/Recorder.h"
+#include "Common/LiveObserver.h"	// the live session owns the broadcast delay; see the FF handler
 #include "Common/Team.h"
 #include "Common/ThingTemplate.h"
 
@@ -640,16 +641,12 @@ void MetaEventTranslator::onKeyPressed(GameMessageDisposition &disp, Int systemK
 						// can only ever close a backlog, never catch up to the real game and spoil it. Same
 						// rule as CommandXlat's MSG_META_TOGGLE_FAST_FORWARD_REPLAY case; this path exists
 						// because the translator is disabled during cinematics.
-						if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER) {
-							UnsignedInt liveEdge = TheRecorder->getCachedLiveEdge();
-							UnsignedInt gap = (liveEdge > TheGameLogic->getFrame()) ? (liveEdge - TheGameLogic->getFrame()) : 0;
-							if (gap <= TheRecorder->getLiveDelayFrames()) {
-								if (TheInGameUI)
-									TheInGameUI->messageNoFormat(
-										TheGameText->FETCH_OR_SUBSTITUTE("GUI:FF_DISABLED_LIVE", L"Fast Forward is disabled in live mode"));
-								disp = KEEP_MESSAGE;
-								break;
-							}
+						if (TheLiveObserver && TheLiveObserver->isWithinBroadcastDelay(TheGameLogic->getFrame())) {
+							if (TheInGameUI)
+								TheInGameUI->messageNoFormat(
+									TheGameText->FETCH_OR_SUBSTITUTE("GUI:FF_DISABLED_LIVE", L"Fast Forward is disabled in live mode"));
+							disp = KEEP_MESSAGE;
+							break;
 						}
 
 						if ( TheWritableGlobalData )

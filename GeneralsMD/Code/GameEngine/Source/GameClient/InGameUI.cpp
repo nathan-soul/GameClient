@@ -7482,12 +7482,12 @@ void InGameUI::drawLiveStatus()
 			AsciiString label;
 			UnsignedInt colour = 0;
 
-			if (TheRecorder && TheRecorder->isLiveDesynced())
+			if (TheLiveObserver->isDesynced())
 			{
 				// Not gated behind F6: this is not a fact about the live game, it is a fact about
 				// this client. An observer whose simulation has diverged is watching something that
 				// is no longer the match, and must be told regardless of the spoiler setting.
-				label.format("DESYNCED AT FRAME %d - NO LONGER THE REAL GAME", TheRecorder->getLiveDesyncFrame());
+				label.format("DESYNCED AT FRAME %d - NO LONGER THE REAL GAME", TheLiveObserver->getDesyncFrame());
 				colour = 0xFFFF4040; // red
 			}
 			else if (!TheLiveObserver->isReady())
@@ -7495,23 +7495,23 @@ void InGameUI::drawLiveStatus()
 				label = "LIVE - CONNECTING...";
 				colour = 0xFFFFFF00; // yellow
 			}
-			else if (TheRecorder && TheRecorder->isLiveStream() && !TheRecorder->isPreRollComplete())
+			else if (!TheLiveObserver->isPreRollComplete())
 			{
 				// Pre-roll progress is observer-local state - it says nothing about the
 				// live game, so it is shown regardless of F6. Without it the observer
 				// would sit on a frozen screen with no explanation while the delay buffer
-				// fills. Must be tested before isLiveWaiting(), which is true throughout
+				// fills. Must be tested before the hold state, which is true throughout
 				// pre-roll and would otherwise mask this with "WAITING FOR FRAMES".
-				label.format("LIVE - BUFFERING - STARTS IN %ds", TheRecorder->getPreRollSecondsRemaining());
+				label.format("LIVE - BUFFERING - STARTS IN %ds", TheLiveObserver->getPreRollSecondsRemaining());
 				colour = 0xFFFFFF00; // yellow
 			}
 			else if (TheLiveObserver->isStreamEnded())
 			{
 				if (showLiveState) { label = "LIVE - ENDED"; colour = 0xFF00FF00; } // green
 			}
-			else if (TheRecorder && TheRecorder->isLiveStalled())
+			else if (TheLiveObserver->isStalled())
 			{
-				// Deliberately isLiveStalled(), not isLiveWaiting(): the latter toggles
+				// Deliberately isStalled(), not shouldHoldPlayback(): the latter toggles
 				// constantly while the delay is being maintained at the boundary, which
 				// is healthy playback and must not be reported as a problem.
 				if (showLiveState) { label = "WAITING FOR FRAMES"; colour = 0xFF00FFFF; } // cyan

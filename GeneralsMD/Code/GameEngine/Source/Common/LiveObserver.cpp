@@ -25,6 +25,7 @@
 #include "Common/GlobalData.h"
 #include "Common/FileSystem.h"
 #include "Common/file.h"
+#include "GameLogic/GameLogic.h"	// the buffering gate pauses the game; see updatePlaybackGate
 #include "GameClient/ClientInstance.h"
 #include "GameNetwork/GeneralsOnline/NGMP_interfaces.h"
 #include "GameNetwork/GeneralsOnline/json.hpp"
@@ -94,10 +95,21 @@ LiveObserver::LiveObserver()
     , m_safeReadOffset(0)
     , m_parseAbsOffset(0)
     , m_parseCorrupt(false)
+    , m_holdPlayback(FALSE)
+    , m_preRollComplete(FALSE)
+    , m_autoPaused(FALSE)
+    , m_stalled(FALSE)
+    , m_lastSeenLiveEdge(0)
+    , m_lastLiveEdgeChangeMs(timeGetTime())
+    , m_desyncFrame(0)
+    , m_delaySeconds(LIVE_DELAY_SECONDS_DEFAULT)
     , m_liveFile(nullptr)
     , m_curlEasy(nullptr)
     , m_curlMulti(nullptr)
 {
+    // Every field above is session state, and this constructor is the only place it is ever
+    // initialised. That is the point of the object: a session begins when one is created and
+    // ends when it is destroyed, so there is no "reset the previous session" step to forget.
 }
 
 // ============================================================================
@@ -463,8 +475,125 @@ void LiveObserver::advanceParseCursor(Int chunkOffset, const unsigned char* data
     }
 }
 
+// ============================================================================
+// Buffering gate
+// ============================================================================
+//
+// The observer never plays closer to the live game than the broadcast delay. Holding it
+// there is the whole feature, and the decision is made here because every input to it —
+// the delay, the live edge, whether the initial buffer has been built — belongs to this
+// session. The Recorder only carries out what this decides.
+
+void LiveObserver::updatePlaybackGate(UnsignedInt curFrame, Bool userPaused)
+{
+    // Never hold the game before it has actually started. The map load and object creation
+    // run inside GameLogic::update() (see the m_startNewGame branch there), and the pause
+    // stops update() from being called at all — so pausing this early means the game never
+    // starts, while TheGameClient keeps updating above the halt. That mismatch is what made
+    // a pre-roll join glitch, whereas joining after the buffer was already full was fine.
+    // Frames barely advance before the start completes, so nothing is lost by waiting.
+    // The warmup extends the same reasoning past the start itself: the scene is not composed
+    // until logic has run for a few ticks, and a hold at frame 1 renders nothing at all —
+    // not the map, and not the buffering countdown that is supposed to explain the wait.
+    if (TheGameLogic == nullptr || !TheGameLogic->isInGame() || TheGameLogic->isInShellGame()
+        || TheGameLogic->isStartingNewGame()
+        || curFrame < (UnsignedInt)LIVE_PREROLL_WARMUP_FRAMES)
+    {
+        if (TheGameLogic != nullptr && m_autoPaused && TheGameLogic->isGamePaused())
+        {
+            TheGameLogic->setGamePaused(FALSE, FALSE, FALSE);
+            m_autoPaused = FALSE;
+        }
+        // The gate is not being evaluated, so it must not keep reporting a hold from the
+        // last tick it was.
+        m_holdPlayback = FALSE;
+        return;
+    }
+
+    const UnsignedInt liveEdge = getMaxCompleteFrame();
+    const UnsignedInt gap = (liveEdge > curFrame) ? (liveEdge - curFrame) : 0;
+    const UnsignedInt delayFrames = getDelayFrames();
+    const Bool streamEnded = m_streamEnded.load();
+
+    // Existing fast-forward auto-disable, now driven by a live edge that is actually real.
+    if (gap <= delayFrames)
+    {
+        if (TheWritableGlobalData)
+            TheWritableGlobalData->m_TiVOFastMode = FALSE;
+    }
+
+    // Pre-roll: hold playback until the initial buffer has been built once. Sticky for the
+    // rest of the session — after this the delay is maintained by the near-live gate below.
+    // A finished stream is the escape hatch for a game that ends before ever buffering a
+    // full delay; without it a short game would pre-roll-pause forever.
+    if (!m_preRollComplete && (gap >= delayFrames || streamEnded))
+        m_preRollComplete = TRUE;
+
+    // The gate is purely a function of the gap — deliberately not of whether a record
+    // happened to be readable this tick. Holding whenever we are inside the delay window IS
+    // the broadcast delay; an "did we hit EOF" term would also make the two callers of this
+    // function disagree (the poll runs before GameLogic::UPDATE() and cannot know), which
+    // oscillated the pause every tick and let playback creep forward while starved.
+    //
+    // Steady state is therefore a tight sawtooth around the boundary: paused at gap ==
+    // delayFrames, released the moment the source pulls ahead, so the observer tracks the
+    // live game at its own rate while never getting closer than the delay.
+    const Bool preRollGate = !m_preRollComplete;
+    const Bool nearLiveGate = m_preRollComplete && (gap <= delayFrames);
+    m_holdPlayback = (preRollGate || nearLiveGate) && !streamEnded;
+
+    // Distinguish normal delay-holding from a genuine stall for the status bar's benefit.
+    // At the boundary the hold toggles constantly, which is healthy; what the observer
+    // actually wants flagged is the source having stopped producing data altogether.
+    const UnsignedInt nowMs = timeGetTime();
+    if (liveEdge != m_lastSeenLiveEdge)
+    {
+        m_lastSeenLiveEdge = liveEdge;
+        m_lastLiveEdgeChangeMs = nowMs;
+    }
+    m_stalled = m_holdPlayback && !streamEnded && (nowMs - m_lastLiveEdgeChangeMs) > LIVE_STALL_THRESHOLD_MS;
+
+    // The user's intent and ours are independent inputs to one decision, so a manual pause
+    // can never be silently undone by buffering, nor vice versa.
+    const Bool shouldBePaused = userPaused || m_holdPlayback;
+    if (shouldBePaused != TheGameLogic->isGamePaused())
+    {
+        TheGameLogic->setGamePaused(shouldBePaused, FALSE, FALSE);
+        m_autoPaused = shouldBePaused && !userPaused;
+    }
+}
+
+Int LiveObserver::getPreRollSecondsRemaining() const
+{
+    if (m_preRollComplete)
+        return 0;
+
+    const UnsignedInt curFrame = TheGameLogic ? TheGameLogic->getFrame() : 0;
+    const UnsignedInt liveEdge = getMaxCompleteFrame();
+    const UnsignedInt gap = (liveEdge > curFrame) ? (liveEdge - curFrame) : 0;
+    const UnsignedInt delayFrames = getDelayFrames();
+    if (gap >= delayFrames)
+        return 0;
+
+    // Round up, so the countdown only reads 0 when playback is genuinely about to start.
+    return (Int)((delayFrames - gap + LOGICFRAMES_PER_SECOND - 1) / LOGICFRAMES_PER_SECOND);
+}
+
+Bool LiveObserver::isWithinBroadcastDelay(UnsignedInt curFrame) const
+{
+    const UnsignedInt liveEdge = getMaxCompleteFrame();
+    const UnsignedInt gap = (liveEdge > curFrame) ? (liveEdge - curFrame) : 0;
+    return gap <= getDelayFrames();
+}
+
 LiveObserver::~LiveObserver()
 {
+    // Anything this session paused dies with it. The pause is global game state, so unlike
+    // every other field here it does not simply disappear when the object does — and a
+    // session left holding it would hand the next one a game that is already halted.
+    if (m_autoPaused && TheGameLogic != nullptr && TheGameLogic->isGamePaused())
+        TheGameLogic->setGamePaused(FALSE, FALSE, FALSE);
+
     close();
 }
 
@@ -752,19 +881,19 @@ void LiveObserver::handleFrame(unsigned char type, const char* payload, size_t l
         liveObserverLog("LiveObserver: ROLE received: %s\n", json.c_str());
 
         const char* delayStart = strstr(json.c_str(), "\"delay_seconds\":");
-        if (delayStart && TheRecorder)
+        if (delayStart)
         {
             delayStart += 16; // skip "delay_seconds":
             Int delaySeconds = (Int)strtol(delayStart, nullptr, 10);
             if (delaySeconds >= 0 && delaySeconds <= LIVE_DELAY_SECONDS_MAX)
             {
-                TheRecorder->setLiveDelaySeconds((UnsignedInt)delaySeconds);
+                m_delaySeconds.store((UnsignedInt)delaySeconds);
                 liveObserverLog("LiveObserver: broadcast delay set to %d seconds\n", delaySeconds);
             }
             else
             {
                 liveObserverLog("LiveObserver: ignoring out-of-range delay_seconds=%d, keeping %u\n",
-                    delaySeconds, TheRecorder->getLiveDelaySeconds());
+                    delaySeconds, m_delaySeconds.load());
             }
         }
         // No delay_seconds (older relay) simply leaves the built-in default in place.
@@ -775,9 +904,6 @@ void LiveObserver::handleFrame(unsigned char type, const char* payload, size_t l
     {
         liveObserverLog("LiveObserver: END received\n");
         m_streamEnded.store(true);
-
-        if (TheRecorder)
-            TheRecorder->setStreamEnded(TRUE);
 
         if (m_liveFile)
         {
@@ -795,8 +921,6 @@ void LiveObserver::handleFrame(unsigned char type, const char* payload, size_t l
             errMsg.set(payload, len);
         liveObserverLog("LiveObserver: ERROR from relay: %s\n", errMsg.str());
         m_streamEnded.store(true);
-        if (TheRecorder)
-            TheRecorder->setStreamEnded(TRUE);
         break;
     }
 

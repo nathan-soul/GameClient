@@ -195,55 +195,33 @@ public:
 
 	IReplayStreamSink* getStreamSink() { return m_streamSink; }
 	void setStreamSink(IReplayStreamSink* sink) { m_streamSink = sink; }
-	void setLiveStream(Bool live) { m_isLiveStream = live; }
-	void setStreamEnded(Bool ended) { m_streamEnded = ended; }
+	/// TRUE while the file being played back is one that is still growing underneath us.
+	/// This is about the file, not about the session — everything the *session* knows (the
+	/// broadcast delay, the buffering gate, the live edge, whether it has desynced) belongs
+	/// to LiveObserver, and callers that want any of it should ask TheLiveObserver.
 	Bool isLiveStream() const { return m_isLiveStream; }
-	Bool isLiveWaiting() const { return m_liveWaiting; }
 	UnsignedInt getNextFrame() const { return m_nextFrame; }	///< Next frame to execute (used for live gap check).
-	/// Highest frame the observer has fully received. Sourced from LiveObserver's
-	/// network-thread watermark — O(1) and always fresh. Keeps its old name because the
-	/// FF handler and the UI call it; there is no longer any caching or probing involved.
-	UnsignedInt getCachedLiveEdge() const;
-
-	// ---- Broadcast delay -------------------------------------------------------------
-	// The observer never plays closer than this to the live game. Configured in *seconds*
-	// (that is what a streamer thinks in, and it stays correct if the logic tick rate
-	// changes — this build runs at 60, not the original 30) with frames derived from it.
-	UnsignedInt getLiveDelaySeconds() const { return m_liveDelaySeconds; }
-	void setLiveDelaySeconds(UnsignedInt seconds) { m_liveDelaySeconds = seconds; }
-	UnsignedInt getLiveDelayFrames() const { return m_liveDelaySeconds * LOGICFRAMES_PER_SECOND; }
-
-	/// Whole seconds until the initial buffer is built; 0 once pre-roll is complete.
-	Int getPreRollSecondsRemaining() const;
-	Bool isPreRollComplete() const { return m_preRollComplete; }
 
 	// ---- Pause ownership -------------------------------------------------------------
-	// The user's intent and the buffering logic's are tracked separately and OR'd together,
-	// so neither can silently override the other (see updateLiveStreamPause()).
+	// The user's intent is the Recorder's because it is about playback in general and
+	// outlives any one live session; the buffering logic's is LiveObserver's. The two are
+	// separate inputs, OR'd together in LiveObserver::updatePlaybackGate(), so neither can
+	// silently override the other.
 	Bool isUserPaused() const { return m_userPaused; }
 	void setUserPaused(Bool paused) { m_userPaused = paused; }
 
-	/// True only when playback is held *and* the source has genuinely stopped producing —
-	/// not during the normal sawtooth of maintaining the delay at the boundary.
-	Bool isLiveStalled() const { return m_liveStalled; }
-
-	/// The frame an observer's simulation was first seen to diverge from the recorded one, or 0 if
-	/// it never has. Playback deliberately continues after a divergence — the observer just needs
-	/// to be told that what it is watching is no longer the real game.
-	Bool isLiveDesynced() const { return m_liveDesyncFrame != 0; }
-	UnsignedInt getLiveDesyncFrame() const { return m_liveDesyncFrame; }
-
 	/// Live-stream housekeeping that must keep running even while GameLogic::UPDATE() is
 	/// skipped by the pause — otherwise the pause can never be cleared. Called from
-	/// GameEngine::update() outside the halted path.
+	/// GameEngine::update() outside the halted path. The decision itself is the observer's;
+	/// this only supplies the playback state the observer cannot see.
 	void updateLiveStreamPoll();
 
-	/// Release the live replay file and forget the finished session.
+	/// End the live-observer session: destroy the observer and forget the replay it was
+	/// feeding. Deliberately not stopPlayback(), which also exits the game.
 	///
 	/// Must run before starting another live-observer session. The file is named after the
 	/// streamer's game, so rejoining the same game targets the same path — and Windows will
 	/// not delete a file this class still holds open, so the new session cannot create it.
-	/// Deliberately not stopPlayback(), which also exits the game.
 	void endLiveObserverSession();
 
 protected:
@@ -267,9 +245,10 @@ protected:
 	ReadFrameResult readNextFrame();									///< Read the next frame number to execute a command on.
 	void appendNextCommand();													///< Read the next GameMessage and append it to TheCommandList.
 
-	/// Recompute m_liveWaiting / pre-roll and apply the resulting pause state.
-	/// Shared by updatePlayback() and updateLiveStreamPoll() so the two cannot drift.
-	void updateLiveStreamPause(UnsignedInt curFrame);
+	/// TRUE when nothing more can arrive on the live file, so a read that runs out of data is
+	/// the end of the replay rather than something to wait for. Fails closed: no observer
+	/// means no session, and waiting on a stream nobody is feeding would hang playback.
+	Bool liveStreamEnded() const;
 	void writeArgument(GameMessageArgumentDataType type, const GameMessageArgumentType arg);
 	void readArgument(GameMessageArgumentDataType type, GameMessage *msg);
 
@@ -300,29 +279,8 @@ protected:
 	UnsignedInt m_nextFrame;												///< The Frame that the next message is to be executed on.  This can be -1.
 
 	IReplayStreamSink* m_streamSink;
-	Bool m_isLiveStream;
-	Bool m_streamEnded;
-	Bool m_liveWaiting;
-
-	// How long the live edge must sit still before a hold counts as a stall rather than
-	// normal delay maintenance. At the boundary m_liveWaiting toggles every few ticks, so
-	// the status bar needs this to avoid reading WAITING FOR FRAMES during healthy playback.
-	enum { LIVE_STALL_THRESHOLD_MS = 1000 };
-
-	// Let the game actually get on its feet before holding it. GameClient::step() — and so
-	// TheDisplay->step() — is only called on ticks where logic runs, so holding immediately
-	// at frame 1 leaves a loaded but never-composed scene: a black screen. A couple of
-	// seconds of warmup costs a rounding error against a 3600-frame delay.
-	enum { LIVE_PREROLL_WARMUP_FRAMES = 120 };
-
-	UnsignedInt m_liveDelaySeconds;
-	Bool m_preRollComplete;			///< latches TRUE once the initial buffer is first built
-	Bool m_liveStreamAutoPaused;	///< the buffering logic owns the current pause
+	Bool m_isLiveStream;			///< the playback file is still growing; see isLiveStream()
 	Bool m_userPaused;				///< the user pressed P and wants it paused
-	Bool m_liveStalled;				///< held, and no new data has arrived for a while
-	UnsignedInt m_lastSeenLiveEdge;
-	UnsignedInt m_lastLiveEdgeChangeMs;
-	UnsignedInt m_liveDesyncFrame;	///< frame of the first observed CRC divergence, 0 = none
 };
 
 extern RecorderClass *TheRecorder;

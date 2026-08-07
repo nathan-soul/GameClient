@@ -47,6 +47,7 @@
 #include "Common/PlayerTemplate.h"
 #include "Common/Radar.h"
 #include "Common/Recorder.h"
+#include "Common/LiveObserver.h"	// the live session owns the broadcast delay; see the FF handler
 #include "Common/SpecialPower.h"
 #if defined(GENERALS_ONLINE)
 #include "GameNetwork/GeneralsOnline/Plugins/PluginManager.h"
@@ -3592,17 +3593,12 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 			// In live observer mode: fast forward is disabled once within the broadcast delay
 			// of live, so it can only ever be used to close a backlog, never to catch up to
 			// the real game and spoil it.
-			if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
+			if (TheLiveObserver && TheLiveObserver->isWithinBroadcastDelay(TheGameLogic->getFrame()))
 			{
-				UnsignedInt liveEdge = TheRecorder->getCachedLiveEdge();
-				UnsignedInt gap = (liveEdge > TheGameLogic->getFrame()) ? (liveEdge - TheGameLogic->getFrame()) : 0;
-				if (gap <= TheRecorder->getLiveDelayFrames())
-				{
-					TheInGameUI->messageNoFormat(
-						TheGameText->FETCH_OR_SUBSTITUTE("GUI:FF_DISABLED_LIVE", L"Fast Forward is disabled in live mode"));
-					disp = DESTROY_MESSAGE;
-					break;
-				}
+				TheInGameUI->messageNoFormat(
+					TheGameText->FETCH_OR_SUBSTITUTE("GUI:FF_DISABLED_LIVE", L"Fast Forward is disabled in live mode"));
+				disp = DESTROY_MESSAGE;
+				break;
 			}
 #endif
 #if !defined(_ALLOW_DEBUG_CHEATS_IN_RELEASE)//may be defined in GameCommon.h

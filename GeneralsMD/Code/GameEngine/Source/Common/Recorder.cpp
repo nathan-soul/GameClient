@@ -364,18 +364,9 @@ RecorderClass::RecorderClass()
 	m_archiveReplays = FALSE;
 	m_nextFrame = 0;
 	m_wasDesync = FALSE;
-	m_liveWaiting = FALSE;
 	m_streamSink = nullptr;
 	m_isLiveStream = FALSE;
-	m_streamEnded = FALSE;
-	m_liveDelaySeconds = LIVE_DELAY_SECONDS_DEFAULT;
-	m_preRollComplete = FALSE;
-	m_liveStreamAutoPaused = FALSE;
 	m_userPaused = FALSE;
-	m_liveStalled = FALSE;
-	m_lastSeenLiveEdge = 0;
-	m_lastLiveEdgeChangeMs = 0;
-	m_liveDesyncFrame = 0;
 	init(); // just for the heck of it.
 }
 
@@ -416,16 +407,7 @@ void RecorderClass::init() {
 	m_streamSink = nullptr;
 	if (m_mode != RECORDERMODETYPE_LIVE_OBSERVER)
 		m_isLiveStream = FALSE;
-	m_streamEnded = FALSE;
-	// Reset unconditionally: a second live-observer session in the same process must not
-	// inherit a completed pre-roll or a stale pause claim from the first.
-	m_preRollComplete = FALSE;
-	m_liveStreamAutoPaused = FALSE;
 	m_userPaused = FALSE;
-	m_liveStalled = FALSE;
-	m_lastSeenLiveEdge = 0;
-	m_lastLiveEdgeChangeMs = 0;
-	m_liveDesyncFrame = 0;
 
 	OptionPreferences optionPref;
 	m_archiveReplays = optionPref.getArchiveReplaysEnabled();
@@ -507,118 +489,34 @@ void RecorderClass::updatePlayback() {
 			readNextFrame();	// Read the next command's frame number for playback.
 	}
 
-	if (m_isLiveStream)
-		updateLiveStreamPause(curFrame);
-}
-
-/**
- * Recompute the live-stream wait/pre-roll state and apply the resulting pause.
- *
- * This is the single place that decides whether a live observer should be running. It is
- * called both from updatePlayback() (inside GameLogic::UPDATE()) and from
- * updateLiveStreamPoll() (outside it, so a pause can still be lifted while logic is halted).
- */
-void RecorderClass::updateLiveStreamPause(UnsignedInt curFrame) {
-	// Never hold the game before it has actually started. The map load and object creation
-	// run inside GameLogic::update() (see the m_startNewGame branch there), and the pause
-	// stops update() from being called at all — so pausing this early means the game never
-	// starts, while TheGameClient keeps updating above the halt. That mismatch is what made
-	// a pre-roll join glitch, whereas joining after the buffer was already full was fine.
-	// Frames barely advance before the start completes, so nothing is lost by waiting.
-	// The warmup extends the same reasoning past the start itself: the scene is not composed
-	// until logic has run for a few ticks, and a hold at frame 1 renders nothing at all —
-	// not the map, and not the buffering countdown that is supposed to explain the wait.
-	if (TheGameLogic == nullptr || !TheGameLogic->isInGame() || TheGameLogic->isInShellGame()
-		|| TheGameLogic->isStartingNewGame()
-		|| curFrame < (UnsignedInt)LIVE_PREROLL_WARMUP_FRAMES) {
-		if (TheGameLogic != nullptr && m_liveStreamAutoPaused && TheGameLogic->isGamePaused()) {
-			TheGameLogic->setGamePaused(FALSE, FALSE, FALSE);
-			m_liveStreamAutoPaused = FALSE;
-		}
-		return;
-	}
-
-	UnsignedInt liveEdge = getCachedLiveEdge();
-	UnsignedInt gap = (liveEdge > curFrame) ? (liveEdge - curFrame) : 0;
-	const UnsignedInt delayFrames = getLiveDelayFrames();
-
-	// Existing fast-forward auto-disable, now driven by a live edge that is actually real.
-	if (gap <= delayFrames) {
-		if (TheWritableGlobalData)
-			TheWritableGlobalData->m_TiVOFastMode = FALSE;
-	}
-
-	// Pre-roll: hold playback until the initial buffer has been built once. Sticky for the
-	// rest of the session — after this the delay is maintained by the near-live gate below.
-	// m_streamEnded is the escape hatch for a game that finishes before ever buffering a
-	// full delay; without it a short game would pre-roll-pause forever.
-	if (!m_preRollComplete && (gap >= delayFrames || m_streamEnded))
-		m_preRollComplete = TRUE;
-
-	// The gate is purely a function of the gap — deliberately not of whether a record
-	// happened to be readable this tick. Holding whenever we are inside the delay window IS
-	// the broadcast delay; an "did we hit EOF" term would also make the two callers of this
-	// function disagree (the poll runs before GameLogic::UPDATE() and cannot know), which
-	// oscillated the pause every tick and let playback creep forward while starved.
-	//
-	// Steady state is therefore a tight sawtooth around the boundary: paused at gap ==
-	// delayFrames, released the moment the source pulls ahead, so the observer tracks the
-	// live game at its own rate while never getting closer than the delay.
-	Bool preRollGate = !m_preRollComplete;
-	Bool nearLiveGate = m_preRollComplete && (gap <= delayFrames);
-	m_liveWaiting = (preRollGate || nearLiveGate) && !m_streamEnded;
-
-	// Distinguish normal delay-holding from a genuine stall for the status bar's benefit.
-	// At the boundary m_liveWaiting toggles constantly, which is healthy; what the observer
-	// actually wants flagged is the source having stopped producing data altogether.
-	UnsignedInt nowMs = timeGetTime();
-	if (liveEdge != m_lastSeenLiveEdge) {
-		m_lastSeenLiveEdge = liveEdge;
-		m_lastLiveEdgeChangeMs = nowMs;
-	}
-	m_liveStalled = m_liveWaiting && !m_streamEnded && (nowMs - m_lastLiveEdgeChangeMs) > LIVE_STALL_THRESHOLD_MS;
-
-	// The user's intent and ours are independent inputs to one decision, so a manual pause
-	// can never be silently undone by buffering, nor vice versa.
-	Bool shouldBePaused = m_userPaused || m_liveWaiting;
-	if (shouldBePaused != TheGameLogic->isGamePaused()) {
-		TheGameLogic->setGamePaused(shouldBePaused, FALSE, FALSE);
-		m_liveStreamAutoPaused = shouldBePaused && !m_userPaused;
-	}
+	// Whether the observer may keep running is the session's call, not ours: it depends on the
+	// broadcast delay and the live edge, both of which belong to LiveObserver. All we supply
+	// is the playback state it cannot see.
+	if (m_isLiveStream && TheLiveObserver)
+		TheLiveObserver->updatePlaybackGate(curFrame, m_userPaused);
 }
 
 /**
  * Live-stream housekeeping that must run even when GameLogic::UPDATE() is being skipped.
  *
- * The pause set by updateLiveStreamPause() genuinely halts logic (see GameEngine::isGameHalted).
- * updatePlayback() runs from inside that halted update, so it cannot be the thing that lifts
- * its own pause — that was a self-deadlock, previously worked around by making the pause a
- * no-op for observers entirely. Calling this from GameEngine::update() breaks the cycle:
- * it re-evaluates the gate against fresh network data and clears the pause when the buffer
- * is ready. It deliberately does not append commands; that stays in updatePlayback().
+ * The buffering pause genuinely halts logic (see GameEngine::isGameHalted). updatePlayback()
+ * runs from inside that halted update, so it cannot be the thing that lifts its own pause —
+ * that was a self-deadlock, previously worked around by making the pause a no-op for
+ * observers entirely. Calling this from GameEngine::update() breaks the cycle: the gate is
+ * re-evaluated against fresh network data and clears the pause when the buffer is ready. It
+ * deliberately does not append commands; that stays in updatePlayback().
  */
 void RecorderClass::updateLiveStreamPoll() {
-	if (!m_isLiveStream || m_mode != RECORDERMODETYPE_LIVE_OBSERVER)
+	if (!m_isLiveStream || m_mode != RECORDERMODETYPE_LIVE_OBSERVER || TheLiveObserver == nullptr)
 		return;
 	if (m_nextFrame == (UnsignedInt)-1 || TheGameLogic == nullptr)
 		return;
 
-	updateLiveStreamPause(TheGameLogic->getFrame());
+	TheLiveObserver->updatePlaybackGate(TheGameLogic->getFrame(), m_userPaused);
 }
 
-Int RecorderClass::getPreRollSecondsRemaining() const {
-	if (m_preRollComplete || !m_isLiveStream)
-		return 0;
-
-	UnsignedInt curFrame = TheGameLogic ? TheGameLogic->getFrame() : 0;
-	UnsignedInt liveEdge = getCachedLiveEdge();
-	UnsignedInt gap = (liveEdge > curFrame) ? (liveEdge - curFrame) : 0;
-	UnsignedInt delayFrames = getLiveDelayFrames();
-	if (gap >= delayFrames)
-		return 0;
-
-	// Round up, so the countdown only reads 0 when playback is genuinely about to start.
-	return (Int)((delayFrames - gap + LOGICFRAMES_PER_SECOND - 1) / LOGICFRAMES_PER_SECOND);
+Bool RecorderClass::liveStreamEnded() const {
+	return TheLiveObserver ? TheLiveObserver->isStreamEnded() : TRUE;
 }
 
 /**
@@ -627,7 +525,7 @@ Int RecorderClass::getPreRollSecondsRemaining() const {
  */
 void RecorderClass::stopPlayback() {
 	LIVE_OBSERVER_LOG("stopPlayback: isLiveStream=%d streamEnded=%d mode=%d nextFrame=%d curFrame=%d\n",
-		m_isLiveStream, m_streamEnded, (int)m_mode, m_nextFrame, TheGameLogic->getFrame());
+		m_isLiveStream, liveStreamEnded(), (int)m_mode, m_nextFrame, TheGameLogic->getFrame());
 	Bool wasLiveObserver = (m_mode == RECORDERMODETYPE_LIVE_OBSERVER);
 	if (m_file != nullptr) {
 		m_file->close();
@@ -637,23 +535,13 @@ void RecorderClass::stopPlayback() {
 
 	if (wasLiveObserver)
 	{
-		LIVE_OBSERVER_LOG("stopPlayback: resetting live session state before exit - mode=%d isLiveStream=%d shellMapOn=%d\n",
-			(int)m_mode, m_isLiveStream ? 1 : 0,
-			TheWritableGlobalData ? (TheWritableGlobalData->m_shellMapOn ? 1 : 0) : -1);
-		if (TheLiveObserver)
-		{
-			liveObserverLog("stopPlayback: closing live observer before leaving game\n");
-			TheLiveObserver->close();
-			delete TheLiveObserver;
-			TheLiveObserver = nullptr;
-		}
-		m_mode = RECORDERMODETYPE_NONE;
-		m_isLiveStream = FALSE;
-		m_gameInfo.clearSlotList();
-		m_gameInfo.reset();
+		// The same teardown the menu path uses, deliberately: a live session has exactly one
+		// way to end, so there is no second list of fields here to keep in step with it.
+		// What remains below is the shell state that only this exit path has to put back.
+		endLiveObserverSession();
 		if (TheWritableGlobalData)
 			TheWritableGlobalData->m_shellMapOn = TRUE;
-		liveObserverLog("stopPlayback: live session state reset - mode=%d isLiveStream=%d shellMapOn=%d\n",
+		liveObserverLog("stopPlayback: live session ended - mode=%d isLiveStream=%d shellMapOn=%d\n",
 			(int)m_mode, m_isLiveStream ? 1 : 0,
 			TheWritableGlobalData ? (TheWritableGlobalData->m_shellMapOn ? 1 : 0) : -1);
 	}
@@ -1290,18 +1178,30 @@ void RecorderClass::endLiveObserverSession() {
 	liveObserverLog("endLiveObserverSession: closing playback file (was %s)\n",
 		m_fileName.isEmpty() ? "(none)" : m_fileName.str());
 
+	// Destroying the observer *is* the cleanup. Everything the live session knew — the
+	// broadcast delay, the pre-roll latch, the pause claim, the live edge, the desync frame —
+	// lives on that object, so it all goes at once and there is no list here that a future
+	// field could quietly fall off. This used to be a dozen assignments duplicated between
+	// here and stopPlayback(), and missing one leaked straight into the next session.
+	if (TheLiveObserver)
+	{
+		liveObserverLog("endLiveObserverSession: destroying the live observer\n");
+		TheLiveObserver->close();
+		delete TheLiveObserver;
+		TheLiveObserver = nullptr;
+	}
+
 	if (m_file != nullptr) {
 		m_file->close();
 		m_file = nullptr;
 	}
 	m_fileName.clear();
 
-	// This is the non-exiting counterpart to stopPlayback(). The caller is already
-	// transitioning through the shell and will start the next session separately, but
-	// every recorder value belonging to the old live replay must be forgotten now.
+	// What is left is the Recorder's own: the mode, the playback cursor, and the game the
+	// replay was describing.
 	m_mode = RECORDERMODETYPE_NONE;
 	m_isLiveStream = FALSE;
-	m_streamEnded = FALSE;
+	m_userPaused = FALSE;
 	m_streamSink = nullptr;
 	m_currentReplayFilename.clear();
 	m_playbackFrameCount = 0;
@@ -1310,37 +1210,16 @@ void RecorderClass::endLiveObserverSession() {
 	m_gameInfo.clearSlotList();
 	m_gameInfo.reset();
 	m_nextFrame = 0;
-
-	m_liveWaiting = FALSE;
-	m_preRollComplete = FALSE;
-	m_liveStreamAutoPaused = FALSE;
-	m_userPaused = FALSE;
-	m_liveStalled = FALSE;
-	m_lastSeenLiveEdge = 0;
-	m_lastLiveEdgeChangeMs = timeGetTime();
-	m_liveDesyncFrame = 0;
 }
 
 Bool RecorderClass::startLiveObserverPlayback(AsciiString filename)
 {
+	// Nothing to clear: the caller has already ended any previous session, and a session's
+	// state now lives on the LiveObserver it was handed — which is a fresh one. This used to
+	// re-clear eight fields here as well, because a stale stream-ended flag from the last
+	// session made the very first read stop playback outright.
 	m_mode = RECORDERMODETYPE_LIVE_OBSERVER;
 	m_isLiveStream = TRUE;
-
-	// TheSuperHackers @fix 03/08/2026 Clear the previous session's live state here rather
-	// than relying on init() having run in between. m_streamEnded in particular is set by
-	// LiveObserver's END handler and survives into the next session; readNextFrame() treats
-	// "past the safe watermark while the stream has ended" as end-of-playback, so a stale
-	// TRUE makes the very first read stop playback outright and no commands are ever
-	// processed. The rest are reset alongside it so a second session cannot inherit a
-	// completed pre-roll, a stale pause claim, or a stale live edge either.
-	m_streamEnded = FALSE;
-	m_preRollComplete = FALSE;
-	m_liveStreamAutoPaused = FALSE;
-	m_userPaused = FALSE;
-	m_liveStalled = FALSE;
-	m_lastSeenLiveEdge = 0;
-	m_lastLiveEdgeChangeMs = timeGetTime();
-	m_liveDesyncFrame = 0;
 	liveObserverLog("startLiveObserverPlayback: mode=LIVE_OBSERVER isLiveStream=1 filename=%s\n", filename.str());
 
 	Bool success = playbackFile(filename);
@@ -1442,13 +1321,14 @@ void RecorderClass::handleCRCMessage(UnsignedInt newCRC, Int playerIndex, Bool f
 			// stream keeps arriving and playback keeps running: without this the observer has no
 			// way of knowing its view stopped being the real game. Logged with the live-edge state
 			// too, since the interesting question is always whether we had run out of data.
-			if (m_mode == RECORDERMODETYPE_LIVE_OBSERVER)
+			if (m_mode == RECORDERMODETYPE_LIVE_OBSERVER && TheLiveObserver)
 			{
-				m_liveDesyncFrame = mismatchFrame;
+				TheLiveObserver->noteDesync(mismatchFrame);
 				liveObserverLog("DESYNC: observer diverged from the stream. InGame:%8.8X Replay:%8.8X frame=%d "
-					"curFrame=%d nextFrame=%d liveEdge=%d delayFrames=%d liveWaiting=%d stalled=%d\n",
+					"curFrame=%d nextFrame=%d liveEdge=%d delayFrames=%d holdPlayback=%d stalled=%d\n",
 					playbackCRC, newCRC, mismatchFrame, TheGameLogic->getFrame(), m_nextFrame,
-					getCachedLiveEdge(), getLiveDelayFrames(), isLiveWaiting() ? 1 : 0, isLiveStalled() ? 1 : 0);
+					TheLiveObserver->getMaxCompleteFrame(), TheLiveObserver->getDelayFrames(),
+					TheLiveObserver->shouldHoldPlayback() ? 1 : 0, TheLiveObserver->isStalled() ? 1 : 0);
 
 				// Report once, then stop comparing - a desynced simulation diverges further every
 				// frame, so everything after the first mismatch is noise.
@@ -1697,9 +1577,10 @@ AsciiString RecorderClass::readAsciiString() {
  */
 RecorderClass::ReadFrameResult RecorderClass::readNextFrame() {
 	DEBUG_LOG(("RecorderClass::readNextFrame - isLiveStream=%d streamEnded=%d mode=%d nextFrame=%d curFrame=%d",
-		m_isLiveStream, m_streamEnded, (int)m_mode, m_nextFrame, TheGameLogic->getFrame()));
+		m_isLiveStream, liveStreamEnded(), (int)m_mode, m_nextFrame, TheGameLogic->getFrame()));
 	if (m_isLiveStream) {
 		Int savedPos = m_file->seek(0, File::CURRENT);
+		const Bool streamEnded = liveStreamEnded();
 
 		// Never read past the last complete record. The network thread appends at arbitrary
 		// byte offsets, so without this bound a read at the growing tail can return a
@@ -1708,7 +1589,7 @@ RecorderClass::ReadFrameResult RecorderClass::readNextFrame() {
 		if (TheLiveObserver) {
 			Int safeOffset = TheLiveObserver->getSafeReadOffset();
 			if (savedPos + (Int)sizeof(m_nextFrame) > safeOffset) {
-				if (!m_streamEnded)
+				if (!streamEnded)
 					return READFRAME_EOF_WAITING;
 
 				// Stream ended and every complete record has been consumed — this is the end
@@ -1726,13 +1607,13 @@ RecorderClass::ReadFrameResult RecorderClass::readNextFrame() {
 
 		Int bytesRead = m_file->read(&m_nextFrame, sizeof(m_nextFrame));
 		if (bytesRead != sizeof(m_nextFrame)) {
-			if (!m_streamEnded) {
+			if (!streamEnded) {
 				// Leave m_nextFrame alone and rewind, so the next tick retries cleanly.
 				m_file->seek(savedPos, File::START);
 				return READFRAME_EOF_WAITING;
 			}
 			LIVE_OBSERVER_LOG("readNextFrame: read FAILED (bytes=%d streamEnded=%d) — stopping playback, curFrame=%d\n",
-				bytesRead, m_streamEnded, TheGameLogic->getFrame());
+				bytesRead, streamEnded, TheGameLogic->getFrame());
 			DEBUG_LOG(("RecorderClass::readNextFrame - read failed on frame %d", TheGameLogic->getFrame()));
 			m_nextFrame = -1;
 			stopPlayback();
@@ -1774,7 +1655,7 @@ void RecorderClass::appendNextCommand() {
 	GameMessage::Type type;
 	Int bytesRead = m_file->read(&type, sizeof(type));
 	if (bytesRead != sizeof(type)) {
-		if (m_isLiveStream && !m_streamEnded) {
+		if (m_isLiveStream && !liveStreamEnded()) {
 			// TheSuperHackers @fix Rewind to the record boundary before giving up. savedPos was
 			// captured and then never used, so a partial read here left the cursor stranded in the
 			// middle of a record - and since nothing ever re-derives the boundary, every record
@@ -1787,7 +1668,7 @@ void RecorderClass::appendNextCommand() {
 			return;
 		}
 		LIVE_OBSERVER_LOG("appendNextCommand: read FAILED (bytes=%d isLiveStream=%d streamEnded=%d) — abandoning, curFrame=%d nextFrame=%d\n",
-			bytesRead, m_isLiveStream, m_streamEnded, TheGameLogic->getFrame(), m_nextFrame);
+			bytesRead, m_isLiveStream, liveStreamEnded(), TheGameLogic->getFrame(), m_nextFrame);
 		DEBUG_LOG(("RecorderClass::appendNextCommand - read failed on frame %d", m_nextFrame/*TheGameLogic->getFrame()*/));
 		return;
 	}
@@ -1875,10 +1756,11 @@ void RecorderClass::appendNextCommand() {
 
 	if (type != GameMessage::MSG_BEGIN_NETWORK_MESSAGES && type != GameMessage::MSG_CLEAR_GAME_DATA && !m_doingAnalysis)
 	{
-		// m_liveWaiting is computed entirely in updateLiveStreamPause() now. Clearing it here
-		// meant the status only ever read "not waiting" on ticks that happened to carry a
-		// real player command — which is a small minority of ticks, so WAITING FOR FRAMES was
-		// on ~98% of the time regardless of whether the observer was actually blocked.
+		// The live hold state is computed entirely in LiveObserver::updatePlaybackGate() now.
+		// Clearing it here meant the status only ever read "not waiting" on ticks that
+		// happened to carry a real player command — which is a small minority of ticks, so
+		// WAITING FOR FRAMES was on ~98% of the time regardless of whether the observer was
+		// actually blocked.
 		TheCommandList->appendMessage(msg);
 	}
 	else
@@ -1889,14 +1771,6 @@ void RecorderClass::appendNextCommand() {
 
 	deleteInstance(parser);
 	parser = nullptr;
-}
-
-UnsignedInt RecorderClass::getCachedLiveEdge() const {
-#if defined(GENERALS_ONLINE)
-	return TheLiveObserver ? TheLiveObserver->getMaxCompleteFrame() : 0;
-#else
-	return 0;
-#endif
 }
 
 #if defined(GENERALS_ONLINE)
