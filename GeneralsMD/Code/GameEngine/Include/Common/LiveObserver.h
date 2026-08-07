@@ -69,6 +69,22 @@ public:
 	void notePlaybackStarted() { m_playbackStarted = TRUE; }
 	Bool hasPlaybackStarted() const { return m_playbackStarted; }
 
+	/// TRUE once the live file is safe to start playing: the header is in place, the first
+	/// body record is on disk, and the buffered stream already covers the broadcast delay
+	/// (or the stream has ended, so there is nothing more to wait for). The join waits for
+	/// this before starting playback — that is how a not-yet-arrived first record stopped
+	/// looking like the end of the replay.
+	Bool isPlaybackReady() const;
+
+	/// Whole seconds until isPlaybackReady() becomes true; 0 once it is. Shown by the shell
+	/// while the join waits, replacing the in-game pre-roll countdown that this pre-start
+	/// wait makes redundant.
+	Int getSecondsUntilPlaybackReady() const;
+
+	/// How long the join may wait for isPlaybackReady() before giving up: the broadcast
+	/// delay plus headroom for the connection, ticket minting and the first record.
+	UnsignedInt getJoinTimeoutMs() const;
+
 	/// Returns the filename of the live replay file (e.g. "996C586F_live.rep").
 	const AsciiString& getLiveReplayFilename() const { return m_liveFilename; }
 
@@ -81,6 +97,11 @@ public:
 	/// read beyond this — doing so is what allowed a torn record at the growing tail to
 	/// misalign the playback stream permanently.
 	Int getSafeReadOffset() const { return m_safeReadOffset.load(); }
+
+	/// File offset of the first body byte (the header length). The Recorder rewinds its read
+	/// cursor here when starting playback, because playbackFile()'s seeding read leaves it
+	/// past the first record's frame field — and the live loop reads the frame itself.
+	Int getBodyStartOffset() const { return m_bodyStartOffset; }
 
 	/// Close the connection and shut down the background thread.
 	void close();
@@ -187,8 +208,15 @@ private:
 	// seconds of warmup costs a rounding error against a 3600-frame delay.
 	enum { LIVE_PREROLL_WARMUP_FRAMES = 120 };
 
+	// Hysteresis band (frames) for the near-live gate. Holding engages only once the gap has
+	// fallen a full band below the delay boundary and releases only once the source has
+	// pulled a full band ahead again. At equal frame rates the gap sits exactly on the
+	// boundary, and a plain threshold there toggled pause/resume constantly — the stutter.
+	enum { LIVE_GATE_HYSTERESIS_FRAMES = 60 };
+
 	// Buffering-gate state. Game thread only — updatePlaybackGate() is the sole writer.
 	Bool m_holdPlayback;			// playback must wait; the Recorder acts on this
+	Bool m_nearLiveHeld;			// latched: the near-live gate is holding (hysteresis)
 	Bool m_preRollComplete;			// latches TRUE once the initial buffer is first built
 	Bool m_autoPaused;				// the buffering logic owns the current pause
 	Bool m_userPaused;				// the player pressed P and wants it paused
@@ -210,6 +238,7 @@ private:
 	// Parse-cursor state. Owned exclusively by the network thread — no locking.
 	std::vector<unsigned char> m_parseTail;   // bytes after the last complete record
 	Int m_parseAbsOffset;                     // absolute file offset of m_parseTail[0]
+	Int m_bodyStartOffset;                    // file offset of the first body byte (the header length)
 	Bool m_parseCorrupt;                      // latched: watermark frozen, see advanceParseCursor
 
 	AsciiString m_gameId;
@@ -354,7 +383,7 @@ void ReplayMenuEnterLiveGamesMode(void);
 // apart, which is precisely the confusion this tag exists to prevent. Any file using it must
 // include this header — that also brings the LIVE_OBSERVER_LOGGING resolution above, without
 // which logging silently stays off in a DEFAULT build.
-#define LIVE_OBSERVER_BUILD_TAG "2026-08-07-one-session-predicate"
+#define LIVE_OBSERVER_BUILD_TAG "2026-08-07-observer-shellmap-restore"
 
 void liveObserverLog(const char* fmt, ...);
 void liveObserverInitLog(const char* lobbyId);

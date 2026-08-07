@@ -7495,14 +7495,14 @@ void InGameUI::drawLiveStatus()
 				label = "LIVE - CONNECTING...";
 				colour = 0xFFFFFF00; // yellow
 			}
-			else if (!TheLiveObserver->isPreRollComplete())
+			else if (!TheLiveObserver->hasPlaybackStarted())
 			{
-				// Pre-roll progress is observer-local state - it says nothing about the
-				// live game, so it is shown regardless of F6. Without it the observer
-				// would sit on a frozen screen with no explanation while the delay buffer
-				// fills. Must be tested before the hold state, which is true throughout
-				// pre-roll and would otherwise mask this with "WAITING FOR FRAMES".
-				label.format("LIVE - BUFFERING - STARTS IN %ds", TheLiveObserver->getPreRollSecondsRemaining());
+				// The join now waits in the shell until the relay has delivered the header plus
+				// enough body to cover the broadcast delay, so this is the countdown shown there
+				// while it fills. Observer-local state — it says nothing about the live game — so
+				// it is shown regardless of F6. Must be tested before the hold state, which is
+				// true throughout pre-roll and would otherwise mask this with "WAITING FOR FRAMES".
+				label.format("LIVE GAME - STARTS IN %ds", TheLiveObserver->getSecondsUntilPlaybackReady());
 				colour = 0xFFFFFF00; // yellow
 			}
 			else if (TheLiveObserver->isStreamEnded())

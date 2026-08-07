@@ -171,9 +171,6 @@ static AsciiString m_liveObserverStartLobbyId;
 // Game IDs indexed by listbox row. Kept alongside the listbox rather than stuffed into
 // GadgetListBoxSetItemData, so nothing depends on the lifetime of a void* we hand the gadget.
 
-// Forward declaration
-static Bool doLiveObserverGameStart(const AsciiString& lobbyId);
-
 #endif
 
 // window pointers --------------------------------------------------------------------------------
@@ -1060,12 +1057,15 @@ void StartLiveObserverSession(const AsciiString& lobbyId)
 	if (lobbyId.isEmpty())
 		return;
 
-	// Match the environment doLiveObserverGameStart() expects, exactly as the main menu's
-	// own Connect path sets it up.
+	// The observer joins from a live shell screen, so the client must stay in the ordinary
+	// menu state. Deliberately NOT setting m_afterIntro here: that flag re-enters the
+	// intro/movie machinery, which sets m_breakTheMovie and disables rendering until a menu
+	// or load screen clears it again — the whole screen freezes while the logic keeps
+	// running. The shell map stays off so nothing competes with the replay that is about to
+	// start.
 	if (TheWritableGlobalData)
 	{
 		TheWritableGlobalData->m_playIntro = FALSE;
-		TheWritableGlobalData->m_afterIntro = TRUE;
 		TheWritableGlobalData->m_playSizzle = FALSE;
 		TheWritableGlobalData->m_shellMapOn = FALSE;
 	}
@@ -1080,16 +1080,26 @@ void StartLiveObserverSession(const AsciiString& lobbyId)
 	liveObserverLog("StartLiveObserverSession: queued lobby %s\n", lobbyId.str());
 }
 
-// Initialize the live observer, connect to relay, wait for HEADER,
-// then start live playback via Recorder::playbackFile on the shared file.
-//
-// Returns TRUE only when playback actually started, so the shell screen that pumped this can
-// tear itself down and reveal the game. Every failure path leaves no session behind.
-static Bool doLiveObserverGameStart(const AsciiString& lobbyId)
+// The join is split into a non-blocking connect and a playback start, pumped from the shell
+// screens via LiveObserverStartPendingSession(). The wait between them — for the relay to
+// deliver the header plus enough body to cover the broadcast delay — must not block the main
+// loop, or the shell could not keep rendering the countdown that explains it. All of the
+// readiness logic lives on LiveObserver (isPlaybackReady); this file only sequences it.
+enum ObserverJoinPhase
 {
-	liveObserverInitLog(lobbyId.str());
+	kObserverJoinIdle,		// nothing pending
+	kObserverJoinWaiting,	// connected; waiting for the file to cover the delay
+};
+static ObserverJoinPhase s_observerJoinPhase = kObserverJoinIdle;
+static UnsignedInt s_observerJoinStartedAt = 0;
+
+// Phase 1: end any previous session and start connecting. Non-blocking — the network thread
+// does the work and publishes the header and watermarks as it goes.
+static Bool doLiveObserverConnect(void)
+{
+	liveObserverInitLog(m_liveObserverStartLobbyId.str());
 	liveObserverLog("=== doLiveObserverGameStart (from menu) ===\n");
-	liveObserverLog("Lobby: %s\n", lobbyId.str());
+	liveObserverLog("Lobby: %s\n", m_liveObserverStartLobbyId.str());
 	liveObserverLog("doLiveObserverGameStart: entry — TheNetwork=%p isInMultiplayerGame=%d\n",
 		(void*)TheNetwork, TheGameLogic->isInMultiplayerGame() ? 1 : 0);
 
@@ -1102,31 +1112,22 @@ static Bool doLiveObserverGameStart(const AsciiString& lobbyId)
 	TheLiveObserver = createLiveObserver();
 	if (!TheLiveObserver)
 	{
-		liveObserverLog("doLiveObserverGameStart: createLiveObserver() returned NULL!\n");
+		liveObserverLog("doLiveObserverConnect: createLiveObserver() returned NULL!\n");
 		return FALSE;
 	}
 
-	liveObserverLog("doLiveObserverGameStart: connecting to relay...\n");
-	TheLiveObserver->connect(lobbyId);
+	liveObserverLog("doLiveObserverConnect: connecting to relay...\n");
+	TheLiveObserver->connect(m_liveObserverStartLobbyId);
+	return TRUE;
+}
 
-	// Block until the HEADER arrives and is written to _live.rep.
-	// readReplayHeader + playbackFile will parse everything we need
-	// (slot list, map, game options) from the header bytes.
-	liveObserverLog("doLiveObserverGameStart: waiting for HEADER (blocking, up to 20s)...\n");
-	Int waited = 0;
-	while (!TheLiveObserver->isReady() && waited < 20000)
-	{
-		Sleep(100);
-		waited += 100;
-	}
-	if (!TheLiveObserver->isReady())
-	{
-		liveObserverLog("doLiveObserverGameStart: FAILED — HEADER not received (timeout)\n");
-		liveObserverEndSession();
+// Phase 2: the file is playable (LiveObserver::isPlaybackReady). Sanity-check it and start
+// playback; returns TRUE only when playback actually started, so the shell screen that pumped
+// this can tear itself down and reveal the game.
+static Bool doLiveObserverStartPlayback(void)
+{
+	if (TheLiveObserver == nullptr)
 		return FALSE;
-	}
-
-	liveObserverLog("doLiveObserverGameStart: HEADER received! Starting live playback...\n");
 
 	AsciiString filename = TheLiveObserver->getLiveReplayFilename();
 	{
@@ -1141,39 +1142,80 @@ static Bool doLiveObserverGameStart(const AsciiString& lobbyId)
 			char magic[7] = {0};
 			fread(magic, 1, 6, fp);
 			fclose(fp);
-			liveObserverLog("doLiveObserverGameStart: %s size=%ld magic=%.6s\n", filename.str(), fsize, magic);
+			liveObserverLog("doLiveObserverStartPlayback: %s size=%ld magic=%.6s\n", filename.str(), fsize, magic);
 		}
 		else
 		{
-			liveObserverLog("doLiveObserverGameStart: %s MISSING at %s\n", filename.str(), filepath.str());
+			liveObserverLog("doLiveObserverStartPlayback: %s MISSING at %s\n", filename.str(), filepath.str());
 		}
 	}
 
 	if (!TheRecorder->startLiveObserverPlayback(filename))
 	{
-		liveObserverLog("doLiveObserverGameStart: FAILED — playbackFile returned false\n");
+		liveObserverLog("doLiveObserverStartPlayback: FAILED — playbackFile returned false\n");
 		liveObserverEndSession();
 		return FALSE;
 	}
 
-	liveObserverLog("doLiveObserverGameStart: playback started\n");
+	liveObserverLog("doLiveObserverStartPlayback: playback started\n");
 	return TRUE;
 }
 
-// Declared in LiveObserver.h. Fire a queued session once the shell has settled.
+// Declared in LiveObserver.h. Fire a queued session once the shell has settled, then keep
+// pumping it while the relay builds the file.
 //
-// The wait matters: doLiveObserverGameStart() blocks for up to 20s on the relay's HEADER and
-// then starts a game, neither of which may happen mid-animation. Which screen is on top does
-// not matter to any of that, which is why this is shared — the browser is reached from the
-// Online flow now, so the screen that has to stand aside afterwards is not always this one.
-// The caller tears itself down when this returns TRUE.
+// Connecting and starting a game must not happen mid-animation, so the first call (which
+// connects) waits for the shell to settle. After that the screen pumps this every frame:
+// while the file is still buffering the broadcast delay it returns FALSE and the shell keeps
+// drawing the countdown; once the file is playable it starts playback and returns TRUE so the
+// caller can stand itself down and reveal the game.
 Bool LiveObserverStartPendingSession(void)
 {
-	if (!startLiveObserverGame || !TheShell->isAnimFinished() || !TheTransitionHandler->isFinished())
+	if (!startLiveObserverGame)
 		return FALSE;
 
-	startLiveObserverGame = FALSE;
-	return doLiveObserverGameStart(m_liveObserverStartLobbyId);
+	if (s_observerJoinPhase == kObserverJoinIdle)
+	{
+		if (!TheShell->isAnimFinished() || !TheTransitionHandler->isFinished())
+			return FALSE;
+
+		if (!doLiveObserverConnect())
+		{
+			startLiveObserverGame = FALSE;
+			return FALSE;
+		}
+		s_observerJoinStartedAt = timeGetTime();
+		s_observerJoinPhase = kObserverJoinWaiting;
+		liveObserverLog("LiveObserverStartPendingSession: connected, waiting for the file to cover the delay (up to %ums)\n",
+			TheLiveObserver->getJoinTimeoutMs());
+		return FALSE;
+	}
+
+	// kObserverJoinWaiting — pump the wait. Every failure path clears the join state.
+	if (TheLiveObserver == nullptr)
+	{
+		s_observerJoinPhase = kObserverJoinIdle;
+		startLiveObserverGame = FALSE;
+		return FALSE;
+	}
+
+	if (TheLiveObserver->isPlaybackReady())
+	{
+		s_observerJoinPhase = kObserverJoinIdle;
+		startLiveObserverGame = FALSE;
+		return doLiveObserverStartPlayback();
+	}
+
+	if (timeGetTime() - s_observerJoinStartedAt > TheLiveObserver->getJoinTimeoutMs())
+	{
+		liveObserverLog("LiveObserverStartPendingSession: timed out waiting for a playable file — abandoning the join\n");
+		liveObserverEndSession();
+		s_observerJoinPhase = kObserverJoinIdle;
+		startLiveObserverGame = FALSE;
+		return FALSE;
+	}
+
+	return FALSE;
 }
 #endif
 

@@ -94,8 +94,10 @@ LiveObserver::LiveObserver()
     , m_maxCompleteFrame(0)
     , m_safeReadOffset(0)
     , m_parseAbsOffset(0)
+    , m_bodyStartOffset(0)
     , m_parseCorrupt(false)
     , m_holdPlayback(FALSE)
+    , m_nearLiveHeld(FALSE)
     , m_preRollComplete(FALSE)
     , m_autoPaused(FALSE)
     , m_userPaused(FALSE)
@@ -514,6 +516,7 @@ void LiveObserver::resetParseCursor(Int bodyStartOffset)
 {
     m_parseTail.clear();
     m_parseAbsOffset = bodyStartOffset;
+    m_bodyStartOffset = bodyStartOffset;
     m_parseCorrupt = false;
     m_maxCompleteFrame.store(0);
     m_safeReadOffset.store(bodyStartOffset);
@@ -613,6 +616,7 @@ void LiveObserver::updatePlaybackGate(UnsignedInt curFrame)
         // The gate is not being evaluated, so it must not keep reporting a hold from the
         // last tick it was.
         m_holdPlayback = FALSE;
+        m_nearLiveHeld = FALSE;
         return;
     }
 
@@ -621,8 +625,21 @@ void LiveObserver::updatePlaybackGate(UnsignedInt curFrame)
     const UnsignedInt delayFrames = getDelayFrames();
     const Bool streamEnded = m_streamEnded.load();
 
+    // The near-live gate keeps the observer a full broadcast delay behind the live edge. It
+    // is latched with hysteresis: holding engages only once the gap has fallen a whole band
+    // below the delay boundary, and releases only once the source has pulled a whole band
+    // ahead again. Between the bounds the gate keeps its previous decision instead of
+    // re-evaluating every tick — with both sides at the same frame rate the gap sits exactly
+    // on the boundary, and a plain threshold there toggled pause/resume constantly, which
+    // is the stutter every second the observer reported.
+    const UnsignedInt holdBand = LIVE_GATE_HYSTERESIS_FRAMES;
+    const UnsignedInt engageBelow = (delayFrames > holdBand) ? (delayFrames - holdBand) : 0;
+    const UnsignedInt releaseAbove = delayFrames + holdBand;
+
     // Existing fast-forward auto-disable, now driven by a live edge that is actually real.
-    if (gap <= delayFrames)
+    // Uses the release bound: inside the hysteresis band the observer is close enough to the
+    // edge that a fast-forward would spoil the live game, so it must stay disabled there too.
+    if (gap <= releaseAbove)
     {
         if (TheWritableGlobalData)
             TheWritableGlobalData->m_TiVOFastMode = FALSE;
@@ -641,12 +658,25 @@ void LiveObserver::updatePlaybackGate(UnsignedInt curFrame)
     // function disagree (the poll runs before GameLogic::UPDATE() and cannot know), which
     // oscillated the pause every tick and let playback creep forward while starved.
     //
-    // Steady state is therefore a tight sawtooth around the boundary: paused at gap ==
-    // delayFrames, released the moment the source pulls ahead, so the observer tracks the
-    // live game at its own rate while never getting closer than the delay.
+    // The latched hold replaces what used to be a tight sawtooth around the boundary: paused
+    // at gap == delayFrames, released the moment the source pulled ahead. At equal frame
+    // rates that boundary is crossed constantly, so the observer now settles on whichever
+    // side of the hysteresis band it reaches and the gate only moves when the two sides'
+    // rates genuinely diverge.
+    if (m_preRollComplete && !streamEnded)
+    {
+        if (gap <= engageBelow)
+            m_nearLiveHeld = TRUE;
+        else if (gap > releaseAbove)
+            m_nearLiveHeld = FALSE;
+    }
+    else
+    {
+        m_nearLiveHeld = FALSE;
+    }
+
     const Bool preRollGate = !m_preRollComplete;
-    const Bool nearLiveGate = m_preRollComplete && (gap <= delayFrames);
-    m_holdPlayback = (preRollGate || nearLiveGate) && !streamEnded;
+    m_holdPlayback = (preRollGate || m_nearLiveHeld) && !streamEnded;
 
     // Distinguish normal delay-holding from a genuine stall for the status bar's benefit.
     // At the boundary the hold toggles constantly, which is healthy; what the observer
@@ -704,7 +734,50 @@ Bool LiveObserver::isWithinBroadcastDelay(UnsignedInt curFrame) const
 {
     const UnsignedInt liveEdge = getMaxCompleteFrame();
     const UnsignedInt gap = (liveEdge > curFrame) ? (liveEdge - curFrame) : 0;
-    return gap <= getDelayFrames();
+    // The release bound of the gate's hysteresis band: the observer may sit a full band
+    // past the delay while playing, and fast-forward must stay refused for all of it.
+    return gap <= getDelayFrames() + LIVE_GATE_HYSTERESIS_FRAMES;
+}
+
+Bool LiveObserver::isPlaybackReady() const
+{
+    if (!m_headerReceived.load())
+        return false;
+    if (m_streamEnded.load())
+        return true;
+
+    // Playback may only start once the file is safe to read: the header plus at least the
+    // first body record, and enough complete records to cover the whole broadcast delay.
+    // The delay boundary proves the buffer is built because records arrive in order — and
+    // it also guarantees the first record is present, which the Recorder's seeding read
+    // depends on. A zero delay still needs that first record, hence the offset check.
+    if (m_safeReadOffset.load() <= m_bodyStartOffset)
+        return false;
+    return getMaxCompleteFrame() >= getDelayFrames();
+}
+
+Int LiveObserver::getSecondsUntilPlaybackReady() const
+{
+    if (isPlaybackReady())
+        return 0;
+
+    const UnsignedInt delayFrames = getDelayFrames();
+    const UnsignedInt edge = getMaxCompleteFrame();
+    const UnsignedInt remaining = (delayFrames > edge) ? (delayFrames - edge) : 0;
+    // Round up so the countdown only reads 0 when playback can genuinely start.
+    return (Int)((remaining + LOGICFRAMES_PER_SECOND - 1) / LOGICFRAMES_PER_SECOND);
+}
+
+UnsignedInt LiveObserver::getJoinTimeoutMs() const
+{
+    // Ceiling for how long the join may wait before giving up — nothing expects to reach it.
+    // A game already past the broadcast delay is playable the moment its catch-up arrives,
+    // because isPlaybackReady() compares the live edge against the delay; it does not sit out
+    // the delay itself. Only a freshly-started game approaches this ceiling, and there the
+    // wait really is the delay: the stream must produce a full delay's worth of records before
+    // playback may begin. The delay in real seconds plus headroom for the connection, ticket
+    // minting and the first record bounds that worst case.
+    return getDelaySeconds() * 1000 + 20000;
 }
 
 LiveObserver::~LiveObserver()
@@ -738,6 +811,16 @@ void liveObserverEndSession(void)
     // was no session: the Recorder is simply put back to the state it starts in.
     if (TheRecorder)
         TheRecorder->reset();
+
+    // Every way a session ends returns the player to the shell (stream end, exit game, join
+    // aborted), and the shell map is the shell's backdrop. This restore used to live only in
+    // stopPlayback()'s live branch, which is why quitting via the in-game exit button left a
+    // mapless shell — the clearGameData() path ended the session without touching the flag.
+    // Done here, all end-session call sites behave alike. A session that is still starting
+    // (playbackFile() clearing the shell map) never reaches this function: the startup guard
+    // in liveObserverOnGameCleared() returns before calling it.
+    if (TheWritableGlobalData)
+        TheWritableGlobalData->m_shellMapOn = TRUE;
 }
 
 void liveObserverOnGameCleared(void)

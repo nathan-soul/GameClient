@@ -1470,8 +1470,46 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 		}
 	}
 
+	// TheSuperHackers @fix Live-observer determinism. The game-logic RNG is seeded here, at the
+	// point the simulation actually begins, so the streamer and the observer both start from the
+	// same state no matter what their pre-game paths (shell teardown vs lobby) consumed. It used
+	// to be seeded earlier (playbackFile / NGMPGame) and was then consumed by the random slot
+	// assignment below; any difference in that consumption between the two clients — even one
+	// RNG call — meant the random factions and, later, the AI's decisions diverged, which is the
+	// observer DESYNC seen at the first AI action.
+	if (game)
+		InitRandom(game->getSeed());
+
 	populateRandomSideAndColor(game);
 	populateRandomStartPosition(game);
+
+	// TheSuperHackers @diagnostic Live-observer determinism. Both the streamer and the observer
+	// run this assignment, and both must end up with the same slots AND the same game-logic RNG
+	// state — a difference here is what later surfaces as a DESYNC at the first AI decision.
+	// The probe is non-consuming (GetGameLogicRandomSeedCRC hashes the RNG state without
+	// advancing it), so logging it cannot change the simulation. Gated on the compile-time
+	// LIVE_OBSERVER_LOGGING only, not on observer mode: the streamer needs this line too.
+#if defined(LIVE_OBSERVER_LOGGING)
+	if (game)
+	{
+		AsciiString logLine;
+		logLine.format("LIVE_OBSERVER: post-assignment game=%p RNG=%08X slots=",
+			game, GetGameLogicRandomSeedCRC());
+		for (Int si = 0; si < MAX_SLOTS; ++si)
+		{
+			GameSlot* sl = game->getSlot(si);
+			if (sl && sl->isOccupied())
+			{
+				AsciiString part;
+				part.format("%d(tmpl=%d,pos=%d,color=%d,name=%ls) ", si,
+					sl->getPlayerTemplate(), sl->getStartPos(), sl->getColor(),
+					sl->getName().str());
+				logLine.concat(part);
+			}
+		}
+		liveObserverLog("%s\n", logLine.str());
+	}
+#endif
 
 	//****************************//
 	// Start the LoadScreen Now!	//
@@ -2692,6 +2730,14 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 	AsciiString message;
 	message.format("GameStart: %s", TheGlobalData->m_mapName.str());
 	PROFILER_MSG(message.str(), message.getLength());
+#endif
+
+	// TheSuperHackers @diagnostic Second live-observer determinism probe: the game-logic RNG
+	// state after the map load and initial building placement. Comparing this line between the
+	// streamer and observer logs shows whether the pre-game setup (shell teardown, map load)
+	// consumed the RNG differently — the thing to look at after the slot-assignment probe above.
+#if defined(LIVE_OBSERVER_LOGGING)
+	liveObserverLog("LIVE_OBSERVER: post-setup RNG=%08X frame=%d\n", GetGameLogicRandomSeedCRC(), m_frame);
 #endif
 	LIVE_OBSERVER_LOG("LIVE_OBSERVER: tryStartNewGame() COMPLETE — frame=%d\n", m_frame);
 }
@@ -4123,14 +4169,21 @@ void GameLogic::update()
 
 	// force CRC calculation, so we can keep a cache of the last N CRCs.  We do this right where the recorder
 	// would be getting the CRC anyway, so replays can get the CRCs from the exact instant in time as the original.
+	//
+	// TheSuperHackers @fix Frame 0 is excluded, as the DEBUG_CRC branch below already does. A
+	// replay client is already in GAME_REPLAY mode at its game-frame 0, so it would emit a
+	// frame-0 CRC that the original game never did (its mode is still NONE at its own frame 0).
+	// That extra value sat at the front of the CRC queue and skewed every comparison by a full
+	// interval — the observer's false DESYNC at ~frame 100, and the stock "mismatch virtually
+	// every replay" warning for ordinary replays.
 	Bool isMPGameOrReplay = (TheRecorder && TheRecorder->isMultiplayer() && getGameMode() != GAME_SHELL && getGameMode() != GAME_NONE);
 	Bool isSoloGameOrReplay = (TheRecorder && !TheRecorder->isMultiplayer() && getGameMode() != GAME_SHELL && getGameMode() != GAME_NONE);
-	Bool generateForMP = (isMPGameOrReplay && TheGameInfo->getCRCInterval() > 0 && (m_frame % TheGameInfo->getCRCInterval()) == 0);
+	Bool generateForMP = (isMPGameOrReplay && TheGameInfo->getCRCInterval() > 0 && m_frame > 0 && (m_frame % TheGameInfo->getCRCInterval()) == 0);
 #ifdef DEBUG_CRC
 	Bool generateForSolo = isSoloGameOrReplay && ((m_frame && (m_frame % 100 == 0)) ||
 		(getFrame() >= TheCRCFirstFrameToLog && getFrame() < TheCRCLastFrameToLog && (REPLAY_CRC_INTERVAL > 0 && (m_frame % REPLAY_CRC_INTERVAL) == 0)));
 #else
-	Bool generateForSolo = isSoloGameOrReplay && (REPLAY_CRC_INTERVAL > 0 && (m_frame % REPLAY_CRC_INTERVAL) == 0);
+	Bool generateForSolo = isSoloGameOrReplay && (REPLAY_CRC_INTERVAL > 0 && m_frame > 0 && (m_frame % REPLAY_CRC_INTERVAL) == 0);
 #endif // DEBUG_CRC
 
 	if (generateForSolo || generateForMP)

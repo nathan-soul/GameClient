@@ -463,6 +463,27 @@ void RecorderClass::updatePlayback() {
 
 	const Bool isLive = (m_mode == RECORDERMODETYPE_LIVE_OBSERVER);
 
+	// A live observer's game clock ticks (in GAME_NONE) from the moment the session
+	// connects — the join can sit on the buffering countdown for tens of seconds
+	// before the game starts. Feeding replay records into that window drops them
+	// into a game that never started: the commands are dispatched into the shell
+	// world and the file cursor moves past them, so the observer's real game starts
+	// missing the stream's opening records. That lost the recorded CRCs at replay
+	// frames 101/201/301 and real commands (DOZER_CONSTRUCT_LINE at 314, unit-queue
+	// cancels at 366+) — the CRC queue then had no partner for every own value (the
+	// first recorded CRC popped own-101 against recorded-401 → false DESYNC at
+	// ~frame 300-400) and the sim genuinely diverged. Only consume records once the
+	// observed game is actually running; the record frame numbers then make the
+	// cursor wait for the game to reach them on its own.
+	if (isLive && TheGameLogic && !TheGameLogic->isInInteractiveGame())
+	{
+		// The gate still needs its tick so its pre-start latch semantics stay
+		// unchanged (it already decides not to hold before the game has started).
+		if (TheLiveObserver)
+			TheLiveObserver->updatePlaybackGate(curFrame);
+		return;
+	}
+
 	// While there are commands to be queued up for this frame or a past frame (live observer may be behind), process them.
 	while (m_nextFrame != (UnsignedInt)-1 && m_nextFrame <= curFrame) {
 		if (isLive) {
@@ -518,10 +539,9 @@ void RecorderClass::stopPlayback() {
 	if (wasLiveObserver)
 	{
 		// The same teardown every other exit path uses, deliberately: a live session has exactly
-		// one way to end. What remains here is the shell state only this path has to put back.
+		// one way to end. liveObserverEndSession() also restores the shell map, so the shell
+		// loads on every path, not just this one.
 		liveObserverEndSession();
-		if (TheWritableGlobalData)
-			TheWritableGlobalData->m_shellMapOn = TRUE;
 	}
 
 	if (!m_doingAnalysis)
@@ -1170,6 +1190,16 @@ Bool RecorderClass::startLiveObserverPlayback(AsciiString filename)
 	m_mode = RECORDERMODETYPE_LIVE_OBSERVER;
 	m_nextFrame = 0;
 
+	// playbackFile()'s seeding read consumed the first record's frame number and left the
+	// cursor on its type field. The live loop reads the frame itself before appending
+	// (readNextFrame() then appendNextCommand()), so it needs the cursor back on that frame
+	// field — otherwise the first record's type is read as a frame number and the whole
+	// stream misparses from the very first record. The old code set the live mode before
+	// playbackFile(), which made the seeding read take the live path and rewind on its own;
+	// the mode dance now requires the rewind to happen here instead.
+	if (m_file != nullptr && TheLiveObserver != nullptr)
+		m_file->seek(TheLiveObserver->getBodyStartOffset(), File::START);
+
 	// From here on the session is live, so clearing game data means the game ended rather than
 	// that this session is still being set up. See liveObserverOnGameCleared().
 	if (TheLiveObserver)
@@ -1215,6 +1245,13 @@ void RecorderClass::handleCRCMessage(UnsignedInt newCRC, Int playerIndex, Bool f
 	if (fromPlayback)
 	{
 		//DEBUG_LOG(("RecorderClass::handleCRCMessage() - Adding CRC of %X from %d to m_crcInfo", newCRC, playerIndex));
+#if defined(LIVE_OBSERVER_LOGGING)
+		if (m_mode == RECORDERMODETYPE_LIVE_OBSERVER)
+		{
+			liveObserverLog("CRC queued: value=%08X frame=%d player=%d queueSize=%d\n",
+				newCRC, TheGameLogic ? TheGameLogic->getFrame() : -1, playerIndex, m_crcInfo.GetQueueSize());
+		}
+#endif
 		m_crcInfo.addCRC(newCRC);
 		return;
 	}
@@ -1228,62 +1265,88 @@ void RecorderClass::handleCRCMessage(UnsignedInt newCRC, Int playerIndex, Bool f
 		samePlayer = TRUE;
 	if (samePlayer || (localPlayerIndex < 0))
 	{
-		UnsignedInt playbackCRC = m_crcInfo.readCRC();
-		//DEBUG_LOG(("RecorderClass::handleCRCMessage() - Comparing CRCs of InGame:%8.8X Replay:%8.8X Frame:%d from Player %d",
-		//	playbackCRC, newCRC, TheGameLogic->getFrame()-m_crcInfo.GetQueueSize()-1, playerIndex));
-		if (TheGameLogic->getFrame() > 0 && newCRC != playbackCRC && !m_crcInfo.sawCRCMismatch())
+		// A live observer's own CRC is marked isPlayback (its mode is a playback mode), so it
+		// queues via the fromPlayback path above; the recorded CRC that arrives from the
+		// stream (written by the streamer with isPlayback=FALSE) is what pops and compares
+		// here. If the queue is somehow empty at that point — the own CRC has not been
+		// processed yet — there is nothing to compare against, and reading would return 0 and
+		// report a DESYNC on a healthy session, so skip the interval instead.
+#if defined(LIVE_OBSERVER_LOGGING)
+		if (m_mode == RECORDERMODETYPE_LIVE_OBSERVER)
 		{
-			//Kris: Patch 1.01 November 10, 2003 (integrated changes from Matt Campbell)
-			// Since we don't seem to have any *visible* desyncs when replaying games, but get this warning
-			// virtually every replay, the assumption is our CRC checking is faulty.  Since we're at the
-			// tail end of patch season, let's just disable the message, and hope the users believe the
-			// problem is fixed. -MDC 3/20/2003
-			//
-			// TheSuperHackers @tweak helmutbuhler 03/04/2025
-			// More than 20 years later, but finally fixed and re-enabled!
-			TheInGameUI->message("GUI:CRCMismatch");
-
-			// TheSuperHackers @info helmutbuhler 03/04/2025
-			// Note: We subtract the queue size from the frame number. This way we calculate the correct frame
-			// the mismatch first happened in case the NetCRCInterval is set to 1 during the game.
-			const UnsignedInt mismatchFrame = TheGameLogic->getFrame() - m_crcInfo.GetQueueSize() - 1;
-
-			// Now also prints a UI message for it.
-			const UnicodeString mismatchDetailsStr = TheGameText->FETCH_OR_SUBSTITUTE("GUI:CRCMismatchDetails", L"InGame:%8.8X Replay:%8.8X Frame:%d");
-			TheInGameUI->message(mismatchDetailsStr, playbackCRC, newCRC, mismatchFrame);
-
-			DEBUG_LOG(("Replay has gone out of sync!\nInGame:%8.8X Replay:%8.8X\nFrame:%d",
-				playbackCRC, newCRC, mismatchFrame));
-
-			// Print Mismatch in case we are simulating replays from console.
-			printf("CRC Mismatch in Frame %d\n", mismatchFrame);
-
-			// TheSuperHackers @fix Record the divergence for a live-observer session, where the
-			// stream keeps arriving and playback keeps running: without this the observer has no
-			// way of knowing its view stopped being the real game.
-			if (m_mode == RECORDERMODETYPE_LIVE_OBSERVER && TheLiveObserver)
+			liveObserverLog("CRC compare: recorded=%08X frame=%d player=%d localPlayer=%d samePlayer=%d queueSize=%d\n",
+				newCRC, TheGameLogic ? TheGameLogic->getFrame() : -1, playerIndex, localPlayerIndex,
+				samePlayer ? 1 : 0, m_crcInfo.GetQueueSize());
+		}
+#endif
+		if (m_crcInfo.GetQueueSize() > 0)
+		{
+			UnsignedInt playbackCRC = m_crcInfo.readCRC();
+			//DEBUG_LOG(("RecorderClass::handleCRCMessage() - Comparing CRCs of InGame:%8.8X Replay:%8.8X Frame:%d from Player %d",
+			//	playbackCRC, newCRC, TheGameLogic->getFrame()-m_crcInfo.GetQueueSize()-1, playerIndex));
+			if (TheGameLogic->getFrame() > 0 && newCRC != playbackCRC && !m_crcInfo.sawCRCMismatch())
 			{
-				TheLiveObserver->noteDesync(mismatchFrame);
+				//Kris: Patch 1.01 November 10, 2003 (integrated changes from Matt Campbell)
+				// Since we don't seem to have any *visible* desyncs when replaying games, but get this warning
+				// virtually every replay, the assumption is our CRC checking is faulty.  Since we're at the
+				// tail end of patch season, let's just disable the message, and hope the users believe the
+				// problem is fixed. -MDC 3/20/2003
+				//
+				// TheSuperHackers @tweak helmutbuhler 03/04/2025
+				// More than 20 years later, but finally fixed and re-enabled!
+				TheInGameUI->message("GUI:CRCMismatch");
 
-				// Report once, then stop comparing - a desynced simulation diverges further every
-				// frame, so everything after the first mismatch is noise.
-				m_crcInfo.setSawCRCMismatch();
-				return;
-			}
+				// TheSuperHackers @info helmutbuhler 03/04/2025
+				// Note: We subtract the queue size from the frame number. This way we calculate the correct frame
+				// the mismatch first happened in case the NetCRCInterval is set to 1 during the game.
+				const UnsignedInt mismatchFrame = TheGameLogic->getFrame() - m_crcInfo.GetQueueSize() - 1;
 
-			// TheSuperHackers @tweak Pause the game on mismatch.
-			// But not when a window with focus is opened, because that can make resuming difficult.
-			if (TheWindowManager->winGetFocus() == nullptr)
-			{
-				Bool pause = TRUE;
-				Bool pauseMusic = FALSE;
-				Bool pauseInput = FALSE;
-				TheGameLogic->setGamePaused(pause, pauseMusic, pauseInput);
+				// Now also prints a UI message for it.
+				const UnicodeString mismatchDetailsStr = TheGameText->FETCH_OR_SUBSTITUTE("GUI:CRCMismatchDetails", L"InGame:%8.8X Replay:%8.8X Frame:%d");
+				TheInGameUI->message(mismatchDetailsStr, playbackCRC, newCRC, mismatchFrame);
 
-				// Mark this mismatch as seen when we had the chance to pause once.
-				m_crcInfo.setSawCRCMismatch();
+				DEBUG_LOG(("Replay has gone out of sync!\nInGame:%8.8X Replay:%8.8X\nFrame:%d",
+					playbackCRC, newCRC, mismatchFrame));
+
+				// Print Mismatch in case we are simulating replays from console.
+				printf("CRC Mismatch in Frame %d\n", mismatchFrame);
+
+				// TheSuperHackers @fix Record the divergence for a live-observer session, where the
+				// stream keeps arriving and playback keeps running: without this the observer has no
+				// way of knowing its view stopped being the real game.
+				if (m_mode == RECORDERMODETYPE_LIVE_OBSERVER && TheLiveObserver)
+				{
+					liveObserverLog("CRC mismatch — own=%08X recorded=%08X frame=%d\n",
+						newCRC, playbackCRC, mismatchFrame);
+					TheLiveObserver->noteDesync(mismatchFrame);
+
+					// Report once, then stop comparing - a desynced simulation diverges further every
+					// frame, so everything after the first mismatch is noise.
+					m_crcInfo.setSawCRCMismatch();
+					return;
+				}
+
+				// TheSuperHackers @tweak Pause the game on mismatch.
+				// But not when a window with focus is opened, because that can make resuming difficult.
+				if (TheWindowManager->winGetFocus() == nullptr)
+				{
+					Bool pause = TRUE;
+					Bool pauseMusic = FALSE;
+					Bool pauseInput = FALSE;
+					TheGameLogic->setGamePaused(pause, pauseMusic, pauseInput);
+
+					// Mark this mismatch as seen when we had the chance to pause once.
+					m_crcInfo.setSawCRCMismatch();
+				}
 			}
 		}
+#if defined(LIVE_OBSERVER_LOGGING)
+		else if (m_mode == RECORDERMODETYPE_LIVE_OBSERVER)
+		{
+			liveObserverLog("CRC compare SKIPPED (empty queue): recorded=%08X frame=%d\n",
+				newCRC, TheGameLogic ? TheGameLogic->getFrame() : -1);
+		}
+#endif
 		return;
 	}
 
@@ -1416,6 +1479,14 @@ Bool RecorderClass::playbackFile(AsciiString filename)
     m_file->read(&maxFPS, sizeof(maxFPS));
 
     Bool isMultiplayer = (m_originalGameMode == GAME_INTERNET || m_originalGameMode == GAME_LAN);
+    // A live observer queues its OWN locally-generated CRCs through the fromPlayback path
+    // (its mode is a playback mode, so its messages carry isPlayback=TRUE), and the recorded
+    // CRC from the stream pops and compares them. The network-game skip of the first
+    // received CRC exists because the first value "doesn't make it through the network";
+    // locally-generated values never get lost, so skipping the first one here skews every
+    // comparison by a full interval — the false DESYNC the observer reported.
+    if (TheLiveObserver != nullptr && !TheLiveObserver->hasPlaybackStarted())
+        isMultiplayer = FALSE;
     m_crcInfo = CRCInfo(header.localPlayerIndex, isMultiplayer);
     DEBUG_LOG(("Player index is %d, replay CRC interval is %d, isMultiplayer is %d", m_crcInfo.getLocalPlayer(), REPLAY_CRC_INTERVAL, isMultiplayer));
 

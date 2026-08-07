@@ -1015,12 +1015,13 @@ void NGMP_OnlineServicesManager::Tick()
                 mapHeaders["Content-Type"] = "image/jpeg";
                 NGMP_OnlineServicesManager::GetInstance()->GetHTTPManager()->SendS3PUTRequest(screenshotEntry.strSignedURI.c_str(), EIPProtocolVersion::DONT_CARE, mapHeaders, screenshotEntry.vecBytes, [=](bool bSuccess, int statusCode, std::string strBody, HTTPRequest* pReq)
                     {
-#if _DEBUG
+                        // A failed upload is a routine network/service problem, never a reason to
+                        // halt the game: report it and move on. This used to __debugbreak() on a
+                        // non-200 status, which turned every S3 failure into a crash in debug builds.
                         if (statusCode != 200)
                         {
-                            __debugbreak();
+                            NetworkLog(ELogVerbosity::LOG_RELEASE, "Screenshot upload FAILED, result: %d (%s)", statusCode, strBody.c_str());
                         }
-#endif
                         NetworkLog(ELogVerbosity::LOG_RELEASE, "Screenshot upload, result: %d", statusCode);
                     }, nullptr, HTTP_UPLOAD_TIMEOUT);
 			}
@@ -1073,13 +1074,12 @@ void NGMP_OnlineServicesManager::Tick()
                 mapHeaders["Content-Type"] = "application/octet-stream";
                 NGMP_OnlineServicesManager::GetInstance()->GetHTTPManager()->SendS3PUTRequest(m_strCacheReplay_S3URI.c_str(), EIPProtocolVersion::DONT_CARE, mapHeaders, m_vecCachedReplayBytes, [=](bool bSuccess, int statusCode, std::string strBody, HTTPRequest* pReq)
                     {
-#if _DEBUG
+                        // Same as the screenshot upload above: a failed upload logs instead of
+                        // crashing, so a debug build survives an S3 outage at game end.
                         if (statusCode != 200)
                         {
-                            __debugbreak();
+                            NetworkLog(ELogVerbosity::LOG_RELEASE, "Replay upload FAILED, result: %d (%s)", statusCode, strBody.c_str());
                         }
-#endif
-
                         NetworkLog(ELogVerbosity::LOG_RELEASE, "Replay upload, result: %d", statusCode);
                     }, nullptr, HTTP_UPLOAD_TIMEOUT);
 
