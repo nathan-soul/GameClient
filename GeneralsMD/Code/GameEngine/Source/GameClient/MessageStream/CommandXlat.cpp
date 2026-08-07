@@ -3620,14 +3620,14 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 	case GameMessage::MSG_META_TOGGLE_PAUSE_ALT:
 	{
 #if defined(GENERALS_ONLINE)
-		// In live observer mode P toggles the user's *intent* only; the recorder recomputes
+		// In live observer mode P toggles the user's *intent* only; the observer recomputes
 		// the actual pause as (userPaused || waitingForData) on its next poll, the same tick.
 		// Calling setGamePaused() directly here would fight the buffering logic: pressing P
 		// while auto-paused would unpause, and the buffering gate would simply re-pause on
 		// the next tick and reclaim ownership, silently discarding the user's intent.
-		if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
+		if (TheLiveObserver && TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
 		{
-			TheRecorder->setUserPaused(!TheRecorder->isUserPaused());
+			TheLiveObserver->toggleUserPause();
 			disp = DESTROY_MESSAGE;
 			break;
 		}

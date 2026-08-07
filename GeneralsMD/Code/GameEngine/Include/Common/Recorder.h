@@ -56,34 +56,9 @@ enum RecorderModeType CPP_11(: Int) {
 	RECORDERMODETYPE_NONE // this is a valid state to be in on the shell map, or in saved games
 };
 
-#if defined(GENERALS_ONLINE)
 // LIVE_DELAY_SECONDS_DEFAULT / LIVE_DELAY_SECONDS_MAX live in Common/GameCommon.h, so that
-// OptionPreferences (in Core) can share them.
-
-// TheSuperHackers @feature Shared replay-record scanner.
-//
-// One replay record on disk is laid out as:
-//   [UnsignedInt frame][GameMessage::Type type][Int playerIndex][UnsignedByte numTypes]
-//   { [UnsignedByte argType][UnsignedByte numArgs] } x numTypes
-//   [argument payload]
-//
-// Two places need to agree on that layout byte-for-byte: RecorderClass::appendNextCommand()
-// (which consumes records during playback) and the LiveObserver network thread (which scans
-// arriving bytes to publish the live-edge / safe-read watermarks). They previously had
-// separate copies of the sizing logic, and the copy in the old probeLiveEdge() silently
-// treated an unrecognised argument type as zero-width — which desynced the parse and made it
-// report float payload bytes as frame numbers. Keep this the single source of truth, and note
-// that it fails closed: an unparseable record stalls the watermark rather than poisoning it.
-enum ScanRecordResult CPP_11(: Int)
-{
-	SCANRECORD_OK,				///< a complete record is present; outSize/outFrame are valid
-	SCANRECORD_INCOMPLETE,		///< the buffer holds a valid prefix — more bytes needed
-	SCANRECORD_CORRUPT			///< unparseable (e.g. unknown argument type)
-};
-
-/// Scan one replay record from buf[0..len). Never reads past len. outSize/outFrame may be null.
-ScanRecordResult scanReplayRecord(const unsigned char* buf, Int len, Int* outSize, UnsignedInt* outFrame);
-#endif // GENERALS_ONLINE
+// OptionPreferences (in Core) can share them. The replay-record scanner that reads the same
+// layout as appendNextCommand() lives in LiveObserver.cpp, which is its only caller.
 
 class RecorderClass : public SubsystemInterface
 {
@@ -195,34 +170,15 @@ public:
 
 	IReplayStreamSink* getStreamSink() { return m_streamSink; }
 	void setStreamSink(IReplayStreamSink* sink) { m_streamSink = sink; }
-	/// TRUE while the file being played back is one that is still growing underneath us.
-	/// This is about the file, not about the session — everything the *session* knows (the
-	/// broadcast delay, the buffering gate, the live edge, whether it has desynced) belongs
-	/// to LiveObserver, and callers that want any of it should ask TheLiveObserver.
-	Bool isLiveStream() const { return m_isLiveStream; }
 	UnsignedInt getNextFrame() const { return m_nextFrame; }	///< Next frame to execute (used for live gap check).
 
-	// ---- Pause ownership -------------------------------------------------------------
-	// The user's intent is the Recorder's because it is about playback in general and
-	// outlives any one live session; the buffering logic's is LiveObserver's. The two are
-	// separate inputs, OR'd together in LiveObserver::updatePlaybackGate(), so neither can
-	// silently override the other.
-	Bool isUserPaused() const { return m_userPaused; }
-	void setUserPaused(Bool paused) { m_userPaused = paused; }
-
-	/// Live-stream housekeeping that must keep running even while GameLogic::UPDATE() is
-	/// skipped by the pause — otherwise the pause can never be cleared. Called from
-	/// GameEngine::update() outside the halted path. The decision itself is the observer's;
-	/// this only supplies the playback state the observer cannot see.
-	void updateLiveStreamPoll();
-
-	/// End the live-observer session: destroy the observer and forget the replay it was
-	/// feeding. Deliberately not stopPlayback(), which also exits the game.
-	///
-	/// Must run before starting another live-observer session. The file is named after the
-	/// streamer's game, so rejoining the same game targets the same path — and Windows will
-	/// not delete a file this class still holds open, so the new session cannot create it.
-	void endLiveObserverSession();
+	// TheSuperHackers @info There is exactly one way to ask whether this is a live session:
+	// m_mode == RECORDERMODETYPE_LIVE_OBSERVER. There used to be a second, an m_isLiveStream
+	// flag, and it was assigned in lockstep with the mode at every single site - so the two
+	// could never disagree, but callers had to guess which to test. Two of them guessed
+	// differently and produced an OR of a predicate with itself and a branch that could never
+	// be taken. Everything the *session* knows (the broadcast delay, the buffering gate, the
+	// live edge, whether it has desynced) belongs to LiveObserver; ask TheLiveObserver for it.
 
 protected:
 	void startRecording(GameDifficulty diff, Int originalGameMode, Int rankPoints, Int maxFPS);					///< Start recording to m_file.
@@ -279,8 +235,6 @@ protected:
 	UnsignedInt m_nextFrame;												///< The Frame that the next message is to be executed on.  This can be -1.
 
 	IReplayStreamSink* m_streamSink;
-	Bool m_isLiveStream;			///< the playback file is still growing; see isLiveStream()
-	Bool m_userPaused;				///< the user pressed P and wants it paused
 };
 
 extern RecorderClass *TheRecorder;

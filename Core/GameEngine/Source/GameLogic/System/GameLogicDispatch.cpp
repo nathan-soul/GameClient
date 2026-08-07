@@ -258,18 +258,17 @@ void GameLogic::clearGameData(Bool showScoreScreen)
 
 	setClearingGameData(TRUE);
 
-	// A live-observer session is only ever torn down lazily, at the start of the *next* watch-live
-	// join (see MainMenu.cpp's doLiveObserverGameStart()) - nothing on the normal game-end path used
-	// to close it, so InGameUI::drawLiveStatus() kept showing the last session's "LIVE - ..." banner
-	// until the next join happened to clean it up. clearGameData() is the single choke point every
-	// game-end path (quit to menu, quit to desktop, stream ended naturally) converges on, so close it
-	// here instead.
-	if (TheLiveObserver)
-	{
-		TheLiveObserver->close();
-		delete TheLiveObserver;
-		TheLiveObserver = nullptr;
-	}
+#if defined(GENERALS_ONLINE)
+	// This is the one choke point every game-end path converges on (quit to menu, quit to desktop,
+	// stream ended naturally), which is why a live-observer session is told about it here - nothing
+	// else closed it, so InGameUI::drawLiveStatus() kept showing the last session's "LIVE - ..."
+	// banner into the next screen.
+	//
+	// Whether that actually ends the session is LiveObserver's call, not ours: clearing game data is
+	// also how a live session *starts* (playbackFile() clears the shell map first), and this used to
+	// destroy the observer that had just connected.
+	liveObserverOnGameCleared();
+#endif
 
 	//	m_background = TheWindowManager->winCreateLayout("Menus/BlankWindow.wnd");
 	//	DEBUG_ASSERTCRASH(m_background,("We Couldn't Load Menus/BlankWindow.wnd"));
@@ -2085,17 +2084,17 @@ void GameLogic::logicMessageDispatcher(GameMessage* msg, void* userData)
 	//---------------------------------------------------------------------------------------------
 	case GameMessage::MSG_LOGIC_CRC:
 	{
-		// TheSuperHackers @fix A live observer used to be dropped out here along with the streamer,
-		// which meant its CRCs were never compared with the recorded ones at all - so a desynced
-		// observer produced no log line, no UI message and no flag, and simply kept playing a
-		// simulation that had stopped matching the real game. The comparison now runs for an
-		// observer (see RecorderClass::handleCRCMessage, which reports but deliberately does not
-		// pause for a live session); only the streamer keeps the old skip.
-		if (TheRecorder && TheRecorder->isLiveStream() && TheRecorder->getMode() != RECORDERMODETYPE_LIVE_OBSERVER)
-		{
-			// CRC validation is skipped on the streaming side
-			break;
-		}
+		// TheSuperHackers @info A live observer used to be dropped out here, which meant its CRCs
+		// were never compared with the recorded ones at all - so a desynced observer produced no
+		// log line, no UI message and no flag, and simply kept playing a simulation that had
+		// stopped matching the real game. The comparison now runs for an observer too; see
+		// RecorderClass::handleCRCMessage, which reports but deliberately does not pause for a
+		// live session.
+		//
+		// The skip that replaced it was written as "isLiveStream() && mode != LIVE_OBSERVER" to
+		// spare the streaming side, but isLiveStream() was only ever set by the observer, so that
+		// condition could not be true and the branch never ran. It is gone rather than repaired:
+		// the streamer is a real network peer and its CRCs should be validated like anyone's.
 
 		if (TheNetwork)
 		{

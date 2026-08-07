@@ -1097,8 +1097,7 @@ static Bool doLiveObserverGameStart(const AsciiString& lobbyId)
 	// Recorder's read handle on its file — both are needed, because the live file is named
 	// after the streamer's game, so rejoining a game we already watched targets the same
 	// path, which openLiveFile() cannot delete or recreate while either handle is open.
-	if (TheRecorder)
-		TheRecorder->endLiveObserverSession();
+	liveObserverEndSession();
 
 	TheLiveObserver = createLiveObserver();
 	if (!TheLiveObserver)
@@ -1123,7 +1122,7 @@ static Bool doLiveObserverGameStart(const AsciiString& lobbyId)
 	if (!TheLiveObserver->isReady())
 	{
 		liveObserverLog("doLiveObserverGameStart: FAILED — HEADER not received (timeout)\n");
-		TheRecorder->endLiveObserverSession();
+		liveObserverEndSession();
 		return FALSE;
 	}
 
@@ -1153,7 +1152,7 @@ static Bool doLiveObserverGameStart(const AsciiString& lobbyId)
 	if (!TheRecorder->startLiveObserverPlayback(filename))
 	{
 		liveObserverLog("doLiveObserverGameStart: FAILED — playbackFile returned false\n");
-		TheRecorder->endLiveObserverSession();
+		liveObserverEndSession();
 		return FALSE;
 	}
 
