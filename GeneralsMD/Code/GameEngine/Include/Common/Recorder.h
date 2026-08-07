@@ -111,6 +111,12 @@ public:
 	AsciiString getCurrentReplayFilename();			///< valid during playback only
 	UnsignedInt getPlaybackFrameCount() const { return m_playbackFrameCount; }			///< valid during playback only
 	void stopPlayback();															///< Stops playback.  Its fine to call this even if not playing back a file.
+	/// Teardown for a live-observer session that keeps the recorder looking like a finished
+	/// replay: closes the live file and parks the playback cursor, but keeps LIVE_OBSERVER
+	/// mode and the header's game-info slots. The score screen consults
+	/// isMultiplayer()/getGameInfo() to decide how to render player rows, and reset() would
+	/// erase both — see liveObserverEndSession().
+	void endLivePlayback();
 	Bool simulateReplay(AsciiString filename);
 	Bool startLiveObserverPlayback(AsciiString filename);
 #if defined(RTS_DEBUG)

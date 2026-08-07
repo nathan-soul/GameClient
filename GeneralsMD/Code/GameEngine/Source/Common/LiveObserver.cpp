@@ -807,10 +807,16 @@ void liveObserverEndSession(void)
         TheLiveObserver = nullptr;
     }
 
-    // Closes the playback file, clears its name, and init()s the rest. Safe to call when there
-    // was no session: the Recorder is simply put back to the state it starts in.
+    // Closes the playback file and parks the playback cursor, but deliberately does not
+    // reset() the Recorder: the score screen runs immediately after the session ends and
+    // consults TheRecorder->isMultiplayer() to pick between the multiplayer and the
+    // single-player layout — the single-player one overrides the player names with "player".
+    // Keeping LIVE_OBSERVER mode and the header's game-info slots makes that call report the
+    // streamer's game truthfully, exactly like a normal replay that floats in PLAYBACK mode
+    // until the next game starts. Safe to call when there was no session: the teardown is a
+    // no-op on a recorder that never opened a file.
     if (TheRecorder)
-        TheRecorder->reset();
+        TheRecorder->endLivePlayback();
 
     // Every way a session ends returns the player to the shell (stream end, exit game, join
     // aborted), and the shell map is the shell's backdrop. This restore used to live only in

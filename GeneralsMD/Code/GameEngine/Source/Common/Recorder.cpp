@@ -523,6 +523,30 @@ Bool RecorderClass::liveStreamEnded() const {
 }
 
 /**
+ * Teardown for a live-observer session that keeps the recorder looking like a finished replay.
+ * Closes the live file, clears its name and parks the playback cursor (updatePlayback()
+ * returns immediately once m_nextFrame is -1), but deliberately does NOT reset() the rest of
+ * the state: the score screen runs right after the session ends (pushed from clearGameData())
+ * and consults TheRecorder->isMultiplayer() to pick between the multiplayer and the
+ * single-player layout — the single-player one overrides the player names with "player". The
+ * LIVE_OBSERVER mode and the header's game-info slots are what make isMultiplayer() report
+ * the streamer's game truthfully, exactly like a normal replay that floats in PLAYBACK mode
+ * until the next game starts. The next startRecording()/playbackFile() resets the recorder
+ * itself. Safe to call when there was no session: m_file is null and this is a no-op.
+ */
+void RecorderClass::endLivePlayback()
+{
+	if (m_file != nullptr)
+	{
+		m_file->close();
+		m_file = nullptr;
+	}
+	m_fileName.clear();
+	m_currentReplayFilename.clear();
+	m_nextFrame = (UnsignedInt)-1;
+}
+
+/**
  * Stop the currently running playback. This is probably due either to the user exiting out of the playback or
  * reaching the end of the playback file.
  */
