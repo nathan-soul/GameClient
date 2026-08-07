@@ -320,7 +320,10 @@ public:
 		PROD
 	};
 
-#if defined(USE_TEST_ENV)
+#if defined(USE_BATTY_ENV)
+	const static EEnvironment g_Environment = EEnvironment::DEV;
+	#pragma message ("Building for DEV environment (batty: " GENERALS_ONLINE_BATTY_API_HOST ")")
+#elif defined(USE_TEST_ENV)
 	const static EEnvironment g_Environment = EEnvironment::TEST;
 	#pragma message ("Building for TEST environment")
 #elif defined(USE_DEBUG_ON_LIVE_SERVER)
@@ -329,11 +332,7 @@ public:
 #else
 	#if defined(_DEBUG)
 		const static EEnvironment g_Environment = EEnvironment::DEV;
-		#if defined(USE_BATTY_ENV)
-			#pragma message ("Building for DEV environment (batty: " GENERALS_ONLINE_BATTY_API_HOST ")")
-		#else
-			#pragma message ("Building for DEV environment (localhost:9000)")
-		#endif
+		#pragma message ("Building for DEV environment (localhost:9000)")
 	#else
 		const static EEnvironment g_Environment = EEnvironment::PROD;
 		#pragma message ("Building for PROD environment")

@@ -30,14 +30,10 @@
 #endif
 
 // Point the DEV environment at the batty test deployment instead of a GO service running on
-// this machine. Debug-only, and Debug is required rather than incidental: it is what selects
-// the DEV environment, what makes GenerateGamecode() return the fixed ILOVECODE that batty's
-// Debug GO build accepts (the browser login is compiled out on that path), and what makes GO
-// skip the exe CRC check that would otherwise reject a locally built client.
-// Comment this out to go back to a GO service on localhost.
-#if defined(_DEBUG)
+// this machine. Kept on for every build on the custom-auth branch so the client always talks
+// to the custom-auth test services at batty, regardless of how it is compiled.
+// Comment this out to go back to the standard localhost / production endpoints.
 #define USE_BATTY_ENV 1
-#endif
 
 // Host for USE_BATTY_ENV. Traefik serves GO under /go on this name and strips the prefix, so
 // the service still sees its own /env/... routes. The relay lives beside it under /relay, but
