@@ -243,16 +243,21 @@ static GameWindow *textEntryStreamDelay = NULL;
 static GameWindow *staticTextStreamDelay = NULL;
 
 /// The delay only means anything when the game is being streamed, so grey it out otherwise.
+/// It is also host-editable only: the value is a lobby property set by the host, so members
+/// always see it read-only regardless of the streaming checkbox.
 static void refreshStreamControls(void)
 {
 	if (checkBoxStreamGame == NULL)
 		return;
 
 	const Bool streaming = GadgetCheckBoxIsChecked(checkBoxStreamGame);
+	NGMP_OnlineServices_LobbyInterface* pLobbyInterface =
+		NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
+	const Bool delayEditable = streaming && pLobbyInterface && pLobbyInterface->IsHost();
 	if (textEntryStreamDelay)
-		textEntryStreamDelay->winEnable(streaming);
+		textEntryStreamDelay->winEnable(delayEditable);
 	if (staticTextStreamDelay)
-		staticTextStreamDelay->winEnable(streaming);
+		staticTextStreamDelay->winEnable(delayEditable);
 }
 
 /// Validate and store the delay the user typed. Rejects rather than clamps: silently
@@ -298,6 +303,16 @@ static void commitStreamDelayEntry(void)
 	OptionPreferences optionPref;
 	optionPref.setLiveStreamDelaySeconds(seconds);
 	optionPref.write();
+
+	// The broadcast delay is a lobby property: the host's choice is stored by GO and
+	// broadcast to every member, whose screens show it read-only. A non-host never gets here
+	// (its field is disabled), but the check mirrors the service-side permission anyway.
+	NGMP_OnlineServices_LobbyInterface* pLobbyInterface =
+		NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
+	if (pLobbyInterface != nullptr && pLobbyInterface->IsInLobby() && pLobbyInterface->IsHost())
+	{
+		pLobbyInterface->UpdateCurrentLobby_StreamDelay(seconds);
+	}
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -1695,11 +1710,28 @@ void InitWOLGameGadgets()
 
     if (textEntryStreamDelay)
     {
+      // The broadcast delay is a lobby property chosen by the host. The host's field is
+      // editable and posts its value to GO (see commitStreamDelayEntry); everyone else sees
+      // the host's value read-only — the lobby cache is fresh here because this screen is
+      // entered right after the lobby update that carried it.
+      const Bool isHost = pLobbyInterface ? pLobbyInterface->IsHost() : FALSE;
+      Int delaySeconds = LIVE_DELAY_SECONDS_DEFAULT;
+      if (pLobbyInterface && pLobbyInterface->IsInLobby() &&
+        pLobbyInterface->GetCurrentLobby().stream_delay_seconds >= 0)
+      {
+        delaySeconds = pLobbyInterface->GetCurrentLobby().stream_delay_seconds;
+      }
+      else if (TheGlobalData)
+      {
+        delaySeconds = TheGlobalData->m_liveStreamDelaySeconds;
+      }
+
       UnicodeString delayText;
-      delayText.format(L"%d", TheGlobalData
-        ? TheGlobalData->m_liveStreamDelaySeconds
-        : (Int)LIVE_DELAY_SECONDS_DEFAULT);
+      delayText.format(L"%d", delaySeconds);
       GadgetTextEntrySetText(textEntryStreamDelay, delayText);
+      textEntryStreamDelay->winEnable(isHost);
+      if (staticTextStreamDelay)
+        staticTextStreamDelay->winEnable(isHost);
     }
 
     refreshStreamControls();

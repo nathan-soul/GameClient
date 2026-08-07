@@ -146,7 +146,11 @@ void PrepareLiveStreamRegistration()
 	if (registration.isHost)
 	{
 		registration.lobbyJson = BuildLiveStreamLobbyJson(lobby);
-		registration.delaySeconds = TheGlobalData->m_liveStreamDelaySeconds;
+		// The delay is a lobby property set by the host in the game-setup screen; fall back to
+		// the local preference only when GO has never been told one.
+		registration.delaySeconds = (lobby.stream_delay_seconds >= 0)
+			? lobby.stream_delay_seconds
+			: TheGlobalData->m_liveStreamDelaySeconds;
 	}
 
 	NGMP_OnlineServices_AuthInterface* pAuthInterface =
@@ -215,7 +219,9 @@ enum class ELobbyUpdateField
 	AI_TEAM = 15,
 	AI_START_POS = 16,
 	MAX_CAMERA_HEIGHT = 17,
-	JOINABILITY = 18
+	JOINABILITY = 18,
+	// 19 is HOST_ACTION_BULK_SLOT_UPDATE on the service (never sent by the client).
+	LOBBY_STREAM_DELAY = 20
 };
 
 void NGMP_OnlineServices_LobbyInterface::UpdateCurrentLobby_Map(AsciiString strMap, AsciiString strMapPath, bool bIsOfficial, int newMaxPlayers)
@@ -293,6 +299,33 @@ void NGMP_OnlineServices_LobbyInterface::UpdateCurrentLobby_StartingCash(Unsigne
 	NGMP_OnlineServicesManager::GetInstance()->GetHTTPManager()->SendPOSTRequest(strURI.c_str(), EIPProtocolVersion::DONT_CARE, mapHeaders, strPostData.c_str(), [=](bool bSuccess, int statusCode, std::string strBody, HTTPRequest* pReq)
 		{
 
+		});
+}
+
+void NGMP_OnlineServices_LobbyInterface::UpdateCurrentLobby_StreamDelay(Int streamDelaySeconds)
+{
+	// Host-only: the broadcast delay is a lobby property, not a per-client option. GO stores
+	// it on the lobby and broadcasts it, so every member's UI can show the same read-only
+	// value and the host's relay registration reports it when the match starts.
+	ClearAutoReadyCountdown();
+	if (TheNGMPGame && TheNGMPGame->IsCountdownStarted())
+		TheNGMPGame->StopCountdown();
+
+	std::string strURI = std::format("{}/{}", NGMP_OnlineServicesManager::GetAPIEndpoint("Lobby"), m_CurrentLobby.lobbyID);
+	std::map<std::string, std::string> mapHeaders;
+
+	nlohmann::json j;
+	j["field"] = ELobbyUpdateField::LOBBY_STREAM_DELAY;
+	j["delay_seconds"] = streamDelaySeconds;
+	std::string strPostData = j.dump();
+
+	NGMP_OnlineServicesManager::GetInstance()->GetHTTPManager()->SendPOSTRequest(strURI.c_str(), EIPProtocolVersion::DONT_CARE, mapHeaders, strPostData.c_str(), [=](bool bSuccess, int statusCode, std::string strBody, HTTPRequest* pReq)
+		{
+			if (bSuccess && statusCode == 200)
+			{
+				// Keep the local cache authoritative for the relay registration.
+				m_CurrentLobby.stream_delay_seconds = streamDelaySeconds;
+			}
 		});
 }
 
@@ -699,6 +732,12 @@ void NGMP_OnlineServices_LobbyInterface::SearchForLobbies(std::function<void()> 
 				lobbyEntryIter["MatchID"].get_to(lobbyEntry.match_id);
 				lobbyEntryIter["LobbyType"].get_to(lobbyEntry.lobby_type);
 				lobbyEntryIter["Region"].get_to(lobbyEntry.region);
+				// StreamDelaySeconds is null until the host has chosen a broadcast delay.
+				if (lobbyEntryIter.contains("StreamDelaySeconds") &&
+					lobbyEntryIter["StreamDelaySeconds"].is_number())
+				{
+					lobbyEntryIter["StreamDelaySeconds"].get_to(lobbyEntry.stream_delay_seconds);
+				}
 
 				// attach latency
 				if (latencyIndex < vecLatencies.size())
@@ -964,6 +1003,12 @@ void NGMP_OnlineServices_LobbyInterface::UpdateRoomDataCache(std::function<void(
 						lobbyEntryIter["MatchID"].get_to(lobbyEntry.match_id);
 						lobbyEntryIter["LobbyType"].get_to(lobbyEntry.lobby_type);
 						lobbyEntryIter["Region"].get_to(lobbyEntry.region);
+						// StreamDelaySeconds is null until the host has chosen a broadcast delay.
+						if (lobbyEntryIter.contains("StreamDelaySeconds") &&
+							lobbyEntryIter["StreamDelaySeconds"].is_number())
+						{
+							lobbyEntryIter["StreamDelaySeconds"].get_to(lobbyEntry.stream_delay_seconds);
+						}
 
 						if (lobbyEntry.lobby_type == ELobbyType::QuickMatch)
 						{

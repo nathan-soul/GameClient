@@ -77,6 +77,11 @@ struct LobbyEntry
 
 	std::string region;
 	int latency = 0;
+
+	// Host-chosen live-stream broadcast delay in seconds; -1 when GO has not been told one.
+	// Written by the host from the game-setup screen, broadcast to members by GO, and read by
+	// the host's relay registration when the match starts.
+	int stream_delay_seconds = -1;
 };
 
 /// Assemble the live-stream relay registration from the lobby the local player is currently in,
@@ -181,6 +186,9 @@ public:
 	void UpdateCurrentLobby_Map(AsciiString strMap, AsciiString strMapPath, bool bIsOfficial, int newMaxPlayers);
 	void UpdateCurrentLobby_LimitSuperweapons(bool bLimitSuperweapons);
 	void UpdateCurrentLobby_StartingCash(UnsignedInt startingCashValue);
+	/// Host-only: set the lobby's live-stream broadcast delay. GO stores and broadcasts it, so
+	/// every member sees the same read-only value and the host's relay registration reports it.
+	void UpdateCurrentLobby_StreamDelay(Int streamDelaySeconds);
 
 	void UpdateCurrentLobby_HasMap();
 
