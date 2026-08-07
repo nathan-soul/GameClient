@@ -212,12 +212,12 @@ static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiStri
 
 	if (!success || statusCode != 200)
 	{
-		// Watching now needs a GeneralsOnline session, because GO is what admits an observer
-		// to a stream. Say so rather than blaming the connection.
-		const Bool signedOut = (statusCode == 401 || statusCode == 403 || liveServicesAuthToken().empty());
+		// No "sign in to watch" case any more: this screen is only reachable from the Online
+		// welcome menu, so a session always exists by the time the list is fetched. A failure
+		// here is a failure to reach GO, and saying anything else would send the player looking
+		// for a login they have already done.
 		GadgetListBoxAddEntryText(listboxReplayFiles,
-			signedOut ? UnicodeString(L"Sign in to GeneralsOnline to watch live games")
-					  : UnicodeString(L"Could not reach GeneralsOnline"),
+			UnicodeString(L"Could not reach GeneralsOnline"),
 			GameMakeColor(255, 120, 120, 255), -1);
 		return;
 	}

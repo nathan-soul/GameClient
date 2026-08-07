@@ -25,6 +25,7 @@
 #include "Common/GlobalData.h"
 #include "Common/FileSystem.h"
 #include "Common/file.h"
+#include "GameLogic/GameLogic.h"	// the buffering gate pauses the game; see updatePlaybackGate
 #include "GameClient/ClientInstance.h"
 #include "GameNetwork/GeneralsOnline/NGMP_interfaces.h"
 #include "GameNetwork/GeneralsOnline/json.hpp"
@@ -94,10 +95,23 @@ LiveObserver::LiveObserver()
     , m_safeReadOffset(0)
     , m_parseAbsOffset(0)
     , m_parseCorrupt(false)
+    , m_holdPlayback(FALSE)
+    , m_preRollComplete(FALSE)
+    , m_autoPaused(FALSE)
+    , m_userPaused(FALSE)
+    , m_stalled(FALSE)
+    , m_playbackStarted(FALSE)
+    , m_lastSeenLiveEdge(0)
+    , m_lastLiveEdgeChangeMs(timeGetTime())
+    , m_desyncFrame(0)
+    , m_delaySeconds(LIVE_DELAY_SECONDS_DEFAULT)
     , m_liveFile(nullptr)
     , m_curlEasy(nullptr)
     , m_curlMulti(nullptr)
 {
+    // Every field above is session state, and this constructor is the only place it is ever
+    // initialised. That is the point of the object: a session begins when one is created and
+    // ends when it is destroyed, so there is no "reset the previous session" step to forget.
 }
 
 // ============================================================================
@@ -389,6 +403,110 @@ Bool liveRelayFetchInFlight()
 }
 
 // ============================================================================
+// Replay-record scanner
+// ============================================================================
+//
+// TheSuperHackers @feature One replay record on disk is laid out as:
+//   [UnsignedInt frame][GameMessage::Type type][Int playerIndex][UnsignedByte numTypes]
+//   { [UnsignedByte argType][UnsignedByte numArgs] } x numTypes
+//   [argument payload]
+//
+// This has to agree byte-for-byte with RecorderClass::appendNextCommand(), which consumes those
+// records during playback. It lived in Recorder.cpp for exactly that reason, but the only caller
+// is advanceParseCursor() below, on this file's network thread — so keeping it there put a
+// hundred lines of observer parsing in a class that never calls it. The coupling is a comment,
+// not a location: if appendNextCommand()/readArgument() ever change what they read, change this
+// with them.
+//
+// It fails closed. An unparseable record stalls the watermark rather than poisoning it — the old
+// probeLiveEdge() instead treated an unrecognised argument type as zero-width, which desynced the
+// parse and made it report float payload bytes as frame numbers.
+
+enum ScanRecordResult CPP_11(: Int)
+{
+    SCANRECORD_OK,              ///< a complete record is present; outSize/outFrame are valid
+    SCANRECORD_INCOMPLETE,      ///< the buffer holds a valid prefix — more bytes needed
+    SCANRECORD_CORRUPT          ///< unparseable (e.g. unknown argument type)
+};
+
+// Size of one replay argument on disk. Must match RecorderClass::readArgument() exactly — that
+// function is the authority on what gets read for each type. Returns -1 for anything
+// unrecognised so callers can fail closed instead of skipping zero bytes and desyncing the rest
+// of the parse.
+static Int replayArgumentSize(UnsignedByte argType)
+{
+    switch ((GameMessageArgumentDataType)argType) {
+        case ARGUMENTDATATYPE_INTEGER:      return sizeof(Int);
+        case ARGUMENTDATATYPE_REAL:         return sizeof(Real);
+        case ARGUMENTDATATYPE_BOOLEAN:      return sizeof(Bool);
+        case ARGUMENTDATATYPE_OBJECTID:     return sizeof(ObjectID);
+        case ARGUMENTDATATYPE_DRAWABLEID:   return sizeof(DrawableID);
+        case ARGUMENTDATATYPE_TEAMID:       return sizeof(UnsignedInt);
+        case ARGUMENTDATATYPE_LOCATION:     return sizeof(Coord3D);
+        case ARGUMENTDATATYPE_PIXEL:        return sizeof(ICoord2D);
+        case ARGUMENTDATATYPE_PIXELREGION:  return sizeof(IRegion2D);
+        case ARGUMENTDATATYPE_TIMESTAMP:    return sizeof(UnsignedInt);
+        case ARGUMENTDATATYPE_WIDECHAR:     return sizeof(WideChar);
+        default:                            return -1;
+    }
+}
+
+/// Scan one replay record from buf[0..len). Never reads past len. outSize/outFrame may be null.
+static ScanRecordResult scanReplayRecord(const unsigned char* buf, Int len, Int* outSize, UnsignedInt* outFrame)
+{
+    // numTypes and numArgs are single bytes, so a well-formed record cannot exceed
+    // 9 + 255*2 + 255*255*sizeof(IRegion2D) bytes. Anything claiming more than this is
+    // misparsed data rather than a record we are merely waiting on — say so, instead of
+    // stalling forever waiting for bytes that will never make it complete.
+    const Int MAX_SANE_RECORD_SIZE = 2 * 1024 * 1024;
+
+    const Int fixedSize = sizeof(UnsignedInt) + sizeof(GameMessage::Type) + sizeof(Int) + sizeof(UnsignedByte);
+    if (len < fixedSize)
+        return SCANRECORD_INCOMPLETE;
+
+    UnsignedInt frame;
+    memcpy(&frame, buf, sizeof(frame));
+
+    Int pos = sizeof(UnsignedInt) + sizeof(GameMessage::Type) + sizeof(Int);
+    UnsignedByte numTypes = buf[pos];
+    pos += sizeof(UnsignedByte);
+
+    // All (argType, numArgs) pairs are written consecutively, and only then the argument
+    // payload for every type in order — see appendNextCommand(), which reads the full pair
+    // list into the parser before its readArgument() loop. Accumulate the payload size and
+    // add it once, after the pair list. (The old probeLiveEdge() skipped each type's payload
+    // inside this loop instead, which is correct only when numTypes == 1 and desynced the
+    // parse for every message carrying two or more argument types.)
+    Int payloadSize = 0;
+    for (UnsignedByte i = 0; i < numTypes; ++i) {
+        if (pos + 2 > len)
+            return SCANRECORD_INCOMPLETE;
+
+        UnsignedByte argType = buf[pos];
+        UnsignedByte numArgs = buf[pos + 1];
+        pos += 2;
+
+        Int argSize = replayArgumentSize(argType);
+        if (argSize < 0)
+            return SCANRECORD_CORRUPT;
+
+        payloadSize += argSize * (Int)numArgs;
+        if (payloadSize > MAX_SANE_RECORD_SIZE)
+            return SCANRECORD_CORRUPT;
+    }
+
+    pos += payloadSize;
+    if (pos > len)
+        return SCANRECORD_INCOMPLETE;
+
+    if (outSize)
+        *outSize = pos;
+    if (outFrame)
+        *outFrame = frame;
+    return SCANRECORD_OK;
+}
+
+// ============================================================================
 // Parse cursor — publishes the live-edge and safe-read watermarks
 // ============================================================================
 
@@ -463,14 +581,181 @@ void LiveObserver::advanceParseCursor(Int chunkOffset, const unsigned char* data
     }
 }
 
+// ============================================================================
+// Buffering gate
+// ============================================================================
+//
+// The observer never plays closer to the live game than the broadcast delay. Holding it
+// there is the whole feature, and the decision is made here because every input to it —
+// the delay, the live edge, whether the initial buffer has been built — belongs to this
+// session. The Recorder only carries out what this decides.
+
+void LiveObserver::updatePlaybackGate(UnsignedInt curFrame)
+{
+    // Never hold the game before it has actually started. The map load and object creation
+    // run inside GameLogic::update() (see the m_startNewGame branch there), and the pause
+    // stops update() from being called at all — so pausing this early means the game never
+    // starts, while TheGameClient keeps updating above the halt. That mismatch is what made
+    // a pre-roll join glitch, whereas joining after the buffer was already full was fine.
+    // Frames barely advance before the start completes, so nothing is lost by waiting.
+    // The warmup extends the same reasoning past the start itself: the scene is not composed
+    // until logic has run for a few ticks, and a hold at frame 1 renders nothing at all —
+    // not the map, and not the buffering countdown that is supposed to explain the wait.
+    if (TheGameLogic == nullptr || !TheGameLogic->isInGame() || TheGameLogic->isInShellGame()
+        || TheGameLogic->isStartingNewGame()
+        || curFrame < (UnsignedInt)LIVE_PREROLL_WARMUP_FRAMES)
+    {
+        if (TheGameLogic != nullptr && m_autoPaused && TheGameLogic->isGamePaused())
+        {
+            TheGameLogic->setGamePaused(FALSE, FALSE, FALSE);
+            m_autoPaused = FALSE;
+        }
+        // The gate is not being evaluated, so it must not keep reporting a hold from the
+        // last tick it was.
+        m_holdPlayback = FALSE;
+        return;
+    }
+
+    const UnsignedInt liveEdge = getMaxCompleteFrame();
+    const UnsignedInt gap = (liveEdge > curFrame) ? (liveEdge - curFrame) : 0;
+    const UnsignedInt delayFrames = getDelayFrames();
+    const Bool streamEnded = m_streamEnded.load();
+
+    // Existing fast-forward auto-disable, now driven by a live edge that is actually real.
+    if (gap <= delayFrames)
+    {
+        if (TheWritableGlobalData)
+            TheWritableGlobalData->m_TiVOFastMode = FALSE;
+    }
+
+    // Pre-roll: hold playback until the initial buffer has been built once. Sticky for the
+    // rest of the session — after this the delay is maintained by the near-live gate below.
+    // A finished stream is the escape hatch for a game that ends before ever buffering a
+    // full delay; without it a short game would pre-roll-pause forever.
+    if (!m_preRollComplete && (gap >= delayFrames || streamEnded))
+        m_preRollComplete = TRUE;
+
+    // The gate is purely a function of the gap — deliberately not of whether a record
+    // happened to be readable this tick. Holding whenever we are inside the delay window IS
+    // the broadcast delay; an "did we hit EOF" term would also make the two callers of this
+    // function disagree (the poll runs before GameLogic::UPDATE() and cannot know), which
+    // oscillated the pause every tick and let playback creep forward while starved.
+    //
+    // Steady state is therefore a tight sawtooth around the boundary: paused at gap ==
+    // delayFrames, released the moment the source pulls ahead, so the observer tracks the
+    // live game at its own rate while never getting closer than the delay.
+    const Bool preRollGate = !m_preRollComplete;
+    const Bool nearLiveGate = m_preRollComplete && (gap <= delayFrames);
+    m_holdPlayback = (preRollGate || nearLiveGate) && !streamEnded;
+
+    // Distinguish normal delay-holding from a genuine stall for the status bar's benefit.
+    // At the boundary the hold toggles constantly, which is healthy; what the observer
+    // actually wants flagged is the source having stopped producing data altogether.
+    const UnsignedInt nowMs = timeGetTime();
+    if (liveEdge != m_lastSeenLiveEdge)
+    {
+        m_lastSeenLiveEdge = liveEdge;
+        m_lastLiveEdgeChangeMs = nowMs;
+    }
+    m_stalled = m_holdPlayback && !streamEnded && (nowMs - m_lastLiveEdgeChangeMs) > LIVE_STALL_THRESHOLD_MS;
+
+    // The user's intent and ours are independent inputs to one decision, so a manual pause
+    // can never be silently undone by buffering, nor vice versa.
+    const Bool shouldBePaused = m_userPaused || m_holdPlayback;
+    if (shouldBePaused != TheGameLogic->isGamePaused())
+    {
+        TheGameLogic->setGamePaused(shouldBePaused, FALSE, FALSE);
+        m_autoPaused = shouldBePaused && !m_userPaused;
+    }
+}
+
+void LiveObserver::noteDesync(UnsignedInt frame)
+{
+    if (m_desyncFrame != 0)
+        return;
+
+    m_desyncFrame = frame;
+
+    // Logged with the gate's state, because the interesting question about a divergence is
+    // always whether we had run out of data when it happened.
+    liveObserverLog("DESYNC: observer diverged from the stream at frame %u. curFrame=%u liveEdge=%u "
+        "delayFrames=%u holdPlayback=%d stalled=%d preRoll=%d\n",
+        frame, TheGameLogic ? TheGameLogic->getFrame() : 0, getMaxCompleteFrame(), getDelayFrames(),
+        m_holdPlayback ? 1 : 0, m_stalled ? 1 : 0, m_preRollComplete ? 1 : 0);
+}
+
+Int LiveObserver::getPreRollSecondsRemaining() const
+{
+    if (m_preRollComplete)
+        return 0;
+
+    const UnsignedInt curFrame = TheGameLogic ? TheGameLogic->getFrame() : 0;
+    const UnsignedInt liveEdge = getMaxCompleteFrame();
+    const UnsignedInt gap = (liveEdge > curFrame) ? (liveEdge - curFrame) : 0;
+    const UnsignedInt delayFrames = getDelayFrames();
+    if (gap >= delayFrames)
+        return 0;
+
+    // Round up, so the countdown only reads 0 when playback is genuinely about to start.
+    return (Int)((delayFrames - gap + LOGICFRAMES_PER_SECOND - 1) / LOGICFRAMES_PER_SECOND);
+}
+
+Bool LiveObserver::isWithinBroadcastDelay(UnsignedInt curFrame) const
+{
+    const UnsignedInt liveEdge = getMaxCompleteFrame();
+    const UnsignedInt gap = (liveEdge > curFrame) ? (liveEdge - curFrame) : 0;
+    return gap <= getDelayFrames();
+}
+
 LiveObserver::~LiveObserver()
 {
+    // Anything this session paused dies with it. The pause is global game state, so unlike
+    // every other field here it does not simply disappear when the object does — and a
+    // session left holding it would hand the next one a game that is already halted.
+    if (m_autoPaused && TheGameLogic != nullptr && TheGameLogic->isGamePaused())
+        TheGameLogic->setGamePaused(FALSE, FALSE, FALSE);
+
     close();
 }
 
 LiveObserver* createLiveObserver()
 {
     return new LiveObserver();
+}
+
+void liveObserverEndSession(void)
+{
+    liveObserverLog("liveObserverEndSession: observer=%s\n", TheLiveObserver ? "destroying" : "(none)");
+
+    if (TheLiveObserver)
+    {
+        TheLiveObserver->close();
+        delete TheLiveObserver;
+        TheLiveObserver = nullptr;
+    }
+
+    // Closes the playback file, clears its name, and init()s the rest. Safe to call when there
+    // was no session: the Recorder is simply put back to the state it starts in.
+    if (TheRecorder)
+        TheRecorder->reset();
+}
+
+void liveObserverOnGameCleared(void)
+{
+    if (TheLiveObserver == nullptr)
+        return;
+
+    // A session that has not started playing is a session still being set up, and the thing
+    // clearing game data right now is that very setup: playbackFile() unloads the shell map
+    // before it reads the header. Ending the session here would destroy the observer that just
+    // finished connecting - see the declaration in LiveObserver.h.
+    if (!TheLiveObserver->hasPlaybackStarted())
+    {
+        liveObserverLog("liveObserverOnGameCleared: session is still starting, keeping it\n");
+        return;
+    }
+
+    liveObserverEndSession();
 }
 
 // ============================================================================
@@ -752,19 +1037,19 @@ void LiveObserver::handleFrame(unsigned char type, const char* payload, size_t l
         liveObserverLog("LiveObserver: ROLE received: %s\n", json.c_str());
 
         const char* delayStart = strstr(json.c_str(), "\"delay_seconds\":");
-        if (delayStart && TheRecorder)
+        if (delayStart)
         {
             delayStart += 16; // skip "delay_seconds":
             Int delaySeconds = (Int)strtol(delayStart, nullptr, 10);
             if (delaySeconds >= 0 && delaySeconds <= LIVE_DELAY_SECONDS_MAX)
             {
-                TheRecorder->setLiveDelaySeconds((UnsignedInt)delaySeconds);
+                m_delaySeconds.store((UnsignedInt)delaySeconds);
                 liveObserverLog("LiveObserver: broadcast delay set to %d seconds\n", delaySeconds);
             }
             else
             {
                 liveObserverLog("LiveObserver: ignoring out-of-range delay_seconds=%d, keeping %u\n",
-                    delaySeconds, TheRecorder->getLiveDelaySeconds());
+                    delaySeconds, m_delaySeconds.load());
             }
         }
         // No delay_seconds (older relay) simply leaves the built-in default in place.
@@ -775,9 +1060,6 @@ void LiveObserver::handleFrame(unsigned char type, const char* payload, size_t l
     {
         liveObserverLog("LiveObserver: END received\n");
         m_streamEnded.store(true);
-
-        if (TheRecorder)
-            TheRecorder->setStreamEnded(TRUE);
 
         if (m_liveFile)
         {
@@ -795,8 +1077,6 @@ void LiveObserver::handleFrame(unsigned char type, const char* payload, size_t l
             errMsg.set(payload, len);
         liveObserverLog("LiveObserver: ERROR from relay: %s\n", errMsg.str());
         m_streamEnded.store(true);
-        if (TheRecorder)
-            TheRecorder->setStreamEnded(TRUE);
         break;
     }
 

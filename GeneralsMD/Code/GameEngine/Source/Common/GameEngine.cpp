@@ -392,8 +392,8 @@ Bool GameEngine::isGameHalted()
 		// The cost was that setGamePaused() froze nothing at all for an observer: frames kept
 		// advancing while isGamePaused() reported true, so neither the broadcast delay nor a
 		// manual P could actually hold playback back. The deadlock is now broken at the source
-		// — RecorderClass::updateLiveStreamPoll() runs from GameEngine::update(), outside this
-		// halt — so the pause is honoured here like any other.
+		// — GameEngine::update() re-evaluates LiveObserver's gate outside this halt — so the
+		// pause is honoured here like any other.
 		if (TheGameLogic != nullptr && TheGameLogic->isGamePaused())
 			return true;
 	}
@@ -1076,8 +1076,9 @@ void GameEngine::update()
 		// The buffering pause genuinely halts GameLogic::UPDATE(), and updatePlayback() —
 		// which would clear that pause — only runs from inside it. Polling here breaks the
 		// cycle: it re-reads the live edge and lifts the pause once enough data has arrived.
-		if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
-			TheRecorder->updateLiveStreamPoll();
+		if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER
+			&& TheLiveObserver && TheGameLogic)
+			TheLiveObserver->updatePlaybackGate(TheGameLogic->getFrame());
 #endif
 
 		const Bool canUpdate = canUpdateGameLogic(FramePacer::IgnoreFrozenTime | FramePacer::IgnoreHaltedGame);

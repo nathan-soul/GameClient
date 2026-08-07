@@ -70,3 +70,4 @@ __pycache__/
 
 ## Local build output
 dist/
+build-win32-debug.log

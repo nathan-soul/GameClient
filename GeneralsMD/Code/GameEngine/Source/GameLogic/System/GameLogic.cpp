@@ -2905,13 +2905,12 @@ void GameLogic::processCommandList(CommandList* list)
 		logicMessageDispatcher(msg, NULL);
 	}
 
-	if (m_shouldValidateCRCs && !TheNetwork->sawCRCMismatch() && !(TheRecorder && (TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER || TheRecorder->isLiveStream())))
+	// A live observer is not a network peer, so the per-player CRC agreement check below has
+	// nothing to agree with. Its own divergence from the stream is caught by
+	// RecorderClass::handleCRCMessage instead.
+	if (m_shouldValidateCRCs && !TheNetwork->sawCRCMismatch()
+		&& !(TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER))
 	{
-		// Not gated by LIVE_OBSERVER_LOG: this branch only runs when the session is
-		// NOT a live observer, so the gate would silence it entirely.
-		LIVE_OBSERVER_LOG("GameLogic: CRC validation check (live observer guard passed) mode=%d isLiveStream=%d\n",
-			TheRecorder ? TheRecorder->getMode() : -1,
-			TheRecorder ? (TheRecorder->isLiveStream() ? 1 : 0) : -1);
 		Bool sawCRCMismatch = FALSE;
 		Int numPlayers = 0;
 		DEBUG_ASSERTCRASH(TheNetwork, ("No Network!"));

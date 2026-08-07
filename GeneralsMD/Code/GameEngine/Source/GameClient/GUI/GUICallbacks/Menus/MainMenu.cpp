@@ -156,10 +156,12 @@ static NameKeyType buttonHardID = NAMEKEY_INVALID;
 static NameKeyType buttonDiffBackID = NAMEKEY_INVALID;
 
 #if defined(GENERALS_ONLINE)
-// Live Observer button and dialog controls
-static NameKeyType buttonLiveObserverID = NAMEKEY_INVALID;
-static GameWindow *buttonLiveObserver = nullptr;
-static GameWindow *liveObserverDialogPanel = nullptr;
+// Live-observer session start.
+//
+// The browser that picks a game is reached from the Online flow (see WOLWelcomeMenu), not from
+// here: GO gates the livestream list behind a signed-in session, so an entry point on the
+// signed-out main menu could only ever render "sign in to watch". What remains here is the
+// *start*, because starting a live session is a game start and that machinery is this menu's.
 static Bool startLiveObserverGame = FALSE;
 static AsciiString m_liveObserverStartLobbyId;
 
@@ -170,7 +172,7 @@ static AsciiString m_liveObserverStartLobbyId;
 // GadgetListBoxSetItemData, so nothing depends on the lifetime of a void* we hand the gadget.
 
 // Forward declaration
-static void doLiveObserverGameStart(const AsciiString& lobbyId);
+static Bool doLiveObserverGameStart(const AsciiString& lobbyId);
 
 #endif
 
@@ -475,35 +477,6 @@ static void initLabelVersion()
 	}
 }
 
-#if defined(GENERALS_ONLINE)
-//-------------------------------------------------------------------------------------------------
-/** Find a window with the given id among this parent's descendants only.
- *
- * Deliberately not GameWindowManager::winGetWindowFromId(), which also walks the given window's
- * *siblings* — with a main-menu layout still pending destruction it could hand back the button
- * belonging to the outgoing layout, which is the same class of bug this lookup exists to avoid.
- * The question being asked is strictly "does THIS parent already own one?".
- */
-//-------------------------------------------------------------------------------------------------
-static GameWindow* findDescendantById( GameWindow *parent, Int id )
-{
-	if( parent == nullptr )
-		return nullptr;
-
-	for( GameWindow *child = parent->winGetChild(); child != nullptr; child = child->winGetNext() )
-	{
-		if( child->winGetWindowId() == id )
-			return child;
-
-		GameWindow *nested = findDescendantById( child, id );
-		if( nested != nullptr )
-			return nested;
-	}
-
-	return nullptr;
-}
-#endif
-
 //-------------------------------------------------------------------------------------------------
 /** Initialize the main menu */
 //-------------------------------------------------------------------------------------------------
@@ -633,76 +606,6 @@ void MainMenuInit( WindowLayout *layout, void *userData )
 																									 &instData, nullptr, TRUE );
 #endif
 
-#if defined(GENERALS_ONLINE)
-	// Live Observer button — only show if relay URL is configured
-	if (!TheGlobalData->m_liveStreamRelayUrl.isEmpty())
-	{
-		// Register control IDs
-		buttonLiveObserverID = TheNameKeyGenerator->nameToKey("MainMenu.wnd:ButtonLiveObserver");
-
-		// Create the "Live Observer" button
-		WinInstanceData instDataLive;
-		instDataLive.init();
-		BitSet(instDataLive.m_style, GWS_PUSH_BUTTON | GWS_MOUSE_TRACK);
-		instDataLive.m_textLabelString = "Watch Live";
-		instDataLive.setTooltipText(L"Watch a live game via the relay server");
-
-		// TheSuperHackers @feature 03/08/2026 Sit with Online and Network in the multiplayer
-		// submenu, which is where someone looking for a game to watch would go. Position is
-		// taken from the Network button at runtime rather than hardcoded: this is a .wnd
-		// layout we cannot see from here, and one row below a known button is stable in a way
-		// that absolute coordinates are not.
-		Int liveX = 25, liveY = 240, liveW = 180, liveH = 26;
-		if (buttonNetwork)
-		{
-			buttonNetwork->winGetPosition(&liveX, &liveY);
-			buttonNetwork->winGetSize(&liveW, &liveH);
-			liveY += liveH + 4;
-		}
-
-		// TheSuperHackers @fix 05/08/2026 Ask the window system whether this parent already has
-		// the button, instead of inferring it from a static pointer.
-		//
-		// The pointer cannot answer the question. MainMenuShutdown() nulls it without destroying
-		// anything (see the comment there — destroying is genuinely unsafe during layout
-		// teardown), so "null" means only "shutdown ran", not "the button is gone". When the
-		// shell keeps the layout alive across a menu round-trip, the button survives while the
-		// pointer does not, and init duly created a second one on top of the first: a dead
-		// leftover button, which is the symptom this was supposed to have fixed.
-		//
-		// Giving the button its own window id makes the question answerable. A lookup that finds
-		// nothing means this parent really has no button, whether the layout was rebuilt or a
-		// fresh pointer happens to land on a freed one's address.
-		buttonLiveObserver = findDescendantById(parentMainMenu, (Int)buttonLiveObserverID);
-
-		if (buttonLiveObserver == nullptr)
-		{
-			buttonLiveObserver = TheWindowManager->gogoGadgetPushButton(parentMainMenu,
-				WIN_STATUS_ENABLED | WIN_STATUS_IMAGE,
-				liveX, liveY, liveW, liveH,
-				&instDataLive, nullptr, TRUE);
-
-			// gogoGadget* leaves a code-created gadget with no id of its own, which is what made
-			// it unfindable above. Set it before anything else can look for it.
-			if (buttonLiveObserver)
-			{
-				buttonLiveObserver->winSetWindowId((Int)buttonLiveObserverID);
-
-				// Adopt the real menu's look instead of the placeholder red/yellow that
-				// defaultVisual leaves behind. Guarded: gogoGadget* can fail, and the very next
-				// use of this pointer was already null-checked while this one was not.
-				buttonLiveObserver->winCopyVisualsFrom(buttonOnline);
-			}
-		}
-
-		// The submenu is animated by a transition group defined in MainMenu.wnd, which a
-		// code-created window cannot join. So it is shown and hidden explicitly alongside the
-		// dropdown instead — see the buttonMultiPlayerID / buttonMultiBackID handlers.
-		if (buttonLiveObserver)
-			buttonLiveObserver->winHide(TRUE);
-	}
-#endif
-
 	initLabelVersion();
 
 	//TheShell->registerWithAnimateManager(buttonCampaign, WIN_ANIMATION_SLIDE_LEFT, TRUE, 800);
@@ -797,21 +700,6 @@ void MainMenuShutdown( WindowLayout *layout, void *userData )
 		isShuttingDown = TRUE;
 
 	CancelPatchCheckCallback();
-
-#if defined(GENERALS_ONLINE)
-	// Drop the reference without destroying anything — the layout owns this window and tears it
-	// down with the rest of its children.
-	//
-	// Deliberately not winDestroy(): that is deferred through processDestroyList while the
-	// layout is tearing the same children down, and a crash on returning to the menu is what
-	// came of assuming ownership here.
-	//
-	// Nulling here is only hygiene against a dangling pointer between screens; it is NOT how
-	// MainMenuInit() decides whether to build a button. It cannot be — the layout sometimes
-	// survives this call and takes its button with it. Init looks the button up by id on the
-	// actual parent instead.
-	buttonLiveObserver = nullptr;
-#endif
 
 	// if we are shutting down for an immediate pop, skip the animations
 	Bool popImmediate = *(Bool *)userData;
@@ -1069,12 +957,11 @@ void MainMenuUpdate( WindowLayout *layout, void *userData )
 
 
 #if defined(GENERALS_ONLINE)
-	if (startLiveObserverGame && TheShell->isAnimFinished() && TheTransitionHandler->isFinished())
-	{
-		startLiveObserverGame = FALSE;
-		doLiveObserverGameStart(m_liveObserverStartLobbyId);
-	}
-
+	// Reached when the player returned to the main menu before the session fired. Playback has
+	// already sent MSG_NEW_GAME, so this rejoins the ordinary game-start path only to have
+	// doGameStart() stand the menu down — see the live-observer branch there.
+	if (LiveObserverStartPendingSession())
+		startGame = TRUE;
 #endif
 
 	if (startGame && TheShell->isAnimFinished() && TheTransitionHandler->isFinished())
@@ -1195,7 +1082,10 @@ void StartLiveObserverSession(const AsciiString& lobbyId)
 
 // Initialize the live observer, connect to relay, wait for HEADER,
 // then start live playback via Recorder::playbackFile on the shared file.
-static void doLiveObserverGameStart(const AsciiString& lobbyId)
+//
+// Returns TRUE only when playback actually started, so the shell screen that pumped this can
+// tear itself down and reveal the game. Every failure path leaves no session behind.
+static Bool doLiveObserverGameStart(const AsciiString& lobbyId)
 {
 	liveObserverInitLog(lobbyId.str());
 	liveObserverLog("=== doLiveObserverGameStart (from menu) ===\n");
@@ -1203,26 +1093,17 @@ static void doLiveObserverGameStart(const AsciiString& lobbyId)
 	liveObserverLog("doLiveObserverGameStart: entry — TheNetwork=%p isInMultiplayerGame=%d\n",
 		(void*)TheNetwork, TheGameLogic->isInMultiplayerGame() ? 1 : 0);
 
-	// Clean up any previous LiveObserver that might still be running
-	if (TheLiveObserver)
-	{
-		TheLiveObserver->close();
-		delete TheLiveObserver;
-		TheLiveObserver = nullptr;
-	}
-
-	// Release the Recorder's read handle on the previous session's file too. LiveObserver
-	// only closes its own write handle, and the live file is named after the streamer's
-	// game — so rejoining a game we already watched targets the same path, which
-	// openLiveFile() cannot delete or recreate while this handle is still open.
-	if (TheRecorder)
-		TheRecorder->endLiveObserverSession();
+	// End any previous session outright. This destroys the old LiveObserver and releases the
+	// Recorder's read handle on its file — both are needed, because the live file is named
+	// after the streamer's game, so rejoining a game we already watched targets the same
+	// path, which openLiveFile() cannot delete or recreate while either handle is open.
+	liveObserverEndSession();
 
 	TheLiveObserver = createLiveObserver();
 	if (!TheLiveObserver)
 	{
 		liveObserverLog("doLiveObserverGameStart: createLiveObserver() returned NULL!\n");
-		return;
+		return FALSE;
 	}
 
 	liveObserverLog("doLiveObserverGameStart: connecting to relay...\n");
@@ -1241,10 +1122,8 @@ static void doLiveObserverGameStart(const AsciiString& lobbyId)
 	if (!TheLiveObserver->isReady())
 	{
 		liveObserverLog("doLiveObserverGameStart: FAILED — HEADER not received (timeout)\n");
-		TheLiveObserver->close();
-		delete TheLiveObserver;
-		TheLiveObserver = nullptr;
-		return;
+		liveObserverEndSession();
+		return FALSE;
 	}
 
 	liveObserverLog("doLiveObserverGameStart: HEADER received! Starting live playback...\n");
@@ -1273,14 +1152,28 @@ static void doLiveObserverGameStart(const AsciiString& lobbyId)
 	if (!TheRecorder->startLiveObserverPlayback(filename))
 	{
 		liveObserverLog("doLiveObserverGameStart: FAILED — playbackFile returned false\n");
-		TheLiveObserver->close();
-		delete TheLiveObserver;
-		TheLiveObserver = nullptr;
-		return;
+		liveObserverEndSession();
+		return FALSE;
 	}
 
-	liveObserverLog("doLiveObserverGameStart: playback started, set startGame=TRUE\n");
-	startGame = TRUE;
+	liveObserverLog("doLiveObserverGameStart: playback started\n");
+	return TRUE;
+}
+
+// Declared in LiveObserver.h. Fire a queued session once the shell has settled.
+//
+// The wait matters: doLiveObserverGameStart() blocks for up to 20s on the relay's HEADER and
+// then starts a game, neither of which may happen mid-animation. Which screen is on top does
+// not matter to any of that, which is why this is shared — the browser is reached from the
+// Online flow now, so the screen that has to stand aside afterwards is not always this one.
+// The caller tears itself down when this returns TRUE.
+Bool LiveObserverStartPendingSession(void)
+{
+	if (!startLiveObserverGame || !TheShell->isAnimFinished() || !TheTransitionHandler->isFinished())
+		return FALSE;
+
+	startLiveObserverGame = FALSE;
+	return doLiveObserverGameStart(m_liveObserverStartLobbyId);
 }
 #endif
 
@@ -1612,10 +1505,6 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				TheTransitionHandler->remove("MainMenuMultiPlayerMenu");
 				TheTransitionHandler->reverse("MainMenuMultiPlayerMenuReverse");
 				TheTransitionHandler->setGroup("MainMenuDefaultMenu");
-#if defined(GENERALS_ONLINE)
-				if (buttonLiveObserver)
-					buttonLiveObserver->winHide(TRUE);
-#endif
 			}
 			else if( controlID == buttonLoadReplayBackID )
 			{
@@ -1650,10 +1539,6 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				TheTransitionHandler->remove("MainMenuDefaultMenu");
 				TheTransitionHandler->reverse("MainMenuDefaultMenuBack");
 				TheTransitionHandler->setGroup("MainMenuMultiPlayerMenu");
-#if defined(GENERALS_ONLINE)
-				if (buttonLiveObserver)
-					buttonLiveObserver->winHide(FALSE);
-#endif
 			}
 			else if( controlID == buttonLoadReplayID)
 			{
@@ -1726,10 +1611,6 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				buttonPushed = TRUE;
 				dropDownWindows[DROPDOWN_MULTIPLAYER]->winHide(FALSE);
 				TheTransitionHandler->reverse("MainMenuMultiPlayerMenuTransitionToNext");
-#if defined(GENERALS_ONLINE)
-				if (buttonLiveObserver)
-					buttonLiveObserver->winHide(TRUE);
-#endif
 
 				StartPatchCheck();
 //				localAnimateWindowManager->reverseAnimateWindow();
@@ -1744,10 +1625,6 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				buttonPushed = TRUE;
 				dropDownWindows[DROPDOWN_MULTIPLAYER]->winHide(FALSE);
 				TheTransitionHandler->reverse("MainMenuMultiPlayerMenuTransitionToNext");
-#if defined(GENERALS_ONLINE)
-				if (buttonLiveObserver)
-					buttonLiveObserver->winHide(TRUE);
-#endif
 				TheShell->push( "Menus/LanLobbyMenu.wnd" );
 
 				TheScriptEngine->signalUIInteract(TheShellHookNames[SHELL_SCRIPT_HOOK_MAIN_MENU_NETWORK_SELECTED]);
@@ -1949,19 +1826,6 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				diffReverseSide();
 				campaignSelected = FALSE;
 			}
-			#if defined(GENERALS_ONLINE)
-			else if(control == buttonLiveObserver)
-			{
-				// The browser reuses the replay menu's layout, so it gets the real frame, listbox
-				// and hover states instead of the placeholder look a code-built dialog had.
-				if(dontAllowTransitions)
-					break;
-				dontAllowTransitions = TRUE;
-				buttonPushed = TRUE;
-				ReplayMenuEnterLiveGamesMode();
-				TheShell->push("Menus/ReplayMenu.wnd");
-			}
-			#endif
 
 
 			break;
