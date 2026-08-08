@@ -770,6 +770,48 @@ void ConnectionManager::processDisconnectChat(NetDisconnectChatCommandMsg *msg)
 	TheDisconnectMenu->showChat(unitext); // <-- need to implement this
 }
 
+// ------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------
+#if defined(GENERALS_ONLINE)
+// True when a chat's recipient mask covers the whole room — i.e. the sender used the
+// "everyone" channel. Allies-only masks cover (self + allies) and self-only masks cover
+// one bit, so both fail this. Mirrors the sender's own mask construction in InGameChat.cpp
+// (slots with a player), with ONE tolerated missing bit: the sender's EVERYONE mask skips
+// the slots the sender muted, and mute state is sender-local and unknowable here — demanding
+// full coverage silently dropped all public chat of any player who muted someone. Team/self
+// masks still fail: they miss far more than one bit in anything larger than 1v1 (in 1v1 the
+// everyone/allies masks are identical anyway — muting your only opponent makes them the
+// same message). See plans/relay/live-observer-chat.md.
+static Bool isGlobalChatMask(Int playerMask)
+{
+	Int everyoneMask = 0;
+	Int count = 0;
+	for (Int i = 0; i < MAX_SLOTS; ++i)
+	{
+		AsciiString playerName;
+		playerName.format("player%d", i);
+		const Player* p = ThePlayerList->findPlayerWithNameKey(
+			TheNameKeyGenerator->nameToKey(playerName));
+		if (p)
+		{
+			everyoneMask |= (1 << i);
+			++count;
+		}
+	}
+	if (count <= 1)
+		return (playerMask & everyoneMask) == everyoneMask;
+
+	Int bits = 0;
+	Int masked = playerMask & everyoneMask;
+	while (masked)
+	{
+		masked &= (masked - 1);
+		++bits;
+	}
+	return bits >= count - 1;
+}
+#endif // GENERALS_ONLINE
+
 void ConnectionManager::processChat(NetChatCommandMsg *msg)
 {
 	UnicodeString unitext;
@@ -815,6 +857,18 @@ void ConnectionManager::processChat(NetChatCommandMsg *msg)
 		// feedback for received chat messages in-game
 		AudioEventRTS audioEvent("GUICommunicatorIncoming");
 		TheAudio->addAudioEvent(&audioEvent);
+
+#if defined(GENERALS_ONLINE)
+		// Live-stream capture: forward the chat exactly as displayed, but only when it is
+		// addressed to everyone — allies-only and self-only chat stay private. The frame is
+		// the message's synchronized execution frame (NOT TheGameLogic->getFrame()): the
+		// sender's immediate processChat runs a frame or two ahead of the receivers', and
+		// every source's relay payload must be byte-identical for the relay's opaque dedupe
+		// to collapse the all-push copies — a getFrame() capture made two sources' copies
+		// differ and the observer saw every message twice. See plans/relay/live-observer-chat.md.
+		if (TheRecorder && isGlobalChatMask(msg->getPlayerMask()))
+			TheRecorder->onChatMessage(msg->getExecutionFrame(), unitext, player->getPlayerColor());
+#endif
 	}
 }
 

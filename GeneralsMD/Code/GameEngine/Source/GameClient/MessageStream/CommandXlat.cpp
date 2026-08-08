@@ -98,6 +98,14 @@
 #include "ww3d.h"
 #include "../OnlineServices_Init.h"
 
+// A live-observer session (watching a stream via the relay) runs as a replay game, but its
+// chat window is meaningful: Enter sends to the spectator channel instead of the mesh.
+// See plans/relay/live-observer-spectator-chat.md.
+static Bool IsLiveObserverSession()
+{
+	return TheRecorder != nullptr && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER;
+}
+
 #if defined(RTS_DEBUG)
 /*non-static*/ Real TheSkateDistOverride = 0.0f;
 
@@ -3281,10 +3289,10 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 
 		//-----------------------------------------------------------------------------------------
 	case GameMessage::MSG_META_CHAT_ALLIES:
-		if (TheGameLogic->isInMultiplayerGame() && !TheGameLogic->isInReplayGame())
+		if ((TheGameLogic->isInMultiplayerGame() && !TheGameLogic->isInReplayGame()) || IsLiveObserverSession())
 		{
 			Player* localPlayer = ThePlayerList->getLocalPlayer();
-			if ((localPlayer && localPlayer->isPlayerActive()) || !TheGlobalData->m_netMinPlayers)
+			if ((localPlayer && localPlayer->isPlayerActive()) || !TheGlobalData->m_netMinPlayers || IsLiveObserverSession())
 			{
 				ToggleInGameChat();
 				SetInGameChatType(INGAME_CHAT_ALLIES);
@@ -3295,7 +3303,7 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 
 		//-----------------------------------------------------------------------------------------
 	case GameMessage::MSG_META_CHAT_EVERYONE:
-		if (TheGameLogic->isInMultiplayerGame() && !TheGameLogic->isInReplayGame())
+		if ((TheGameLogic->isInMultiplayerGame() && !TheGameLogic->isInReplayGame()) || IsLiveObserverSession())
 		{
 			Player* localPlayer = ThePlayerList->getLocalPlayer();
 			// TheSuperHackers @tweak skyaero 19/07/2025 Observers can now chat
@@ -4011,10 +4019,31 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 			disp = DESTROY_MESSAGE;
 		}
 
+		// TheSuperHackers @feature 08/08/2026 F7 toggle — spectator chat mode (live
+		// observer). Cycles auto (spoiler-gated) -> forced ON -> off. In auto mode the
+		// live spectator chat is hidden while the observer is far behind the game (the
+		// 5-second spoiler gate); forced ON shows it regardless, spoilers accepted.
+		else if (key == KEY_F7)
+		{
+			if (TheLiveObserver && TheRecorder
+				&& TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
+			{
+				const LiveObserver::SpectatorChatMode mode = TheLiveObserver->toggleSpectatorChatMode();
+				if (TheInGameUI)
+					TheInGameUI->messageNoFormat(
+						mode == LiveObserver::SPECTATOR_CHAT_AUTO
+							? TheGameText->FETCH_OR_SUBSTITUTE("GUI:SpecChatAuto", L"Spectator chat: auto (F7)")
+							: mode == LiveObserver::SPECTATOR_CHAT_FORCED_ON
+								? TheGameText->FETCH_OR_SUBSTITUTE("GUI:SpecChatOn", L"Spectator chat: forced ON (F7)")
+								: TheGameText->FETCH_OR_SUBSTITUTE("GUI:SpecChatOff", L"Spectator chat: OFF (F7)"));
+			}
+			disp = DESTROY_MESSAGE;
+		}
+
 		// TheSuperHackers @feature Forward every raw key-up to any plugin registered for IRenderHooks
 		// (e.g. an observer-overlay plugin toggling its own panels), regardless of whether the engine
 		// already handled this specific key above — plugin hotkeys are chosen by the plugin and are not
-		// expected to collide with the engine's own (F11/F10/F6/F5).
+		// expected to collide with the engine's own (F11/F10/F7/F6/F5).
 		if (GOPluginManager::HasRenderHooks())
 		{
 			uint32_t modifierFlags = 0;

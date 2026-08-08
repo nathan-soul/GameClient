@@ -22,10 +22,12 @@
 
 #include "Common/AsciiString.h"
 #include "Common/GameCommon.h"
+#include "Common/UnicodeString.h"
 #include <thread>
 #include <mutex>
 #include <atomic>
 #include <vector>
+#include <deque>
 #include <string>
 
 class File;
@@ -161,7 +163,59 @@ public:
 	Bool isDesynced() const { return m_desyncFrame != 0; }
 	UnsignedInt getDesyncFrame() const { return m_desyncFrame; }
 
+	// ---- Chat (plans/relay/live-observer-chat.md + live-observer-spectator-chat.md) ----
+
+	/// Manual spectator-chat mode (F7 cycles through these).
+	enum SpectatorChatMode
+	{
+		SPECTATOR_CHAT_AUTO = 0,      ///< spoiler-gated: shown within 5s of the delay boundary
+		SPECTATOR_CHAT_FORCED_ON,     ///< always shown (spoilers accepted)
+		SPECTATOR_CHAT_OFF            ///< never shown
+	};
+
+	/// Pop and display queued chat: player chat (frame-gated: released once the observer's
+	/// playback reaches the streamer's frame) and spectator chat (live, per
+	/// SpectatorChatMode). Called once per game-logic frame from RecorderClass::updatePlayback()
+	/// — including the pre-game phase, where player chat is held and spectator chat is dropped.
+	void pollChatMessages(UnsignedInt curFrame);
+
+	/// Cycle the spectator-chat mode (auto -> forced ON -> off -> auto). Returns the new mode.
+	SpectatorChatMode toggleSpectatorChatMode()
+	{
+		m_spectatorChatMode = (SpectatorChatMode)((m_spectatorChatMode + 1) % 3);
+		return m_spectatorChatMode;
+	}
+	SpectatorChatMode getSpectatorChatMode() const { return m_spectatorChatMode; }
+
+	/// Queue a spectator chat line for the network thread to send to the relay
+	/// (MSG_SPECTATOR_CHAT). The sender's display name is stamped from the signed-in user.
+	void sendSpectatorChat(const UnicodeString& text);
+
 private:
+	// ---- Chat state (plans/relay/live-observer-chat.md + spectator-chat.md) ----
+	// Player chat (case 7): frame-stamped, frame-gated — released when the playback frame
+	// reaches the entry's frame. Spectator chat (case 8): live, spoiler-gated — shown on
+	// arrival when within 5s of the delay boundary, dropped otherwise (never held).
+	struct ChatEntry
+	{
+		UnsignedInt frame;      ///< player chat: streamer-side frame; spectator chat: unused
+		UnsignedInt colorArgb;  ///< display color (sender color for player chat)
+		Bool spectator;         ///< live spectator chat (no frame gate, spoiler gate instead)
+		UnicodeString text;     ///< already-formatted line ("[name] msg" / "[Spec] name: msg")
+	};
+	std::deque<ChatEntry> m_chatQueue;          // written by the network thread (handleFrame)
+	mutable std::mutex m_chatMutex;             // game thread (pollChatMessages) drains
+	std::deque<std::vector<char>> m_outboundChatQueue;  // spectator chat to send
+	mutable std::mutex m_outboundChatMutex;     // network thread drains
+	SpectatorChatMode m_spectatorChatMode;      // F7 cycle: auto / forced on / off
+
+	/// Display one chat entry in the HUD message log (shared player/spectator path).
+	void displayChat(const ChatEntry& entry);
+
+	/// The 5-second spoiler gate for spectator chat: TRUE while the observer is within
+	/// ~5s of the broadcast-delay boundary (effectively watching live).
+	Bool isSpectatorGateOpen(UnsignedInt curFrame) const;
+
 	/// Background thread for network I/O.
 	void networkThreadFunc();
 
@@ -383,7 +437,7 @@ void ReplayMenuEnterLiveGamesMode(void);
 // apart, which is precisely the confusion this tag exists to prevent. Any file using it must
 // include this header — that also brings the LIVE_OBSERVER_LOGGING resolution above, without
 // which logging silently stays off in a DEFAULT build.
-#define LIVE_OBSERVER_BUILD_TAG "2026-08-07-observer-lobby-delay"
+#define LIVE_OBSERVER_BUILD_TAG "2026-08-08-observer-chat"
 
 void liveObserverLog(const char* fmt, ...);
 void liveObserverInitLog(const char* lobbyId);

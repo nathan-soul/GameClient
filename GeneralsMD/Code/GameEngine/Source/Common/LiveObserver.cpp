@@ -27,6 +27,7 @@
 #include "Common/file.h"
 #include "GameLogic/GameLogic.h"	// the buffering gate pauses the game; see updatePlaybackGate
 #include "GameClient/ClientInstance.h"
+#include "GameClient/InGameUI.h"
 #include "GameNetwork/GeneralsOnline/NGMP_interfaces.h"
 #include "GameNetwork/GeneralsOnline/json.hpp"
 
@@ -37,8 +38,10 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cstring>
+#include <cstdlib>
 #include <fstream>		// cacert.pem presence check, see connectToRelay
 #include <string>
+#include <windows.h>
 
 // ============================================================================
 // liveObserverLog
@@ -107,6 +110,7 @@ LiveObserver::LiveObserver()
     , m_lastLiveEdgeChangeMs(timeGetTime())
     , m_desyncFrame(0)
     , m_delaySeconds(LIVE_DELAY_SECONDS_DEFAULT)
+    , m_spectatorChatMode(SPECTATOR_CHAT_AUTO)
     , m_liveFile(nullptr)
     , m_curlEasy(nullptr)
     , m_curlMulti(nullptr)
@@ -997,6 +1001,171 @@ bool LiveObserver::openLiveFile()
 }
 
 // ============================================================================
+// Chat helpers (plans/relay/live-observer-chat.md + live-observer-spectator-chat.md)
+//
+// These three are MIRRORED in LiveStreamer.cpp (wideToUtf8/utf8ToWide/appendU32LE) —
+// keep both copies in sync; like the build tag, they have already drifted once.
+// ============================================================================
+
+static std::string chatWideToUtf8(const UnicodeString& text)
+{
+    const wchar_t* src = text.str();
+    const int len = WideCharToMultiByte(CP_UTF8, 0, src, -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 1)       // nothing but the terminator, or a failure
+        return std::string();
+    std::string out(static_cast<size_t>(len - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, src, -1, &out[0], len, nullptr, nullptr);
+    return out;
+}
+
+static UnicodeString chatUtf8ToWide(const std::string& utf8)
+{
+    const int len = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), nullptr, 0);
+    if (len <= 0)
+        return UnicodeString::TheEmptyString;
+    std::wstring tmp(static_cast<size_t>(len), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), &tmp[0], len);
+    return UnicodeString(tmp.c_str());
+}
+
+static void chatAppendU32LE(std::vector<char>& out, unsigned int value)
+{
+    out.push_back((char)(value & 0xFF));
+    out.push_back((char)((value >> 8) & 0xFF));
+    out.push_back((char)((value >> 16) & 0xFF));
+    out.push_back((char)((value >> 24) & 0xFF));
+}
+
+namespace
+{
+    /// The signed-in user's display name, for spectator chat sends. Cached: the auth
+    /// interface outlives every live-observer session.
+    UnicodeString observerDisplayName()
+    {
+        static UnicodeString s_cached;
+        if (s_cached.isEmpty())
+        {
+            NGMP_OnlineServices_AuthInterface* auth =
+                NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_AuthInterface>();
+            if (auth)
+                s_cached.set(auth->GetDisplayNameW().c_str());
+        }
+        return s_cached;
+    }
+}
+
+/// Fixed spectator-chat display color (light blue) — matches the streamer-side style.
+static const unsigned int SPECTATOR_CHAT_COLOR = 0x72ADF2u;
+
+void LiveObserver::displayChat(const ChatEntry& entry)
+{
+    RGBColor c;
+    c.setFromInt((Int)entry.colorArgb);
+    TheInGameUI->messageColor(true, &c, UnicodeString(L"%ls"), entry.text.str());
+}
+
+Bool LiveObserver::isSpectatorGateOpen(UnsignedInt curFrame) const
+{
+    // The 5-second spoiler rule: live spectator chat is shown only while the observer is
+    // within ~5s of the broadcast-delay boundary, i.e. effectively watching live. Far
+    // behind (pre-roll, stalls, long pauses) the live chat is dropped — it would spoil
+    // the game it describes. See plans/relay/live-observer-spectator-chat.md.
+    const UnsignedInt liveEdge = m_maxCompleteFrame.load();
+    if (liveEdge <= curFrame)
+        return TRUE;    // at or past the live edge — as live as it gets
+    const UnsignedInt gap = liveEdge - curFrame;
+    return gap <= getDelayFrames() + 5 * LOGICFRAMES_PER_SECOND;
+}
+
+void LiveObserver::pollChatMessages(UnsignedInt curFrame)
+{
+    if (!TheInGameUI)
+        return;
+
+    std::deque<ChatEntry> batch;
+    {
+        std::lock_guard<std::mutex> lock(m_chatMutex);
+        if (m_chatQueue.empty())
+            return;
+        batch.swap(m_chatQueue);
+    }
+
+    const Bool interactive = TheGameLogic && TheGameLogic->isInInteractiveGame();
+    const Bool gateOpen = isSpectatorGateOpen(curFrame);
+    std::deque<ChatEntry> holdback;
+    for (auto& entry : batch)
+    {
+        if (entry.spectator)
+        {
+            // Live meta-chat, shown per the F7 mode: auto = inside the spoiler window only,
+            // forced ON = always (spoilers accepted), OFF = never. Outside the window in
+            // auto mode it is dropped, never held — "if you are there during a livestream
+            // you can see chat, otherwise you missed it".
+            Bool showSpectator = FALSE;
+            if (m_spectatorChatMode == SPECTATOR_CHAT_FORCED_ON)
+                showSpectator = interactive;
+            else if (m_spectatorChatMode == SPECTATOR_CHAT_AUTO)
+                showSpectator = interactive && gateOpen;
+            if (showSpectator)
+            {
+                displayChat(entry);
+                liveObserverLog("LiveObserver: displayed spectator chat\n");
+            }
+            else
+            {
+                liveObserverLog("LiveObserver: DROPPED spectator chat (mode=%d interactive=%d gateOpen=%d)\n",
+                    (int)m_spectatorChatMode, (int)interactive, (int)gateOpen);
+            }
+        }
+        else if (interactive && entry.frame <= curFrame)
+        {
+            // Player chat is frame-gated: released exactly when the observed game
+            // reaches the moment the streamer sent it — held behind the same broadcast
+            // delay as the video.
+            displayChat(entry);
+        }
+        else
+        {
+            holdback.push_back(entry);
+        }
+    }
+    if (!holdback.empty())
+    {
+        std::lock_guard<std::mutex> lock(m_chatMutex);
+        // Reinsert at the FRONT: these are the oldest entries and must drain in order.
+        m_chatQueue.insert(m_chatQueue.begin(), holdback.begin(), holdback.end());
+    }
+}
+
+void LiveObserver::sendSpectatorChat(const UnicodeString& text)
+{
+    if (!m_connected.load() || !m_shouldRun.load())
+    {
+        liveObserverLog("LiveObserver::sendSpectatorChat DROPPED (not connected)\n");
+        return;
+    }
+
+    // [nameLen u32 LE][UTF-8 name][textLen u32 LE][UTF-8 text] — see
+    // plans/relay/live-observer-spectator-chat.md.
+    std::string utf8Name = chatWideToUtf8(observerDisplayName());
+    std::string utf8Text = chatWideToUtf8(text);
+    std::vector<char> payload;
+    payload.reserve(8 + utf8Name.size() + utf8Text.size());
+    chatAppendU32LE(payload, (unsigned int)utf8Name.size());
+    payload.insert(payload.end(), utf8Name.begin(), utf8Name.end());
+    chatAppendU32LE(payload, (unsigned int)utf8Text.size());
+    payload.insert(payload.end(), utf8Text.begin(), utf8Text.end());
+
+    std::lock_guard<std::mutex> lock(m_outboundChatMutex);
+    if (m_outboundChatQueue.size() < 100)
+    {
+        m_outboundChatQueue.push_back(payload);
+        liveObserverLog("LiveObserver::sendSpectatorChat queued %zu bytes (name=%zu, text=%zu)\n",
+            payload.size(), utf8Name.size(), utf8Text.size());
+    }
+}
+
+// ============================================================================
 // Frame handler
 // ============================================================================
 
@@ -1166,6 +1335,69 @@ void LiveObserver::handleFrame(unsigned char type, const char* payload, size_t l
             errMsg.set(payload, len);
         liveObserverLog("LiveObserver: ERROR from relay: %s\n", errMsg.str());
         m_streamEnded.store(true);
+        break;
+    }
+
+    case 7: // LIVE_MSG_CHAT — player chat, frame-stamped by the streamer
+    {
+        // [frame u32 LE][textLen u32 LE][UTF-8 text][color u32 LE]
+        if (len < 12)
+            break;
+        const unsigned char* p = (const unsigned char*)payload;
+        unsigned int frame = (unsigned int)p[0]
+            | ((unsigned int)p[1] << 8) | ((unsigned int)p[2] << 16) | ((unsigned int)p[3] << 24);
+        unsigned int textLen = (unsigned int)p[4]
+            | ((unsigned int)p[5] << 8) | ((unsigned int)p[6] << 16) | ((unsigned int)p[7] << 24);
+        if ((uint64_t)len < 12ull + textLen)
+            break;
+        unsigned int colorArgb = (unsigned int)p[8 + textLen]
+            | ((unsigned int)p[9 + textLen] << 8)
+            | ((unsigned int)p[10 + textLen] << 16)
+            | ((unsigned int)p[11 + textLen] << 24);
+
+        ChatEntry entry;
+        entry.frame = frame;
+        entry.colorArgb = colorArgb;
+        entry.spectator = FALSE;
+        entry.text = chatUtf8ToWide(std::string(payload + 8, textLen));
+        {
+            std::lock_guard<std::mutex> lock(m_chatMutex);
+            if (m_chatQueue.size() < 1000)
+                m_chatQueue.push_back(entry);
+        }
+        liveObserverLog("LiveObserver: chat frame=%u bytes=%u\n", frame, textLen);
+        break;
+    }
+
+    case 8: // LIVE_MSG_SPECTATOR_CHAT — live spectator meta-chat
+    {
+        // [nameLen u32 LE][UTF-8 name][textLen u32 LE][UTF-8 text]
+        if (len < 8)
+            break;
+        const unsigned char* p = (const unsigned char*)payload;
+        unsigned int nameLen = (unsigned int)p[0]
+            | ((unsigned int)p[1] << 8) | ((unsigned int)p[2] << 16) | ((unsigned int)p[3] << 24);
+        if ((uint64_t)len < 8ull + nameLen)
+            break;
+        const unsigned char* t = p + 4 + nameLen;
+        unsigned int textLen = (unsigned int)t[0]
+            | ((unsigned int)t[1] << 8) | ((unsigned int)t[2] << 16) | ((unsigned int)t[3] << 24);
+        if ((uint64_t)len < 8ull + nameLen + textLen)
+            break;
+
+        ChatEntry entry;
+        entry.frame = 0;
+        entry.colorArgb = SPECTATOR_CHAT_COLOR;
+        entry.spectator = TRUE;
+        UnicodeString name = chatUtf8ToWide(std::string(payload + 4, nameLen));
+        UnicodeString text = chatUtf8ToWide(std::string((const char*)(t + 4), textLen));
+        entry.text.format(L"[%ls] %ls", name.str(), text.str());
+        {
+            std::lock_guard<std::mutex> lock(m_chatMutex);
+            if (m_chatQueue.size() < 1000)
+                m_chatQueue.push_back(entry);
+        }
+        liveObserverLog("LiveObserver: spectator chat from '%ls'\n", name.str());
         break;
     }
 
@@ -1403,7 +1635,7 @@ void LiveObserver::networkThreadFunc()
                 | ((unsigned int)(unsigned char)buf[3] << 16)
                 | ((unsigned int)(unsigned char)buf[4] << 24);
 
-            if (buf.size() < (size_t)(5 + msgLen))
+            if ((uint64_t)buf.size() < 5ull + msgLen)
             {
                 // TheSuperHackers @fix Log once per distinct incomplete-frame situation
                 // (not every ~50ms poll) so we can tell a legitimately large still-arriving
@@ -1412,8 +1644,8 @@ void LiveObserver::networkThreadFunc()
                 static unsigned char s_lastWaitMsgType = 0xFF;
                 if (msgLen != s_lastWaitMsgLen || msgType != s_lastWaitMsgType)
                 {
-                    liveObserverLog("LiveObserver: waiting for frame type=%d len=%u — have %zu of %zu bytes\n",
-                        (int)msgType, msgLen, buf.size(), (size_t)(5 + msgLen));
+                    liveObserverLog("LiveObserver: waiting for frame type=%d len=%u — have %zu of %llu bytes\n",
+                        (int)msgType, msgLen, buf.size(), (unsigned long long)(5ull + msgLen));
                     s_lastWaitMsgLen = msgLen;
                     s_lastWaitMsgType = msgType;
                 }
@@ -1424,8 +1656,38 @@ void LiveObserver::networkThreadFunc()
             handleFrame(msgType, payload, msgLen);
             ++totalFramesProcessed;
 
-            // Remove the processed frame from the buffer
-            buf.erase(buf.begin(), buf.begin() + 5 + msgLen);
+            // Remove the processed frame from the buffer (the length was validated against
+            // buf.size() in 64-bit above, so this cannot wrap)
+            buf.erase(buf.begin(), buf.begin() + 5 + (size_t)msgLen);
+        }
+
+        // Send any queued spectator chat. Drained here because the curl handle is
+        // network-thread-owned; chat is sparse, so one frame per loop pass is plenty.
+        {
+            std::vector<char> outbound;
+            {
+                std::lock_guard<std::mutex> lock(m_outboundChatMutex);
+                if (!m_outboundChatQueue.empty())
+                {
+                    outbound = m_outboundChatQueue.front();
+                    m_outboundChatQueue.pop_front();
+                }
+            }
+            if (!outbound.empty())
+            {
+                // The relay expects the binary envelope [1B type][4B length][payload] — the
+                // same framing the streamer's sendBinaryFrame applies. Sending the bare
+                // payload made unpack_frame read the payload's first bytes as type/length
+                // and the frame was silently dropped.
+                std::vector<char> framed;
+                framed.reserve(5 + outbound.size());
+                framed.push_back((char)8);   // LIVE_MSG_SPECTATOR_CHAT (see LiveStreamer.h)
+                chatAppendU32LE(framed, (unsigned int)outbound.size());
+                framed.insert(framed.end(), outbound.begin(), outbound.end());
+                const bool sent = wsSendBinary((const unsigned char*)framed.data(), framed.size());
+                liveObserverLog("LiveObserver: sent spectator chat %zu bytes -> %s\n",
+                    framed.size(), sent ? "OK" : "FAILED");
+            }
         }
     }
 

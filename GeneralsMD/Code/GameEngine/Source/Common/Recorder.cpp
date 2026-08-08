@@ -429,6 +429,13 @@ void RecorderClass::reset() {
 void RecorderClass::update() {
 	if (m_mode == RECORDERMODETYPE_RECORD || m_mode == RECORDERMODETYPE_NONE) {
 		updateRecord();
+		// Live-streamed game (we are a source, possibly an in-game observer): drain
+		// spectator chat received from the relay into the HUD log. See
+		// plans/relay/live-observer-spectator-chat.md.
+#if defined(GENERALS_ONLINE)
+		if (TheLiveStreamer)
+			TheLiveStreamer->pumpSpectatorChat();
+#endif
 	}
 	else if (isPlaybackMode()) {
 		updatePlayback();
@@ -481,6 +488,11 @@ void RecorderClass::updatePlayback() {
 		// unchanged (it already decides not to hold before the game has started).
 		if (TheLiveObserver)
 			TheLiveObserver->updatePlaybackGate(curFrame);
+		// Chat still drains pre-game: player chat is held (frames not reached yet —
+		// and must not run against the GAME_NONE clock), spectator chat is dropped by
+		// the spoiler gate ("you missed it"). See plans/relay/live-observer-chat.md.
+		if (TheLiveObserver)
+			TheLiveObserver->pollChatMessages(curFrame);
 		return;
 	}
 
@@ -515,7 +527,12 @@ void RecorderClass::updatePlayback() {
 	// isLive is deliberately re-tested rather than reused: readNextFrame() can end the session
 	// above, and gating a torn-down session would resurrect its pause.
 	if (m_mode == RECORDERMODETYPE_LIVE_OBSERVER && TheLiveObserver)
+	{
+		// Chat drain: player chat is released as the playback frame reaches the
+		// streamer's frame; spectator chat live, under the spoiler gate.
+		TheLiveObserver->pollChatMessages(curFrame);
 		TheLiveObserver->updatePlaybackGate(curFrame);
+	}
 }
 
 Bool RecorderClass::liveStreamEnded() const {

@@ -19,6 +19,7 @@
 #pragma once
 
 #include "Common/GameCommon.h"
+#include "Common/UnicodeString.h"
 
 class IReplayStreamSink
 {
@@ -29,4 +30,11 @@ public:
 	virtual void onBodyBytes(const void* data, Int size) = 0;
 	virtual void onBodyFlush() = 0;
 	virtual void onRecordingEnded() = 0;
+
+	/// Player chat line that this client displayed, for live-stream capture (MSG_CHAT).
+	/// frame = the streamer's game frame at capture (the observer frame-gates on it);
+	/// text is the already-formatted "[name] message"; colorArgb is the sender's player
+	/// color as displayed. Non-pure with an empty default so other implementors are
+	/// unaffected. See plans/relay/live-observer-chat.md.
+	virtual void onChat(UnsignedInt frame, const UnicodeString& text, UnsignedInt colorArgb) {}
 };

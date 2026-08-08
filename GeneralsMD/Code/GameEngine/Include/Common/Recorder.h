@@ -178,6 +178,17 @@ public:
 	void setStreamSink(IReplayStreamSink* sink) { m_streamSink = sink; }
 	UnsignedInt getNextFrame() const { return m_nextFrame; }	///< Next frame to execute (used for live gap check).
 
+	/// Forward a displayed in-game chat line to the live stream sink (MSG_CHAT).
+	/// m_streamSink is attached only for live-streamed games (startRecording), so the sink
+	/// check is the whole live gate: plain games have no sink and no-op here. Core's
+	/// ConnectionManager calls this for global (everyone) chat lines exactly as displayed.
+	/// See plans/relay/live-observer-chat.md.
+	void onChatMessage(UnsignedInt frame, const UnicodeString& text, UnsignedInt colorArgb)
+	{
+		if (m_streamSink)
+			m_streamSink->onChat(frame, text, colorArgb);
+	}
+
 	// TheSuperHackers @info There is exactly one way to ask whether this is a live session:
 	// m_mode == RECORDERMODETYPE_LIVE_OBSERVER. There used to be a second, an m_isLiveStream
 	// flag, and it was assigned in lockstep with the mode at every single site - so the two

@@ -21,11 +21,13 @@
 #include "Common/AsciiString.h"
 #include "Common/GameCommon.h"
 #include "Common/ReplayStreamSink.h"
+#include "Common/UnicodeString.h"
 #include <thread>
 #include <mutex>
 #include <atomic>
 #include <vector>
 #include <queue>
+#include <deque>
 #include <string>
 
 /**
@@ -39,6 +41,8 @@ enum LiveMsgType : unsigned char {
 	LIVE_MSG_END       = 4,
 	LIVE_MSG_ROLE      = 5,
 	LIVE_MSG_ERROR     = 6,
+	LIVE_MSG_CHAT      = 7,  // player chat: [frame u32][textLen u32][UTF-8 text][color u32]
+	LIVE_MSG_SPECTATOR_CHAT = 8,  // spectator chat: [nameLen u32][UTF-8 name][textLen u32][UTF-8 text]
 };
 
 class LiveStreamer;
@@ -149,6 +153,16 @@ public:
 	Bool isConnected() const { return m_connected.load(); }
 	AsciiString getLobbyId() const { return m_lobbyId; }
 
+	/// IReplayStreamSink::onChat — forward a displayed global chat line to the relay
+	/// (MSG_CHAT). Called by the Recorder from Core's ConnectionManager::processChat; see
+	/// plans/relay/live-observer-chat.md.
+	virtual void onChat(UnsignedInt frame, const UnicodeString& text, UnsignedInt colorArgb) override;
+
+	/// Drain spectator chat received from the relay (MSG_SPECTATOR_CHAT) into the HUD
+	/// message log. Called once per logic frame while recording a live-streamed game.
+	/// See plans/relay/live-observer-spectator-chat.md.
+	void pumpSpectatorChat();
+
 
 	struct QueuedFrame
 	{
@@ -188,6 +202,17 @@ private:
 
 	std::thread m_networkThread;
 	mutable std::mutex m_sendMutex;
+
+	// Spectator chat inbound (MSG_SPECTATOR_CHAT): written by the network thread, drained
+	// by pumpSpectatorChat on the game thread. This client is a *source* — spectator chat
+	// is received (never sent, v1) because in-game observers are part of the audience.
+	struct SpectatorChatEntry
+	{
+		UnicodeString displayName;
+		UnicodeString text;
+	};
+	std::deque<SpectatorChatEntry> m_spectatorChatQueue;
+	mutable std::mutex m_spectatorChatMutex;
 
 	std::queue<QueuedFrame> m_outgoingQueue;
 	/// Bytes currently sitting in m_outgoingQueue, and whether the budget has been blown.

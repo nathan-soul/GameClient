@@ -23,6 +23,8 @@
 #include "Common/GlobalData.h"
 #include "Common/GameCommon.h"		// LIVE_DELAY_SECONDS_DEFAULT / _MAX
 #include "GameClient/ClientInstance.h"
+#include "GameClient/InGameUI.h"
+#include "GameNetwork/GameInfo.h"	// PLAYERTEMPLATE_OBSERVER, for the REGISTER is_observer flag
 
 #include "GameNetwork/GeneralsOnline/json.hpp"	// parses GO's register reply
 
@@ -36,6 +38,7 @@
 #include <cstdlib>
 #include <fstream>		// cacert.pem presence check, see connectToRelay
 #include <algorithm>
+#include <windows.h>
 
 // ============================================================================
 // liveStreamLog — write diagnostic messages to live_streamer_debug.log
@@ -79,6 +82,43 @@ void liveStreamerInitLog() {
     } else {
         liveStreamLog("TheGlobalData is NULL — cannot read config\n");
     }
+}
+
+// ============================================================================
+// UTF-8 helpers (chat payloads travel as UTF-8, like the rest of the GO wire format)
+//
+// These three are MIRRORED in LiveObserver.cpp (chatWideToUtf8/chatUtf8ToWide/
+// chatAppendU32LE) — keep both copies in sync; like the build tag, they have already
+// drifted once.
+// ============================================================================
+
+static std::string wideToUtf8(const UnicodeString& text)
+{
+    const wchar_t* src = text.str();
+    const int len = WideCharToMultiByte(CP_UTF8, 0, src, -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 1)       // nothing but the terminator, or a failure
+        return std::string();
+    std::string out(static_cast<size_t>(len - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, src, -1, &out[0], len, nullptr, nullptr);
+    return out;
+}
+
+static UnicodeString utf8ToWide(const std::string& utf8)
+{
+    const int len = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), nullptr, 0);
+    if (len <= 0)
+        return UnicodeString::TheEmptyString;
+    std::wstring tmp(static_cast<size_t>(len), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), &tmp[0], len);
+    return UnicodeString(tmp.c_str());
+}
+
+static void appendU32LE(std::vector<char>& out, unsigned int value)
+{
+    out.push_back((char)(value & 0xFF));
+    out.push_back((char)((value >> 8) & 0xFF));
+    out.push_back((char)((value >> 16) & 0xFF));
+    out.push_back((char)((value >> 24) & 0xFF));
 }
 
 // ============================================================================
@@ -410,6 +450,22 @@ void LiveStreamer::registerForGame(const LiveStreamRegistration& registration)
     // compares our stream token's user against the owner GO recorded for the session, so a
     // client cannot claim host authority by asserting it here.
     regJson += registration.isHost ? ",\"is_host\":true" : ",\"is_host\":false";
+    // In-game observer (side = PLAYERTEMPLATE_OBSERVER)? The relay delivers spectator chat
+    // to observer-mode sources only (plans/relay/live-observer-spectator-chat.md). Read
+    // from the GameInfo slot list: at MSG_NEW_GAME time (when this runs) the player list
+    // has not been rebuilt yet, but the slots are already populated from the lobby.
+    Bool isObserver = FALSE;
+    if (TheGameInfo)
+    {
+        const Int localSlot = TheGameInfo->getLocalSlotNum();
+        if (localSlot >= 0)
+        {
+            const GameSlot* slot = TheGameInfo->getConstSlot(localSlot);
+            if (slot && slot->getPlayerTemplate() == PLAYERTEMPLATE_OBSERVER)
+                isObserver = TRUE;
+        }
+    }
+    regJson += isObserver ? ",\"is_observer\":true" : ",\"is_observer\":false";
 
     // Both host-only. The relay ignores them from anyone else, but not sending them at all from
     // a non-host keeps the payload honest about who is claiming to describe the game.
@@ -542,6 +598,45 @@ void LiveStreamer::onTakeover(uint64_t bodyOffset)
 // ============================================================================
 // Binary frame helpers
 // ============================================================================
+
+void LiveStreamer::onChat(UnsignedInt frame, const UnicodeString& text, UnsignedInt colorArgb)
+{
+    // Payload: [frame u32 LE][textLen u32 LE][UTF-8 text][color u32 LE] — opaque to the
+    // relay; the observer frame-gates on `frame` and recolors from `colorArgb`. See
+    // plans/relay/live-observer-chat.md.
+    std::string utf8 = wideToUtf8(text);
+    std::vector<char> payload;
+    payload.reserve(12 + utf8.size());
+    appendU32LE(payload, frame);
+    appendU32LE(payload, (unsigned int)utf8.size());
+    payload.insert(payload.end(), utf8.begin(), utf8.end());
+    appendU32LE(payload, colorArgb);
+    queueFrame(LIVE_MSG_CHAT, payload.data(), payload.size());
+    liveStreamLog("LiveStreamer::onChat frame=%u bytes=%zu\n", frame, payload.size());
+}
+
+void LiveStreamer::pumpSpectatorChat()
+{
+    if (!TheInGameUI)
+        return;
+
+    std::deque<SpectatorChatEntry> batch;
+    {
+        std::lock_guard<std::mutex> lock(m_spectatorChatMutex);
+        if (m_spectatorChatQueue.empty())
+            return;
+        batch.swap(m_spectatorChatQueue);
+    }
+
+    // Distinct fixed style so spectator chat is never confused with player chat.
+    static const RGBColor spectatorColor = { 0.45f, 0.68f, 0.95f };
+    for (auto& entry : batch)
+    {
+        UnicodeString line;
+        line.format(L"[%ls] %ls", entry.displayName.str(), entry.text.str());
+        TheInGameUI->messageColor(true, &spectatorColor, UnicodeString(L"%ls"), line.str());
+    }
+}
 
 void LiveStreamer::queueFrame(LiveMsgType type, const void* data, size_t len)
 {
@@ -894,7 +989,7 @@ void LiveStreamer::networkThreadFunc()
                 | ((unsigned int)(unsigned char)recvBuf[3] << 16)
                 | ((unsigned int)(unsigned char)recvBuf[4] << 24);
 
-            if (msgType == LIVE_MSG_ROLE && msgLen > 0 && recvBuf.size() >= (size_t)(5 + msgLen))
+            if (msgType == LIVE_MSG_ROLE && msgLen > 0 && (uint64_t)recvBuf.size() >= 5ull + msgLen)
             {
                 // Parse JSON role assignment
                 std::string json(recvBuf.data() + 5, msgLen);
@@ -954,6 +1049,35 @@ void LiveStreamer::networkThreadFunc()
             else if (msgType == LIVE_MSG_ERROR)
             {
                 liveStreamLog("LiveStreamer: received ERROR\n");
+            }
+            else if (msgType == LIVE_MSG_SPECTATOR_CHAT && msgLen >= 8
+                && (uint64_t)recvBuf.size() >= 5ull + msgLen)
+            {
+                // [nameLen u32 LE][UTF-8 name][textLen u32 LE][UTF-8 text] — live spectator
+                // chat for in-game observers (we are a source). See
+                // plans/relay/live-observer-spectator-chat.md.
+                const unsigned char* p = (const unsigned char*)recvBuf.data() + 5;
+                unsigned int nameLen = (unsigned int)p[0]
+                    | ((unsigned int)p[1] << 8) | ((unsigned int)p[2] << 16) | ((unsigned int)p[3] << 24);
+                if ((uint64_t)msgLen >= 8ull + nameLen)
+                {
+                    const unsigned char* t = p + 4 + nameLen;
+                    unsigned int textLen = (unsigned int)t[0]
+                        | ((unsigned int)t[1] << 8) | ((unsigned int)t[2] << 16) | ((unsigned int)t[3] << 24);
+                    if ((uint64_t)msgLen >= 8ull + nameLen + textLen)
+                    {
+                        SpectatorChatEntry entry;
+                        entry.displayName = utf8ToWide(std::string((const char*)(p + 4), nameLen));
+                        entry.text = utf8ToWide(std::string((const char*)(t + 4), textLen));
+                        {
+                            std::lock_guard<std::mutex> lock(m_spectatorChatMutex);
+                            if (m_spectatorChatQueue.size() < 1000)
+                                m_spectatorChatQueue.push_back(entry);
+                        }
+                        liveStreamLog("LiveStreamer: spectator chat from '%ls' (%u bytes)\n",
+                            entry.displayName.str(), msgLen);
+                    }
+                }
             }
         }
 

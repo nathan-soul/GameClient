@@ -42,9 +42,19 @@
 #include "GameClient/GUICallbacks.h"
 #include "GameClient/InGameUI.h"
 #include "GameClient/LanguageFilter.h"
+#include "Common/Recorder.h"
+#include "Common/LiveObserver.h"
 #include "GameLogic/GameLogic.h"
 #include "GameNetwork/GameInfo.h"
 #include "GameNetwork/NetworkInterface.h"
+
+// A live-observer session (watching a stream via the relay) is technically a replay game,
+// but its chat window is meaningful: Enter routes to the spectator channel instead of the
+// mesh. See plans/relay/live-observer-spectator-chat.md.
+static Bool IsLiveObserverSession()
+{
+	return TheRecorder != nullptr && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER;
+}
 
 static GameWindow *chatWindow = nullptr;
 static GameWindow *chatTextEntry = nullptr;
@@ -59,7 +69,7 @@ extern NGMPGame* TheNGMPGame;
 // ------------------------------------------------------------------------------------------------
 void ShowInGameChat( Bool immediate )
 {
-	if (TheGameLogic->isInReplayGame())
+	if (TheGameLogic->isInReplayGame() && !IsLiveObserverSession())
 		return;
 
 	if (TheInGameUI->isQuitMenuVisible())
@@ -199,13 +209,13 @@ void ToggleInGameChat( Bool immediate )
 		return;
 	}
 
-	if (TheGameLogic->isInReplayGame())
+	if (TheGameLogic->isInReplayGame() && !IsLiveObserverSession())
 		return;
 
 #if defined(GENERALS_ONLINE)
-	if (TheNGMPGame == nullptr)
+	if (TheNGMPGame == nullptr && !IsLiveObserverSession())
 #else
-	if (!TheGameInfo->isMultiPlayer() && TheGlobalData->m_netMinPlayers)
+	if (!TheGameInfo->isMultiPlayer() && TheGlobalData->m_netMinPlayers && !IsLiveObserverSession())
 #endif
 		return;
 
@@ -252,7 +262,17 @@ void ToggleInGameChat( Bool immediate )
 						}
 					}
 					TheLanguageFilter->filterLine(msg);
-					TheNetwork->sendChat(msg, playerMask);
+					if (IsLiveObserverSession())
+					{
+						// Spectator channel: the relay fans it out to the other watchers and
+						// to in-game observers. Never the mesh — the observer has no network.
+						if (TheLiveObserver)
+							TheLiveObserver->sendSpectatorChat(msg);
+					}
+					else
+					{
+						TheNetwork->sendChat(msg, playerMask);
+					}
 				}
 				GadgetTextEntrySetText( chatTextEntry, UnicodeString::TheEmptyString );
 				HideInGameChat( immediate );
