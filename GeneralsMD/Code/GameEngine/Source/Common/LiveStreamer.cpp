@@ -100,7 +100,7 @@ LiveStreamer::LiveStreamer()
     , m_bodySentOffset(0)
 {
     m_headerBuffer.reserve(4096);
-    m_bodyBuffer.reserve(4096);
+    m_bodyBuffer.reserve(64 * 1024);
 }
 
 LiveStreamer::~LiveStreamer()
@@ -202,6 +202,15 @@ void LiveStreamer::onHeaderComplete()
     if (m_headerBuffer.empty())
         return;
 
+    // Demoted (backup) streamers do not send the header — the relay already has the
+    // session's canonical one. Defensive: the header is normally sent at match start,
+    // before any demotion can occur, so this only matters for an edge-case ordering.
+    if (m_isBackup.load())
+    {
+        m_headerBuffer.clear();
+        return;
+    }
+
     queueFrame(LIVE_MSG_HEADER, m_headerBuffer.data(), m_headerBuffer.size());
     m_headerBuffer.clear();
 }
@@ -209,6 +218,10 @@ void LiveStreamer::onHeaderComplete()
 void LiveStreamer::onHeaderPatch(Int offset, const void* data, Int size)
 {
     if (size <= 0)
+        return;
+
+    // Demoted: header mutations are not sent (see onHeaderComplete).
+    if (m_isBackup.load())
         return;
 
     // Encode: 4 bytes offset (LE) + 4 bytes length (LE) + data
@@ -236,34 +249,61 @@ void LiveStreamer::onBodyBytes(const void* data, Int size)
         return;
 
     const char* p = static_cast<const char*>(data);
+
+    // One buffer, both roles: while streaming it is flushed to the wire by onBodyFlush;
+    // while backup (demoted) onBodyFlush does nothing, so the same buffer accumulates the
+    // body from the demotion point onward — which is exactly the backfill source a later
+    // takeover needs. Its first byte sits at absolute offset m_bodySentOffset (frozen while
+    // backup), so takeover offsets stay absolute-correct. Guarded by m_sendMutex because
+    // onTakeover (network thread) reads it while this (game thread) appends.
+    std::lock_guard<std::mutex> lock(m_sendMutex);
+    if (m_bodyBuffer.size() + size > BODY_BUFFER_MAX)
+    {
+        // Drop the oldest bytes to stay under the cap and advance the buffer's start
+        // offset so the m_bodySentOffset invariant holds. Only a long backup session can
+        // grow this large (streaming flushes every 4KB), and real matches are tens of KB.
+        size_t drop = m_bodyBuffer.size() + size - BODY_BUFFER_MAX;
+        m_bodyBuffer.erase(m_bodyBuffer.begin(), m_bodyBuffer.begin() + drop);
+        m_bodySentOffset += drop;
+    }
     m_bodyBuffer.insert(m_bodyBuffer.end(), p, p + size);
 }
 
 void LiveStreamer::onBodyFlush()
 {
-    if (m_bodyBuffer.empty())
+    // Backup: keep the bytes. The relay told us to stop pushing, so nothing is sent; the
+    // buffer keeps growing here and becomes the backfill source on takeover. END is still
+    // sent via onRecordingEnded so the relay knows this player's recording is over.
+    if (m_isBackup.load())
         return;
 
-    // Build framed BODY: [8B offset LE][data]
-    uint64_t off = m_bodySentOffset;
-    unsigned char offBuf[8];
-    offBuf[0] = (unsigned char)(off & 0xFF);
-    offBuf[1] = (unsigned char)((off >> 8) & 0xFF);
-    offBuf[2] = (unsigned char)((off >> 16) & 0xFF);
-    offBuf[3] = (unsigned char)((off >> 24) & 0xFF);
-    offBuf[4] = (unsigned char)((off >> 32) & 0xFF);
-    offBuf[5] = (unsigned char)((off >> 40) & 0xFF);
-    offBuf[6] = (unsigned char)((off >> 48) & 0xFF);
-    offBuf[7] = (unsigned char)((off >> 56) & 0xFF);
-
     std::vector<char> framed;
-    framed.reserve(8 + m_bodyBuffer.size());
-    framed.insert(framed.end(), offBuf, offBuf + 8);
-    framed.insert(framed.end(), m_bodyBuffer.begin(), m_bodyBuffer.end());
+    {
+        std::lock_guard<std::mutex> lock(m_sendMutex);
+        if (m_bodyBuffer.empty())
+            return;
+
+        // Build framed BODY: [8B offset LE][data]
+        uint64_t off = m_bodySentOffset;
+        unsigned char offBuf[8];
+        offBuf[0] = (unsigned char)(off & 0xFF);
+        offBuf[1] = (unsigned char)((off >> 8) & 0xFF);
+        offBuf[2] = (unsigned char)((off >> 16) & 0xFF);
+        offBuf[3] = (unsigned char)((off >> 24) & 0xFF);
+        offBuf[4] = (unsigned char)((off >> 32) & 0xFF);
+        offBuf[5] = (unsigned char)((off >> 40) & 0xFF);
+        offBuf[6] = (unsigned char)((off >> 48) & 0xFF);
+        offBuf[7] = (unsigned char)((off >> 56) & 0xFF);
+
+        framed.reserve(8 + m_bodyBuffer.size());
+        framed.insert(framed.end(), offBuf, offBuf + 8);
+        framed.insert(framed.end(), m_bodyBuffer.begin(), m_bodyBuffer.end());
+
+        m_bodySentOffset += m_bodyBuffer.size();
+        m_bodyBuffer.clear();
+    }
 
     queueFrame(LIVE_MSG_BODY, framed.data(), framed.size());
-    m_bodySentOffset += m_bodyBuffer.size();
-    m_bodyBuffer.clear();
 }
 
 void LiveStreamer::onRecordingEnded()
@@ -298,6 +338,12 @@ void LiveStreamer::close()
     m_connected.store(false);
     m_isStreaming.store(false);
     m_isBackup.store(false);
+
+    // Release the body buffer (the streaming/backup accumulation).
+    std::lock_guard<std::mutex> lock(m_sendMutex);
+    m_bodyBuffer.clear();
+    m_bodyBuffer.shrink_to_fit();
+    m_bodySentOffset = 0;
 }
 
 // ============================================================================
@@ -394,12 +440,19 @@ void LiveStreamer::registerForGame(const LiveStreamRegistration& registration)
 void LiveStreamer::onRoleAssigned(const AsciiString& role, const AsciiString& lobbyId, uint64_t bodyOffset)
 {
     m_lobbyId = lobbyId;
+
+    // Only the initial streamer ROLE (fresh connect or mid-match reconnect) establishes the
+    // send offset from the relay's value. A demote (backup) ROLE must not: while backup,
+    // m_bodySentOffset is frozen at the absolute offset of the accumulating body buffer (see
+    // onBodyBytes/onBodyFlush), and the relay's current body length is ahead of it —
+    // clobbering it would mislabel the buffered bytes. A takeover ROLE (streamer + action)
+    // must not either: onTakeover runs right after and computes the backfill slice against
+    // that same frozen offset, then advances m_bodySentOffset itself.
+    Bool wasBackup = m_isBackup.load();
     m_isStreaming.store(role == "streamer");
     m_isBackup.store(role == "backup");
-
-    // Track the body offset reported by the relay. For the primary streamer
-    // this is 0. For a backup taking over, this is the current body length.
-    m_bodySentOffset = bodyOffset;
+    if (!m_isBackup.load() && !wasBackup)
+        m_bodySentOffset = bodyOffset;
 
     liveStreamLog("LiveStreamer::onRoleAssigned role=%s lobbyId=%s streaming=%d bodyOff=%llu\n",
         role.str(), lobbyId.str(), (int)m_isStreaming.load(), (unsigned long long)bodyOffset);
@@ -407,11 +460,83 @@ void LiveStreamer::onRoleAssigned(const AsciiString& role, const AsciiString& lo
 
 void LiveStreamer::onTakeover(uint64_t bodyOffset)
 {
-    m_isStreaming.store(true);
-    m_isBackup.store(false);
-    m_bodySentOffset = bodyOffset;
     liveStreamLog("LiveStreamer::onTakeover promoted to streamer, bodyOff=%llu\n",
         (unsigned long long)bodyOffset);
+
+    // Resume live buffering FIRST: any body bytes that arrive while the backfill below is
+    // being sent must land in m_bodyBuffer (framed at m_bodySentOffset after the snapshot),
+    // not be silently dropped by the backup gate.
+    m_isStreaming.store(true);
+    m_isBackup.store(false);
+
+    // Backfill the relay's gap from the same body buffer that accumulated while backup.
+    //
+    // While demoted, onBodyFlush was a no-op, so m_bodyBuffer holds every body byte from
+    // the demotion point onward, with m_bodySentOffset frozen at the absolute offset of
+    // buffer[0]. The relay is missing [bodyOffset..buffer_end]; live data continues from
+    // buffer_end. Snapshot atomically with respect to onBodyBytes (game thread).
+    uint64_t backfillStart = bodyOffset;
+    std::vector<char> backfill;
+    {
+        std::lock_guard<std::mutex> lock(m_sendMutex);
+        if (bodyOffset < m_bodySentOffset)
+        {
+            // The cap trimmed past the requested offset — we no longer hold those bytes, so
+            // the hole cannot be filled. Degrade to skip-forward; the relay logs a gap, as
+            // it does for any missing chunk.
+            liveStreamLog("LiveStreamer::onTakeover cannot backfill from %llu "
+                "(buffer starts at %llu) — skipping forward\n",
+                (unsigned long long)bodyOffset, (unsigned long long)m_bodySentOffset);
+            backfillStart = m_bodySentOffset;
+        }
+        size_t rel = (size_t)(backfillStart - m_bodySentOffset);
+        if (rel < m_bodyBuffer.size())
+        {
+            backfill.assign(m_bodyBuffer.begin() + rel, m_bodyBuffer.end());
+        }
+        // Live data continues from the end of what we just sent; onBodyFlush frames the
+        // next flush at this offset.
+        m_bodySentOffset = m_bodySentOffset + m_bodyBuffer.size();
+        m_bodyBuffer.clear();
+    }
+
+    // Send the backfill in bounded chunks (network thread — same thread that drains the
+    // send queue, so a direct send here cannot interleave with it).
+    if (!backfill.empty())
+    {
+        const size_t BACKFILL_CHUNK = 64 * 1024;
+        uint64_t absOff = backfillStart;
+        for (size_t i = 0; i < backfill.size(); i += BACKFILL_CHUNK)
+        {
+            size_t n = backfill.size() - i;
+            if (n > BACKFILL_CHUNK)
+                n = BACKFILL_CHUNK;
+
+            std::vector<char> framed;
+            framed.reserve(8 + n);
+            unsigned char offBuf[8];
+            offBuf[0] = (unsigned char)(absOff & 0xFF);
+            offBuf[1] = (unsigned char)((absOff >> 8) & 0xFF);
+            offBuf[2] = (unsigned char)((absOff >> 16) & 0xFF);
+            offBuf[3] = (unsigned char)((absOff >> 24) & 0xFF);
+            offBuf[4] = (unsigned char)((absOff >> 32) & 0xFF);
+            offBuf[5] = (unsigned char)((absOff >> 40) & 0xFF);
+            offBuf[6] = (unsigned char)((absOff >> 48) & 0xFF);
+            offBuf[7] = (unsigned char)((absOff >> 56) & 0xFF);
+            framed.insert(framed.end(), offBuf, offBuf + 8);
+            framed.insert(framed.end(), backfill.data() + i, backfill.data() + i + n);
+
+            if (!sendBinaryFrame(LIVE_MSG_BODY, framed.data(), framed.size()))
+            {
+                liveStreamLog("LiveStreamer::onTakeover backfill send failed at offset %llu\n",
+                    (unsigned long long)absOff);
+                break;
+            }
+            absOff += n;
+        }
+        liveStreamLog("LiveStreamer::onTakeover backfilled %zu bytes from offset %llu\n",
+            backfill.size(), (unsigned long long)backfillStart);
+    }
 }
 
 // ============================================================================
@@ -814,14 +939,17 @@ void LiveStreamer::networkThreadFunc()
                     bodyOffStart += strlen(BODY_OFF_KEY);
                     bodyOffset = (uint64_t)strtoull(bodyOffStart, nullptr, 10);
                 }
+                // onRoleAssigned runs first deliberately: it overwrites m_bodySentOffset with
+                // the ROLE's body_offset, which would clobber the backfill position onTakeover
+                // establishes. So the flags/offset are applied, then the backfill overrides.
+                onRoleAssigned(role, lobbyId, bodyOffset);
+
                 if (actionStart)
                 {
                     const char* actPtr = actionStart + strlen(ACTION_KEY);
                     if (strncmp(actPtr, "takeover", 8) == 0)
                         onTakeover(bodyOffset);
                 }
-
-                onRoleAssigned(role, lobbyId, bodyOffset);
             }
             else if (msgType == LIVE_MSG_ERROR)
             {

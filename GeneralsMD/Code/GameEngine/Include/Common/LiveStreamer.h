@@ -131,15 +131,19 @@ public:
 	void registerForGame(const LiveStreamRegistration& registration);
 
 	/// Called when the relay confirms the session ("streamer" or "backup" or "none").
+	/// While the role is "backup" this client stops uploading replay data (the backup gate
+	/// below) but keeps recording locally, so it can take over later if promoted.
 	void onRoleAssigned(const AsciiString& role, const AsciiString& lobbyId, uint64_t bodyOffset);
 
 	/// Called when this client becomes the active streamer (takeover from backup).
-	/// NOTE: This is a UI-informational flag ONLY.  It does NOT gate any data flow —
-	/// the IReplayStreamSink callbacks (onHeaderBytes, onBodyBytes, etc.) always
-	/// send regardless of role.  Never add a role-guard to the sink methods.
+	/// Backfills the relay's missing bytes from the local recorded copy starting at
+	/// bodyOffset, then resumes live streaming. This is what makes a re-promoted
+	/// backup seamless: it kept recording the whole match while demoted.
 	void onTakeover(uint64_t bodyOffset);
 
-	/// UI-informational ONLY — do not use to gate data flow.
+	/// UI-informational flags. NOTE: unlike the original design, m_isBackup DOES gate data
+	/// flow: while backup, the sink drops HEADER/PATCH/BODY (END is still sent) so a demoted
+	/// streamer stops wasting its uplink. See plans/relay/streamer-allpush-demotion.md.
 	Bool isStreaming() const { return m_isStreaming.load(); }
 	Bool isBackup() const { return m_isBackup.load(); }
 	Bool isConnected() const { return m_connected.load(); }
@@ -166,7 +170,7 @@ private:
 	bool sendBinaryFrame(const QueuedFrame& frame);
 	void queueFrame(LiveMsgType type, const void* data, size_t len);
 
-	// UI-informational only — never gate data flow with these
+	// UI-informational flags; m_isBackup additionally gates data flow (see onRoleAssigned)
 	std::atomic<Bool> m_isStreaming;
 	std::atomic<Bool> m_isBackup;
 	std::atomic<Bool> m_connected;
@@ -196,10 +200,23 @@ private:
 	// Header accumulation — buffered until onHeaderComplete()
 	std::vector<char> m_headerBuffer;
 
-	// Body accumulation — buffered until onBodyFlush() or threshold
+	// Body accumulation — buffered until onBodyFlush() or threshold.
+	//
+	// One buffer, both roles (see plans/relay/streamer-allpush-demotion.md): while streaming it is
+	// flushed to the wire every BODY_FLUSH_THRESHOLD bytes. While backup (demoted) onBodyFlush
+	// is a no-op, so the same buffer accumulates the body from the demotion point onward —
+	// which is the backfill source a later takeover needs. m_bodySentOffset is frozen at the
+	// absolute offset of buffer[0] while backup, so takeover offsets stay absolute-correct.
+	// Guarded by m_sendMutex: onBodyBytes/onBodyFlush (game thread) vs onTakeover (network
+	// thread).
 	std::vector<char> m_bodyBuffer;
 	static const size_t BODY_FLUSH_THRESHOLD = 4096;
 	uint64_t m_bodySentOffset;   // absolute file offset for next BODY chunk
+	/// Hard ceiling on the backup accumulation. Matches are tens-to-hundreds of KB; this is
+	/// generous headroom. On overflow the oldest bytes are dropped and m_bodySentOffset
+	/// advances, so a takeover from an offset older than the retained window degrades to
+	/// skip-forward.
+	static const size_t BODY_BUFFER_MAX = 8 * 1024 * 1024;
 };
 
 extern LiveStreamer* TheLiveStreamer;

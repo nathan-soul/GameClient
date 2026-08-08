@@ -7447,7 +7447,11 @@ void InGameUI::drawLiveStatus()
 	const Int statusY = Int(10 * baseScale);
 
 	// Streamer side: are we the source of a relayed game?
-	if (TheLiveStreamer && (TheLiveStreamer->isStreaming() || TheLiveStreamer->isBackup()))
+	// Hidden behind F6 (m_liveObserverStatusVisible) like the observer's live-state labels:
+	// "STREAMING"/"BACKUP" says nothing the player needs to see by default, and the banner
+	// must not become clutter in every match.
+	if (TheLiveStreamer && (TheLiveStreamer->isStreaming() || TheLiveStreamer->isBackup())
+		&& m_liveObserverStatusVisible)
 	{
 		DisplayString* streamStatus = TheDisplayStringManager->newDisplayString();
 		if (streamStatus)
