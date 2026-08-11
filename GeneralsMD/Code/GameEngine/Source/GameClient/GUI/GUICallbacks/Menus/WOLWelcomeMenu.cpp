@@ -71,6 +71,8 @@
 
 #if defined(GENERALS_ONLINE)
 #include "Common/LiveObserver.h"	// the live-games browser lives behind this screen's login
+#include "GameClient/LiveGamesMenu.h"			// LiveGamesMenuEnterLiveGamesMode arms the Watch Live browser
+#include "GameClient/LiveObserverSession.h"	// LiveObserverStartPendingSession pump
 #endif
 
 // PRIVATE DATA ///////////////////////////////////////////////////////////////////////////////////
@@ -1181,7 +1183,7 @@ WindowMsgHandledType WOLWelcomeMenuSystem( GameWindow *window, UnsignedInt msg,
 					// The browser reuses the replay menu's layout, so it gets the real frame,
 					// listbox and hover states instead of the placeholder look a code-built
 					// dialog had. Pushed rather than popped-to, so Back returns here.
-					ReplayMenuEnterLiveGamesMode();
+					LiveGamesMenuEnterLiveGamesMode();
 					TheShell->push("Menus/ReplayMenu.wnd");
 				}
 #endif

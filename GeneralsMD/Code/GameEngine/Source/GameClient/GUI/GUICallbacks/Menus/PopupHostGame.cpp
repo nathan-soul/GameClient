@@ -101,6 +101,7 @@ static GameWindow *parentPopup = nullptr;
 static GameWindow *textEntryGameName = nullptr;
 static GameWindow *buttonCreateGame = nullptr;
 static GameWindow *checkBoxAllowObservers = nullptr;
+static GameWindow *checkBoxAllowStreamers = nullptr;
 static GameWindow *textEntryGameDescription = nullptr;
 static GameWindow *buttonCancel = nullptr;
 static GameWindow *comboBoxLadderName = nullptr;
@@ -411,6 +412,38 @@ void PopupHostGameInit( WindowLayout *layout, void *userData )
 	checkBoxAllowObservers->winHide(false);
 	GadgetCheckBoxSetChecked(checkBoxAllowObservers, true);
 
+	// "Allow streamers": the game-level broadcast intent, decided here like Allow
+	// Observers. When off, the game never appears in Watch Live and the pre-game
+	// observer view shows no stream controls — the game is simply not watchable, no
+	// matter which player has their own streamer role enabled. The host can still
+	// disable their own stream ("Enable Stream" on the setup screen) while leaving
+	// this on for other players to stream.
+	// Recreated on every init (like the .wnd lookups above): the popup's window tree
+	// is rebuilt per open, so a cached pointer would either dangle or skip creation.
+	{
+		int wObs = 0;
+		int hObs = 0;
+		checkBoxAllowObservers->winGetSize(&wObs, &hObs);
+
+		WinInstanceData streamInstData;
+		streamInstData.init();
+		streamInstData.m_style = GWS_CHECK_BOX | GWS_MOUSE_TRACK;
+		streamInstData.m_textLabelString = "Allow streamers";
+		streamInstData.setTooltipText(L"Let this game be watched live: it appears in Watch Live and observers can wait in the pre-game lobby");
+
+		// To the right of Allow Observers on the same row — anchored on the position
+		// Allow Observers was moved to above (xStats, yObs), not its pre-move spot.
+		// The row sits above the Limit Armies checkboxes in the layout, so nothing
+		// overlaps.
+		checkBoxAllowStreamers = TheWindowManager->gogoGadgetCheckbox(parentPopup,
+			WIN_STATUS_ENABLED | WIN_STATUS_IMAGE,
+			xStats + wObs + 6, yObs, wObs, hObs,
+			&streamInstData, nullptr, TRUE);
+
+		if (checkBoxAllowStreamers != nullptr)
+			checkBoxAllowStreamers->winCopyVisualsFrom(checkBoxAllowObservers);
+	}
+
 	// hide password for streams
 	EntryData* e = (EntryData*)textEntryGamePassword->winGetUserData();
 	e->secretText = true;
@@ -665,6 +698,8 @@ void createGame()
 	Bool limitArmies = GadgetCheckBoxIsChecked(checkBoxLimitArmies);
 	Bool useStats = GadgetCheckBoxIsChecked(checkBoxUseStats);
 	Bool bAllowObservers = GadgetCheckBoxIsChecked(checkBoxAllowObservers);
+	Bool bAllowStreamers = checkBoxAllowStreamers != nullptr
+		? GadgetCheckBoxIsChecked(checkBoxAllowStreamers) : FALSE;
 
 	UnicodeString gameName = GadgetTextEntryGetText(textEntryGameName);
 
@@ -680,7 +715,7 @@ void createGame()
 		return;
 	}
 
-	pLobbyInterface->CreateLobby(gameName, md->m_displayName, md->m_fileName, md->m_isOfficial, md->m_numPlayers, limitArmies, useStats, TheGlobalData->m_defaultStartingCash.countMoney(), passwd.isNotEmpty(), std::string(passwd.str()), bAllowObservers);
+	pLobbyInterface->CreateLobby(gameName, md->m_displayName, md->m_fileName, md->m_isOfficial, md->m_numPlayers, limitArmies, useStats, TheGlobalData->m_defaultStartingCash.countMoney(), passwd.isNotEmpty(), std::string(passwd.str()), bAllowObservers, bAllowStreamers);
 
 	GSMessageBoxCancel(UnicodeString(L"Creating Lobby"), UnicodeString(L"Lobby Creation is in progress..."), nullptr);
 

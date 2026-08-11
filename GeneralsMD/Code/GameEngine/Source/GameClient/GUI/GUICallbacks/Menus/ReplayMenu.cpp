@@ -37,14 +37,13 @@
 #include "Common/GameEngine.h"
 #include "Common/GameState.h"
 #include "Common/GlobalData.h"		// m_liveStreamRelayUrl
-#include "Common/LiveObserver.h"	// liveRelayBeginFetch / PollFetch / FetchInFlight, liveServices*
 #include "Common/Recorder.h"
 #include "Common/version.h"
 #include <vector>
+#include "GameClient/LiveGamesMenu.h"			// the Watch Live browser owns live-games mode
 #include "GameClient/WindowLayout.h"
 #include "GameClient/Gadget.h"
 #include "GameClient/GadgetListBox.h"
-#include "GameClient/GadgetStaticText.h"	// GadgetStaticTextSetText retitles the live-browser heading
 #include "GameClient/Shell.h"
 #include "GameClient/KeyDefs.h"
 #include "GameClient/GameWindowManager.h"
@@ -79,240 +78,6 @@ static GameWindow *buttonDelete = nullptr;
 static GameWindow *buttonCopy = nullptr;
 static Int	initialGadgetDelay = 2;
 static Bool justEntered = FALSE;
-
-#if defined(GENERALS_ONLINE)
-// TheSuperHackers @feature 03/08/2026 Live games browser.
-//
-// This screen is reused rather than duplicated. A separate .wnd layout would be the tidier
-// separation, but the layouts live inside an archive we cannot read to copy one from, and
-// building the list out of code-created gadgets meant hand-matching the theme by eye — the
-// listbox especially, since no styled listbox exists on the main menu to copy from.
-// Borrowing this layout gives the real frame, listbox, scrollbar and hover states for free.
-//
-// The cost is that the two modes share a control set: four buttons and one list, which
-// happens to be exactly what a browser needs. Everything below is guarded by s_liveGamesMode
-// so the replay behaviour is untouched when it is off.
-static Bool s_liveGamesMode = FALSE;
-static std::vector<AsciiString> s_liveGameIds;	///< game id per listbox row
-static UnsignedInt s_lastLiveFetchMs = 0;
-static GameWindow *s_liveTitleWindow = nullptr;
-static UnicodeString s_savedTitleText;
-static UnicodeString s_savedLoadText;
-static UnicodeString s_savedDeleteText;
-
-enum { LIVE_GAMES_REFRESH_INTERVAL_MS = 5000 };
-
-void ReplayMenuEnterLiveGamesMode(void) { s_liveGamesMode = TRUE; }
-Bool ReplayMenuIsLiveGamesMode(void) { return s_liveGamesMode; }
-
-static void liveGamesRequestList(void);
-static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiString& body);
-
-/// Depth-first search for the first static-text window carrying any text.
-///
-/// The heading is not necessarily a direct child of ParentReplayMenu — the layout nests controls
-/// under GadgetParent — which is exactly why the previous, single-level version of this never
-/// found it and the screen stayed titled LOAD REPLAY.
-static GameWindow* findFirstStaticTextWithText(GameWindow* parent)
-{
-	if (parent == nullptr)
-		return nullptr;
-
-	for (GameWindow* child = parent->winGetChild(); child != nullptr; child = child->winGetNext())
-	{
-		WinInstanceData* data = child->winGetInstanceData();
-		if (data != nullptr &&
-			(data->m_style & GWS_STATIC_TEXT) != 0 &&
-			!child->winGetText().isEmpty())
-		{
-			return child;
-		}
-
-		GameWindow* nested = findFirstStaticTextWithText(child);
-		if (nested != nullptr)
-			return nested;
-	}
-
-	return nullptr;
-}
-
-/// Find the screen's heading.
-///
-/// The layout lives in an archive we cannot read, so the control's name cannot be confirmed from
-/// here — but every other menu in this codebase calls its heading StaticTextTitle
-/// (WOLWelcomeMenu, WOLQuickMatchMenu, EstablishConnectionsWindow), so try that first and only
-/// fall back to searching the subtree. A name lookup is worth preferring because the fallback can
-/// only ever guess: "first static text carrying text" is the heading on this layout by luck, not
-/// by rule.
-///
-/// Logs what it settled on. If the fallback is what fires, that one line names the real control,
-/// which is the only way to turn this guess into a lookup without being able to open the .wnd.
-static GameWindow* findTitleWindow(GameWindow* parent)
-{
-	static const char* const TITLE_CONTROL_NAMES[] = {
-		"ReplayMenu.wnd:StaticTextTitle",
-		"ReplayMenu.wnd:StaticTextHeader",
-		// ReplayMenu.wnd's heading has an empty control name — the layout declares it as
-		// NAME = "ReplayMenu.wnd:" — so the two conventional names above can never match it.
-		"ReplayMenu.wnd:",
-		nullptr
-	};
-
-	for (Int i = 0; TITLE_CONTROL_NAMES[i] != nullptr; ++i)
-	{
-		GameWindow* win = TheWindowManager->winGetWindowFromId(
-			parent, (Int)TheNameKeyGenerator->nameToKey(TITLE_CONTROL_NAMES[i]));
-		// "ReplayMenu.wnd:" is shared by TWO controls — the heading static text and a large
-		// panel. Only a static text can be the heading; accepting the first name match would
-		// retitle the panel and the screen would stay LOAD REPLAY.
-		if (win != nullptr && win->winGetInstanceData() != nullptr &&
-			(win->winGetInstanceData()->m_style & GWS_STATIC_TEXT) != 0)
-		{
-			liveObserverLog("ReplayMenu: title control found by name '%s'\n", TITLE_CONTROL_NAMES[i]);
-			return win;
-		}
-	}
-
-	GameWindow* fallback = findFirstStaticTextWithText(parent);
-	if (fallback != nullptr)
-	{
-		AsciiString text;
-		text.translate(fallback->winGetText());
-		liveObserverLog("ReplayMenu: title control not found by name; fell back to id='%s' text='%s'\n",
-			KEYNAME((NameKeyType)fallback->winGetWindowId()).str(), text.str());
-	}
-	else
-	{
-		liveObserverLog("ReplayMenu: no title control found at all — heading will not be retitled\n");
-	}
-
-	return fallback;
-}
-
-static void liveGamesRequestList(void)
-{
-	if (liveRelayFetchInFlight())
-		return;
-
-	// GO owns the list of what is being streamed -- the relay no longer publishes one, and
-	// could not anyway: it cannot tell which of its sessions a given player is allowed to see.
-	s_lastLiveFetchMs = timeGetTime();
-	liveRelayBeginFetch(liveServicesEndpoint("Livestreams"));
-}
-
-static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiString& body)
-{
-	if (listboxReplayFiles == nullptr || !s_liveGamesMode)
-		return;
-
-	// Repopulating clears the selection, so remember it and restore by game id afterwards —
-	// by id and not row, since a game ending shifts every row beneath it.
-	AsciiString previouslySelected;
-	{
-		Int wasSelected = -1;
-		GadgetListBoxGetSelected(listboxReplayFiles, &wasSelected);
-		if (wasSelected >= 0 && wasSelected < (Int)s_liveGameIds.size())
-			previouslySelected = s_liveGameIds[wasSelected];
-	}
-
-	GadgetListBoxReset(listboxReplayFiles);
-	s_liveGameIds.clear();
-
-	if (!success || statusCode != 200)
-	{
-		// No "sign in to watch" case any more: this screen is only reachable from the Online
-		// welcome menu, so a session always exists by the time the list is fetched. A failure
-		// here is a failure to reach GO, and saying anything else would send the player looking
-		// for a login they have already done.
-		GadgetListBoxAddEntryText(listboxReplayFiles,
-			UnicodeString(L"Could not reach GeneralsOnline"),
-			GameMakeColor(255, 120, 120, 255), -1);
-		return;
-	}
-
-	// The wire format is LiveObserver's business; this only lays rows out.
-	std::vector<LiveGameEntry> games;
-	if (!liveServicesParseLivestreams(body, games))
-	{
-		GadgetListBoxAddEntryText(listboxReplayFiles,
-			UnicodeString(L"Unexpected reply from GeneralsOnline"),
-			GameMakeColor(255, 120, 120, 255), -1);
-		return;
-	}
-
-	if (games.empty())
-	{
-		GadgetListBoxAddEntryText(listboxReplayFiles,
-			UnicodeString(L"No live games right now"),
-			GameMakeColor(200, 200, 200, 255), -1);
-		return;
-	}
-
-	for (std::vector<LiveGameEntry>::const_iterator it = games.begin(); it != games.end(); ++it)
-	{
-		const LiveGameEntry& game = *it;
-		const Color rowColor = GameMakeColor(255, 255, 255, 255);
-		UnicodeString text;
-		AsciiString tmp;
-
-		// Four columns, laid out for the replay list. Reuse them as
-		// map / running-for / delay / players. Append column 0 and use the row index it
-		// returns for the rest, exactly as PopulateReplayFileListbox does — passing a
-		// precomputed row instead is what merged these cells together.
-		text.translate(game.mapName);
-		const Int row = GadgetListBoxAddEntryText(listboxReplayFiles, text, rowColor, -1, 0);
-		if (row < 0)
-			continue;
-
-		tmp.format("%dm in", game.ageSeconds / 60);
-		text.translate(tmp);
-		GadgetListBoxAddEntryText(listboxReplayFiles, text, rowColor, row, 1);
-
-		tmp.format("%ds delay", game.delaySeconds);
-		text.translate(tmp);
-		GadgetListBoxAddEntryText(listboxReplayFiles, text, rowColor, row, 2);
-
-		tmp.format("%s (%d watching)", game.players.str(), game.observerCount);
-		text.translate(tmp);
-		GadgetListBoxAddEntryText(listboxReplayFiles, text, rowColor, row, 3);
-
-		// Index by the row the listbox actually used, so a lookup on selection cannot
-		// drift out of step with the rows if one is ever skipped.
-		if ((Int)s_liveGameIds.size() <= row)
-			s_liveGameIds.resize(row + 1);
-		s_liveGameIds[row] = game.lobbyId;
-	}
-
-	if (!previouslySelected.isEmpty())
-	{
-		for (Int i = 0; i < (Int)s_liveGameIds.size(); ++i)
-		{
-			if (s_liveGameIds[i] == previouslySelected)
-			{
-				GadgetListBoxSetSelected(listboxReplayFiles, i);
-				break;
-			}
-		}
-	}
-}
-
-/// Connect to the selected game. Returns TRUE if a connection was started.
-static Bool liveGamesConnectSelected(void)
-{
-	Int selected = -1;
-	GadgetListBoxGetSelected(listboxReplayFiles, &selected);
-	if (selected < 0 || selected >= (Int)s_liveGameIds.size())
-		return FALSE;
-
-	// Hand over the lobby id alone. Where to connect is GO's answer, not ours: it mints a
-	// single-use watch ticket and returns the relay URL that carries it, so a URL built here
-	// from a configured relay address could never have been connected to.
-	StartLiveObserverSession(s_liveGameIds[selected]);
-	TheShell->pop();
-	return TRUE;
-}
-#endif
-
 
 #if defined(RTS_DEBUG)
 static GameWindow *buttonAnalyzeReplay = nullptr;
@@ -647,39 +412,6 @@ void ReplayMenuInit( WindowLayout *layout, void *userData )
 	buttonDelete = TheWindowManager->winGetWindowFromId( parentReplayMenu, buttonDeleteID );
 	buttonCopy = TheWindowManager->winGetWindowFromId( parentReplayMenu, buttonCopyID );
 
-#if defined(GENERALS_ONLINE)
-	if (s_liveGamesMode)
-	{
-		// Retitle and repurpose the action buttons. Copy is hidden rather than relabelled:
-		// a browser has no sensible third action, and a dead button is worse than a gap.
-		s_liveTitleWindow = findTitleWindow(parentReplayMenu);
-		if (s_liveTitleWindow)
-		{
-			s_savedTitleText = s_liveTitleWindow->winGetText();
-			// GadgetStaticTextSetText, not winSetText: a static text draws from its TextData
-			// display string, and only the gadget's GGM_SET_LABEL handler updates that —
-			// winSetText changes the instance-data text, which the static-text draw never
-			// reads, so the heading would stay LOAD REPLAY.
-			GadgetStaticTextSetText(s_liveTitleWindow, UnicodeString(L"LIVE GAMES"));
-		}
-		if (buttonLoad)
-		{
-			s_savedLoadText = buttonLoad->winGetText();
-			buttonLoad->winSetText(UnicodeString(L"CONNECT"));
-		}
-		if (buttonDelete)
-		{
-			s_savedDeleteText = buttonDelete->winGetText();
-			buttonDelete->winSetText(UnicodeString(L"REFRESH"));
-		}
-		if (buttonCopy)
-			buttonCopy->winHide(TRUE);
-
-		// The replay tooltip reads the hovered file off disk; these rows are not files.
-		listboxReplayFiles->winSetTooltipFunc(nullptr);
-	}
-#endif
-
 #if ENABLE_GUI_HACKS
 	// TheSuperHackers @tweak Caball009 07/02/2026 The version column is wider than the time / date column.
 	// Switch them so that there's enough space to show both time and date without a line break.
@@ -692,12 +424,7 @@ void ReplayMenuInit( WindowLayout *layout, void *userData )
 	//Load the listbox shiznit
 	GadgetListBoxReset(listboxReplayFiles);
 #if defined(GENERALS_ONLINE)
-	if (s_liveGamesMode)
-	{
-		GadgetListBoxAddEntryText(listboxReplayFiles,
-			UnicodeString(L"Loading live games..."), GameMakeColor(200, 200, 200, 255), -1);
-		liveGamesRequestList();
-	}
+	if (LiveGamesMenuIsLiveGamesMode()) LiveGamesMenuInit();
 	else
 #endif
 	PopulateReplayFileListbox(listboxReplayFiles);
@@ -735,23 +462,8 @@ void ReplayMenuInit( WindowLayout *layout, void *userData )
 void ReplayMenuShutdown( WindowLayout *layout, void *userData )
 {
 #if defined(GENERALS_ONLINE)
-	// Leave the screen as we found it. The controls belong to the shared layout, so a
-	// retitled heading or a hidden Copy button would otherwise persist into the next visit
-	// to the real replay menu.
-	if (s_liveGamesMode)
-	{
-		if (s_liveTitleWindow)
-			GadgetStaticTextSetText(s_liveTitleWindow, s_savedTitleText);
-		if (buttonLoad && !s_savedLoadText.isEmpty())
-			buttonLoad->winSetText(s_savedLoadText);
-		if (buttonDelete && !s_savedDeleteText.isEmpty())
-			buttonDelete->winSetText(s_savedDeleteText);
-		if (buttonCopy)
-			buttonCopy->winHide(FALSE);
-		s_liveTitleWindow = nullptr;
-		s_liveGameIds.clear();
-		s_liveGamesMode = FALSE;
-	}
+	// The Watch Live browser restores the shared layout; a no-op outside live mode.
+	LiveGamesMenuShutdown();
 #endif
 
 	Bool popImmediate = *(Bool *)userData;
@@ -775,24 +487,8 @@ void ReplayMenuShutdown( WindowLayout *layout, void *userData )
 void ReplayMenuUpdate( WindowLayout *layout, void *userData )
 {
 #if defined(GENERALS_ONLINE)
-	if (s_liveGamesMode)
-	{
-		// The relay fetch runs on its own thread, so collect its result here rather than via
-		// a callback — nothing off the main thread may touch gadget state.
-		AsciiString body;
-		Bool fetchOk = FALSE;
-		Int statusCode = 0;
-		if (liveRelayPollFetch(body, fetchOk, statusCode))
-			liveGamesApplyResponse(fetchOk, statusCode, body);
-
-		// Keep the list current while it is open, so games starting and ending appear on
-		// their own without the user thinking about refreshing.
-		if (!liveRelayFetchInFlight() &&
-			timeGetTime() - s_lastLiveFetchMs >= LIVE_GAMES_REFRESH_INTERVAL_MS)
-		{
-			liveGamesRequestList();
-		}
-	}
+	// The Watch Live browser pumps its own fetch + label state; a no-op outside live mode.
+	LiveGamesMenuUpdate();
 #endif
 
 	if(justEntered)
@@ -943,6 +639,13 @@ WindowMsgHandledType ReplayMenuSystem( GameWindow *window, UnsignedInt msg,
 														 WindowMsgData mData1, WindowMsgData mData2 )
 {
 
+#if defined(GENERALS_ONLINE)
+	// The Watch Live browser consumes its own messages in live-games mode; everything
+	// else falls through to the legacy replay handling.
+	if (LiveGamesMenuHandleSystemMessage(msg, mData1, mData2))
+		return MSG_HANDLED;
+#endif
+
 	switch( msg )
 	{
 
@@ -985,13 +688,6 @@ WindowMsgHandledType ReplayMenuSystem( GameWindow *window, UnsignedInt msg,
 
 					if (rowSelected >= 0)
 					{
-#if defined(GENERALS_ONLINE)
-						if (s_liveGamesMode)
-						{
-							liveGamesConnectSelected();
-							break;
-						}
-#endif
 						UnicodeString filename = GetReplayFilenameFromListbox(listboxReplayFiles, rowSelected);
 						loadReplay(filename);
 					}
@@ -1035,15 +731,6 @@ WindowMsgHandledType ReplayMenuSystem( GameWindow *window, UnsignedInt msg,
 #endif
 			if( controlID == buttonLoadID )
 			{
-#if defined(GENERALS_ONLINE)
-				if (s_liveGamesMode)
-				{
-					if (!liveGamesConnectSelected())
-						MessageBoxOk(UnicodeString(L"No game selected"),
-							UnicodeString(L"Please select a live game to watch."), nullptr);
-					break;
-				}
-#endif
 				if(listboxReplayFiles)
 				{
 					Int selected;
@@ -1067,13 +754,6 @@ WindowMsgHandledType ReplayMenuSystem( GameWindow *window, UnsignedInt msg,
 			}
 			else if( controlID == buttonDeleteID )
 			{
-#if defined(GENERALS_ONLINE)
-				if (s_liveGamesMode)
-				{
-					liveGamesRequestList();		// this button is REFRESH here
-					break;
-				}
-#endif
 				Int selected;
 				GadgetListBoxGetSelected( listboxReplayFiles,  &selected );
 				if(selected < 0)
@@ -1086,10 +766,6 @@ WindowMsgHandledType ReplayMenuSystem( GameWindow *window, UnsignedInt msg,
 			}
 			else if( controlID == buttonCopyID )
 			{
-#if defined(GENERALS_ONLINE)
-				if (s_liveGamesMode)
-					break;		// hidden in this mode; nothing to copy
-#endif
 				Int selected;
 				GadgetListBoxGetSelected( listboxReplayFiles,  &selected );
 				if(selected < 0)

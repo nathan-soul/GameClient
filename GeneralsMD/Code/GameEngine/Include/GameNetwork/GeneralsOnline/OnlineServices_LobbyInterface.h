@@ -82,6 +82,15 @@ struct LobbyEntry
 	// Written by the host from the game-setup screen, broadcast to members by GO, and read by
 	// the host's relay registration when the match starts.
 	int stream_delay_seconds = -1;
+
+	// Host decision at lobby creation: may this game be watched live at all? Defaults to
+	// true so an older GO that omits the field keeps today's behaviour.
+	bool allow_streamers = true;
+
+	// Read-only observers parked in this lobby's pre-game view (see plans/lobby-observer.md).
+	// GO tracks the count over the websocket subscriptions; members see it on their lobby
+	// refreshes.
+	int pending_observer_count = 0;
 };
 
 /// Assemble the live-stream relay registration from the lobby the local player is currently in,
@@ -230,7 +239,7 @@ public:
 	UnicodeString m_PendingCreation_LobbyName;
 	UnicodeString m_PendingCreation_InitialMapDisplayName;
 	AsciiString m_PendingCreation_InitialMapPath;
-	void CreateLobby(UnicodeString strLobbyName, UnicodeString strInitialMapName, AsciiString strInitialMapPath, bool bIsOfficial, int initialMaxSize, bool bVanillaTeamsOnly, bool bTrackStats, uint32_t startingCash, bool bPassworded, std::string strPassword, bool bAllowObservers);
+	void CreateLobby(UnicodeString strLobbyName, UnicodeString strInitialMapName, AsciiString strInitialMapPath, bool bIsOfficial, int initialMaxSize, bool bVanillaTeamsOnly, bool bTrackStats, uint32_t startingCash, bool bPassworded, std::string strPassword, bool bAllowObservers, bool bAllowStreamers);
 
 	void OnJoinedOrCreatedLobby(bool bAlreadyUpdatedDetails, std::function<void(bool)> fnCallback);
 
@@ -286,6 +295,32 @@ public:
 	{
 		m_callbackStartGamePacket = nullptr;
 	}
+
+	// Read-only lobby-observer events pushed by GO (see plans/lobby-observer.md). The observer
+	// screen registers this while the pre-game lobby view is open.
+	enum class ELobbyObserverEventType
+	{
+		LOBBY_CHANGED = 0,	// lobby state changed — refetch GET /Lobby/{id}
+		GAME_STARTING = 1,	// match is starting — run the countdown
+		STREAM_LIVE = 2,	// stream is live — fetch a watch ticket and join
+		GAME_STARTED = 3,	// match started — queue the join; the delay gate times the ticket
+	};
+	std::function<void(ELobbyObserverEventType, int64_t)> m_callbackLobbyObserverEvent = nullptr;
+	void RegisterForLobbyObserverEvent(std::function<void(ELobbyObserverEventType, int64_t)> cb)
+	{
+		m_callbackLobbyObserverEvent = cb;
+	}
+
+	void DeregisterForLobbyObserverEvent()
+	{
+		m_callbackLobbyObserverEvent = nullptr;
+	}
+
+	// Join/leave the read-only pre-game observer queue for a lobby (plans/lobby-observer.md).
+	// The queue is websocket-based: membership is a subscription, counted by GO as
+	// PendingObserverCount, and swept automatically when this session's socket closes.
+	void SubscribeToLobbyObserver(int64_t lobbyID);
+	void UnsubscribeFromLobbyObserver(int64_t lobbyID);
 
 	// periodically force refresh the lobby for data accuracy
 	int64_t m_lastForceRefresh = 0;

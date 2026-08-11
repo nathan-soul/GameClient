@@ -85,12 +85,7 @@ public:
 #if defined(GENERALS_ONLINE_ENABLE_MATCH_START_COUNTDOWN)
 	void StartCountdown();
 
-	void StopCountdown()
-	{
-		m_bCountdownStarted = false;
-		m_countdownStartTime = -1;
-		m_countdownLastCheckTime = -1;
-	}
+	void StopCountdown();
 
 	bool IsCountdownStarted()
 	{

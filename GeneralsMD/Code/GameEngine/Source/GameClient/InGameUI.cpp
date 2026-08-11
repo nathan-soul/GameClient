@@ -52,6 +52,7 @@
 #include "Common/Recorder.h"
 #include "Common/LiveStreamer.h"
 #include "Common/LiveObserver.h"
+#include "GameClient/LobbyObserverMenu.h"	// LobbyObserverModeActive (drawLiveStatus banner gate)
 #include "Common/Upgrade.h"
 #include "Common/SpecialPower.h"
 #include "Common/OptionPreferences.h"
@@ -7494,20 +7495,36 @@ void InGameUI::drawLiveStatus()
 				label.format("DESYNCED AT FRAME %d - NO LONGER THE REAL GAME", TheLiveObserver->getDesyncFrame());
 				colour = 0xFFFF4040; // red
 			}
-			else if (!TheLiveObserver->isReady())
+			else if (!TheLiveObserver->isReady() && !LobbyObserverModeActive())
 			{
+				// The pre-playback banner is only drawn when the read-only lobby view is NOT
+				// up: that screen keeps its own chat (LobbyObserverMenu) and reports the same
+				// states there, so a duplicate banner would just overlap it. Direct joins from
+				// Watch Live have no chat, so they keep the banner.
 				label = "LIVE - CONNECTING...";
 				colour = 0xFFFFFF00; // yellow
 			}
-			else if (!TheLiveObserver->hasPlaybackStarted())
+			else if (!TheLiveObserver->hasPlaybackStarted() && !LobbyObserverModeActive())
 			{
 				// The join now waits in the shell until the relay has delivered the header plus
 				// enough body to cover the broadcast delay, so this is the countdown shown there
 				// while it fills. Observer-local state — it says nothing about the live game — so
 				// it is shown regardless of F6. Must be tested before the hold state, which is
 				// true throughout pre-roll and would otherwise mask this with "WAITING FOR FRAMES".
-				label.format("LIVE GAME - STARTS IN %ds", TheLiveObserver->getSecondsUntilPlaybackReady());
-				colour = 0xFFFFFF00; // yellow
+				if (TheLiveObserver->getMaxCompleteFrame() == 0)
+				{
+					// No complete game frames from the relay yet: the players are still loading
+					// the match, so the broadcast delay is not elapsing. A countdown that cannot
+					// move would sit at its full value for the whole load, so say what is actually
+					// happening instead; the countdown starts once frames flow (players in game).
+					label = "LOADING GAME...";
+					colour = 0xFFFFFF00; // yellow
+				}
+				else
+				{
+					label.format("LIVE GAME - STARTS IN %ds", TheLiveObserver->getSecondsUntilPlaybackReady());
+					colour = 0xFFFFFF00; // yellow
+				}
 			}
 			else if (TheLiveObserver->isStreamEnded())
 			{

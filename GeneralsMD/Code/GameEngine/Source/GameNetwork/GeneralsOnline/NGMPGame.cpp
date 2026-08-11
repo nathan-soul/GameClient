@@ -582,3 +582,10 @@ void NGMPGame::StartCountdown()
 	}
 }
 
+void NGMPGame::StopCountdown()
+{
+	m_bCountdownStarted = false;
+	m_countdownStartTime = -1;
+	m_countdownLastCheckTime = -1;
+}
+

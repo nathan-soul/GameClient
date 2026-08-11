@@ -901,6 +901,41 @@ void WebSocket::Tick()
 									}
 									break;
 
+									case EWebSocketMessageID::LOBBY_OBSERVER_LOBBY_CHANGED:
+									case EWebSocketMessageID::LOBBY_OBSERVER_GAME_STARTING:
+									case EWebSocketMessageID::LOBBY_OBSERVER_STREAM_LIVE:
+									case EWebSocketMessageID::LOBBY_OBSERVER_GAME_STARTED:
+									{
+										// Push to the read-only lobby observer screen. Four
+										// events, one payload shape: { msg_id, lobby_id }.
+										int64_t observerLobbyID = -1;
+										if (jsonObject.contains("lobby_id"))
+										{
+											jsonObject["lobby_id"].get_to(observerLobbyID);
+										}
+
+										NGMP_OnlineServices_LobbyInterface* pObserverLobbyInterface = NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
+										if (pObserverLobbyInterface != nullptr && pObserverLobbyInterface->m_callbackLobbyObserverEvent != nullptr)
+										{
+											NGMP_OnlineServices_LobbyInterface::ELobbyObserverEventType eventType = NGMP_OnlineServices_LobbyInterface::ELobbyObserverEventType::LOBBY_CHANGED;
+											if (msgID == EWebSocketMessageID::LOBBY_OBSERVER_GAME_STARTING)
+											{
+												eventType = NGMP_OnlineServices_LobbyInterface::ELobbyObserverEventType::GAME_STARTING;
+											}
+											else if (msgID == EWebSocketMessageID::LOBBY_OBSERVER_STREAM_LIVE)
+											{
+												eventType = NGMP_OnlineServices_LobbyInterface::ELobbyObserverEventType::STREAM_LIVE;
+											}
+											else if (msgID == EWebSocketMessageID::LOBBY_OBSERVER_GAME_STARTED)
+											{
+												eventType = NGMP_OnlineServices_LobbyInterface::ELobbyObserverEventType::GAME_STARTED;
+											}
+
+											pObserverLobbyInterface->m_callbackLobbyObserverEvent(eventType, observerLobbyID);
+										}
+									}
+									break;
+
 									case EWebSocketMessageID::FULL_MESH_CONNECTIVITY_CHECK_RESPONSE:
 									{
 										// respond with our state

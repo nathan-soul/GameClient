@@ -59,6 +59,11 @@
 #include "GameClient/KeyDefs.h"
 #include "GameClient/GadgetTextEntry.h"
 #include "GameClient/GadgetStaticText.h"
+#include "GameClient/GUICallbacks.h"	// liveWatchOpenPasswordPopup
+#include "GameClient/LiveObserverSession.h"	// StartLiveObserverSession
+#include "GameClient/LobbyObserverMenu.h"	// SetLobbyObserverModeWithPassword
+#include "GameClient/Shell.h"
+#include "Common/LiveObserver.h"
 #include "GameNetwork/GameSpy/PeerDefs.h"
 #include "GameNetwork/GameSpy/PeerThread.h"
 #include "GameNetwork/GameSpyOverlay.h"
@@ -79,6 +84,39 @@ static GameWindow *textEntryGamePassword = nullptr;
 
 static void joinGame( AsciiString password );
 
+// Watch-live mode: this popup doubles as the password gate for a password-protected
+// livestream (plans/live-watch-password.md). In that mode the "join" is a queued
+// observer session, not a lobby join. Observe mode is the gated pre-game watch: on
+// submit the read-only lobby view opens carrying the password.
+static Bool s_watchLiveMode = FALSE;
+static Bool s_watchLiveObserveMode = FALSE;
+static Bool s_watchLivePopShellOnSubmit = FALSE;
+static AsciiString s_watchLiveLobbyId;
+static AsciiString s_watchLiveDisplayName;
+
+void liveWatchOpenPasswordPopup(const AsciiString& lobbyId, const AsciiString& displayName,
+	Bool bPopShellOnSubmit)
+{
+	s_watchLiveMode = TRUE;
+	s_watchLiveObserveMode = FALSE;
+	s_watchLivePopShellOnSubmit = bPopShellOnSubmit;
+	s_watchLiveLobbyId = lobbyId;
+	s_watchLiveDisplayName = displayName;
+
+	GameSpyOpenOverlay(GSOVERLAY_GAMEPASSWORD);
+}
+
+void liveWatchOpenObservePasswordPopup(const AsciiString& lobbyId, const AsciiString& displayName)
+{
+	s_watchLiveMode = TRUE;
+	s_watchLiveObserveMode = TRUE;
+	s_watchLivePopShellOnSubmit = FALSE;
+	s_watchLiveLobbyId = lobbyId;
+	s_watchLiveDisplayName = displayName;
+
+	GameSpyOpenOverlay(GSOVERLAY_GAMEPASSWORD);
+}
+
 //-----------------------------------------------------------------------------
 // PUBLIC FUNCTIONS ///////////////////////////////////////////////////////////
 //-----------------------------------------------------------------------------
@@ -95,11 +133,33 @@ void PopupJoinGameInit( WindowLayout *layout, void *userData )
 	textEntryGamePassword = TheWindowManager->winGetWindowFromId(parentPopup, textEntryGamePasswordID);
 	GadgetTextEntrySetText(textEntryGamePassword, UnicodeString::TheEmptyString);
 
+	// Mask the password input: the text entry has built-in secret-text support
+	// (EntryData.secretText draws asterisks while the real text stays in EntryData.text,
+	// kept in sync on input and backspace). Applies to the lobby join and the watch-live
+	// gate alike — both share this popup.
+	EntryData *entryData = (EntryData *)textEntryGamePassword->winGetUserData();
+	if (entryData)
+		entryData->secretText = TRUE;
+
 	NameKeyType staticTextGameNameID = TheNameKeyGenerator->nameToKey("PopupJoinGame.wnd:StaticTextGameName");
 	GameWindow *staticTextGameName = TheWindowManager->winGetWindowFromId(parentPopup, staticTextGameNameID);
 	GadgetStaticTextSetText(staticTextGameName, UnicodeString::TheEmptyString);
 
 	buttonCancelID = NAMEKEY("PopupJoinGame.wnd:ButtonCancel");
+
+	if (s_watchLiveMode)
+	{
+		// Watch-live password gate: title the popup with the lobby's name and skip the
+		// lobby-join path entirely — the submit handler queues an observer session instead.
+		UnicodeString lobbyName(from_utf8(s_watchLiveDisplayName.str()).c_str());
+		if (lobbyName.isEmpty())
+			lobbyName = UnicodeString(L"Enter password to watch");
+		GadgetStaticTextSetText(staticTextGameName, lobbyName);
+
+		TheWindowManager->winSetFocus(textEntryGamePassword);
+		TheWindowManager->winSetModal( parentPopup );
+		return;
+	}
 
 	NGMP_OnlineServices_LobbyInterface* pLobbyInterface = NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
 	if (pLobbyInterface == nullptr)
@@ -147,7 +207,18 @@ WindowMsgHandledType PopupJoinGameInput( GameWindow *window, UnsignedInt msg, Wi
 					if( BitIsSet( state, KEY_STATE_UP ) )
 					{
 						GameSpyCloseOverlay(GSOVERLAY_GAMEPASSWORD);
-						SetLobbyAttemptHostJoin( FALSE );
+						if (s_watchLiveMode)
+						{
+							s_watchLiveMode = FALSE;
+							s_watchLiveObserveMode = FALSE;
+							s_watchLivePopShellOnSubmit = FALSE;
+							s_watchLiveLobbyId.clear();
+							s_watchLiveDisplayName.clear();
+						}
+						else
+						{
+							SetLobbyAttemptHostJoin( FALSE );
+						}
 						parentPopup = nullptr;
 					}
 
@@ -197,7 +268,18 @@ WindowMsgHandledType PopupJoinGameSystem( GameWindow *window, UnsignedInt msg, W
 			if (controlID == buttonCancelID)
 			{
 				GameSpyCloseOverlay(GSOVERLAY_GAMEPASSWORD);
-				SetLobbyAttemptHostJoin( FALSE );
+				if (s_watchLiveMode)
+				{
+					s_watchLiveMode = FALSE;
+					s_watchLiveObserveMode = FALSE;
+					s_watchLivePopShellOnSubmit = FALSE;
+					s_watchLiveLobbyId.clear();
+					s_watchLiveDisplayName.clear();
+				}
+				else
+				{
+					SetLobbyAttemptHostJoin( FALSE );
+				}
 				parentPopup = nullptr;
 			}
 			break;
@@ -252,6 +334,41 @@ WindowMsgHandledType PopupJoinGameSystem( GameWindow *window, UnsignedInt msg, W
 
 static void joinGame( AsciiString password )
 {
+	if (s_watchLiveMode)
+	{
+		// Watch-live submit: queue the observer session with the entered password. Snapshot
+		// everything first — closing the overlay resets the mode statics. bPopShellOnSubmit
+		// pops the Watch Live browser so the welcome screen below takes over the join pump;
+		// the pre-game lobby view stays up and pumps its own handoff.
+		const AsciiString lobbyId = s_watchLiveLobbyId;
+		const AsciiString displayName = s_watchLiveDisplayName;
+		const Bool bPopShellOnSubmit = s_watchLivePopShellOnSubmit;
+		const Bool bObserveMode = s_watchLiveObserveMode;
+
+		s_watchLiveMode = FALSE;
+		s_watchLiveObserveMode = FALSE;
+		s_watchLivePopShellOnSubmit = FALSE;
+		s_watchLiveLobbyId.clear();
+		s_watchLiveDisplayName.clear();
+
+		GameSpyCloseOverlay(GSOVERLAY_GAMEPASSWORD);
+		parentPopup = nullptr;
+
+		if (bObserveMode)
+		{
+			// Gated pre-game watch: open the read-only lobby view carrying the password —
+			// it is sent when the stream goes live, and a wrong one reprompts there.
+			SetLobbyObserverModeWithPassword(lobbyId.str(), password.str());
+			TheShell->push("Menus/GameSpyGameOptionsMenu.wnd");
+			return;
+		}
+
+		StartLiveObserverSession(lobbyId, password, displayName);
+		if (bPopShellOnSubmit)
+			TheShell->pop();
+		return;
+	}
+
 	NGMP_OnlineServices_LobbyInterface* pLobbyInterface = NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
 	if (pLobbyInterface == nullptr)
 	{

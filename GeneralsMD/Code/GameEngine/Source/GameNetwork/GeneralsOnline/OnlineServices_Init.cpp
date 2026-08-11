@@ -1309,6 +1309,26 @@ void WebSocket::SendData_LobbyChatMessage(UnicodeString& msg, bool bIsAction, bo
 	Send(strBody.c_str());
 }
 
+void WebSocket::SendData_LobbyObserverSubscribe(int64_t lobbyID)
+{
+	nlohmann::json j;
+	j["msg_id"] = EWebSocketMessageID::LOBBY_OBSERVER_SUBSCRIBE;
+	j["lobby_id"] = lobbyID;
+	std::string strBody = j.dump();
+
+	Send(strBody.c_str());
+}
+
+void WebSocket::SendData_LobbyObserverUnsubscribe(int64_t lobbyID)
+{
+	nlohmann::json j;
+	j["msg_id"] = EWebSocketMessageID::LOBBY_OBSERVER_UNSUBSCRIBE;
+	j["lobby_id"] = lobbyID;
+	std::string strBody = j.dump();
+
+	Send(strBody.c_str());
+}
+
 void WebSocket::SendData_LeaveNetworkRoom()
 {
 	SendData_JoinNetworkRoom(-1);

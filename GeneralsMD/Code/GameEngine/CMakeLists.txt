@@ -754,6 +754,8 @@ set(GAMEENGINE_SRC
     Source/GameClient/GUI/GUICallbacks/Menus/LanGameOptionsMenu.cpp
     Source/GameClient/GUI/GUICallbacks/Menus/LanLobbyMenu.cpp
     Source/GameClient/GUI/GUICallbacks/Menus/LanMapSelectMenu.cpp
+    Source/GameClient/GUI/GUICallbacks/Menus/LiveGamesMenu.cpp
+    Source/GameClient/GUI/GUICallbacks/Menus/LobbyObserverMenu.cpp
     Source/GameClient/GUI/GUICallbacks/Menus/MainMenu.cpp
     Source/GameClient/GUI/GUICallbacks/Menus/MapSelectMenu.cpp
     Source/GameClient/GUI/GUICallbacks/Menus/NetworkDirectConnect.cpp
@@ -788,6 +790,7 @@ set(GAMEENGINE_SRC
     Source/GameClient/GUI/GUICallbacks/ReplayControls.cpp
 #    Source/GameClient/GUI/HeaderTemplate.cpp
 #    Source/GameClient/GUI/IMEManager.cpp
+    Source/GameClient/GUI/LiveObserverSession.cpp
 #    Source/GameClient/GUI/LoadScreen.cpp
 #    Source/GameClient/GUI/ProcessAnimateWindow.cpp
     Source/GameClient/GUI/Shell/Shell.cpp

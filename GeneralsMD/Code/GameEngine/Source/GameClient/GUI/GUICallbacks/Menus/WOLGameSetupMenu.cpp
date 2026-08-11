@@ -60,6 +60,7 @@
 
 #if defined(GENERALS_ONLINE)
 #include "Common/LiveObserver.h"	// liveObserverLog for diagnostics
+#include "GameClient/LobbyObserverMenu.h"		// read-only pre-game lobby view (observer mode)
 #endif
 
 #include "GameNetwork/GameSpy/BuddyDefs.h"
@@ -242,6 +243,33 @@ static GameWindow *checkBoxStreamGame = NULL;
 static GameWindow *textEntryStreamDelay = NULL;
 static GameWindow *staticTextStreamDelay = NULL;
 
+// Read-only observers parked in this lobby's pre-game view (plans/lobby-observer.md).
+// Code-created next to the stream controls; updated on every lobby refresh.
+static GameWindow *staticTextObserverCount = NULL;
+
+static void refreshObserverCountLabel(void)
+{
+	if (staticTextObserverCount == nullptr)
+		return;
+
+	NGMP_OnlineServices_LobbyInterface* pLobbyInterface = NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
+	if (pLobbyInterface == nullptr || !pLobbyInterface->IsInLobby())
+		return;
+
+	// The count label only means something for lobbies whose host allowed streamers:
+	// observers cannot park on the others, so the count would read 0 forever.
+	const Bool showCount = pLobbyInterface->GetCurrentLobby().allow_streamers;
+	if (staticTextObserverCount != nullptr)
+		staticTextObserverCount->winHide(showCount ? FALSE : TRUE);
+	if (!showCount)
+		return;
+
+	const Int observerCount = pLobbyInterface->GetCurrentLobby().pending_observer_count;
+	UnicodeString text;
+	text.format(L"%d observer%s waiting", observerCount, observerCount == 1 ? L"" : L"s");
+	GadgetStaticTextSetText(staticTextObserverCount, text);
+}
+
 /// The delay only means anything when the game is being streamed, so grey it out otherwise.
 /// It is also host-editable only: the value is a lobby property set by the host, so members
 /// always see it read-only regardless of the streaming checkbox.
@@ -258,6 +286,45 @@ static void refreshStreamControls(void)
 		textEntryStreamDelay->winEnable(delayEditable);
 	if (staticTextStreamDelay)
 		staticTextStreamDelay->winEnable(delayEditable);
+}
+
+/// Keep the delay field in step with the lobby value GO broadcasts. Runs on every lobby
+/// refresh (LOBBY_CURRENT_LOBBY_UPDATE → UpdateRoomDataCache → WOLDisplayGameOptions), so a
+/// member sees the host's current choice without leaving the screen, and the host's own
+/// commit is confirmed by the same broadcast. With no lobby value yet, the field shows the
+/// local preference (the old per-client behaviour), which is also what a fresh lobby starts
+/// from. The field is never rewritten while it holds keyboard focus — pressing Enter commits
+/// the typed value (see commitStreamDelayEntry), and a refresh mid-typing would discard the
+/// digits.
+static void refreshStreamDelayField(void)
+{
+	if (textEntryStreamDelay == NULL)
+		return;
+
+	// The enabled state follows the streaming checkbox and host role; keep it in sync on
+	// every refresh (e.g. after host migration) even while the field holds focus.
+	refreshStreamControls();
+
+	NGMP_OnlineServices_LobbyInterface* pLobbyInterface =
+		NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
+	const Bool lobbyHasValue = pLobbyInterface != nullptr && pLobbyInterface->IsInLobby()
+		&& pLobbyInterface->GetCurrentLobby().stream_delay_seconds >= 0;
+
+	Int delaySeconds = TheGlobalData
+		? TheGlobalData->m_liveStreamDelaySeconds
+		: (Int)LIVE_DELAY_SECONDS_DEFAULT;
+	if (lobbyHasValue)
+		delaySeconds = pLobbyInterface->GetCurrentLobby().stream_delay_seconds;
+
+	if (TheWindowManager->winGetFocus() == textEntryStreamDelay)
+		return;
+
+	UnicodeString display;
+	display.format(L"%d", delaySeconds);
+	if (GadgetTextEntryGetText(textEntryStreamDelay) != display)
+	{
+		GadgetTextEntrySetText(textEntryStreamDelay, display);
+	}
 }
 
 /// Validate and store the delay the user typed. Rejects rather than clamps: silently
@@ -1431,6 +1498,15 @@ void WOLDisplayGameOptions()
   }
 
   DEBUG_ASSERTCRASH( index < itemCount, ("Could not find new starting cash amount %d in list", theGame->getStartingCash().countMoney() ) );
+
+#if defined(GENERALS_ONLINE)
+  // Observers waiting on this lobby update on every roster refresh (LOBBY_CURRENT_LOBBY_UPDATE
+  // → UpdateRoomDataCache → this function).
+  refreshObserverCountLabel();
+  // The broadcast delay is a lobby property, so it follows the same refresh: when the host
+  // changes it, GO re-broadcasts and every member's field (read-only for them) updates live.
+  refreshStreamDelayField();
+#endif
 }
 
 
@@ -1708,33 +1784,44 @@ void InitWOLGameGadgets()
       GadgetCheckBoxSetChecked(checkBoxStreamGame,
         TheGlobalData ? TheGlobalData->m_liveStreamEnabled : FALSE);
 
-    if (textEntryStreamDelay)
-    {
-      // The broadcast delay is a lobby property chosen by the host. The host's field is
-      // editable and posts its value to GO (see commitStreamDelayEntry); everyone else sees
-      // the host's value read-only — the lobby cache is fresh here because this screen is
-      // entered right after the lobby update that carried it.
-      const Bool isHost = pLobbyInterface ? pLobbyInterface->IsHost() : FALSE;
-      Int delaySeconds = LIVE_DELAY_SECONDS_DEFAULT;
-      if (pLobbyInterface && pLobbyInterface->IsInLobby() &&
-        pLobbyInterface->GetCurrentLobby().stream_delay_seconds >= 0)
-      {
-        delaySeconds = pLobbyInterface->GetCurrentLobby().stream_delay_seconds;
-      }
-      else if (TheGlobalData)
-      {
-        delaySeconds = TheGlobalData->m_liveStreamDelaySeconds;
-      }
+    // Show the lobby's broadcast delay (or the local preference when GO has no value yet)
+    // and set the editable/enabled state. The same function runs on every lobby refresh
+    // (see WOLDisplayGameOptions), so a host change lands on this field live.
+    refreshStreamDelayField();
 
-      UnicodeString delayText;
-      delayText.format(L"%d", delaySeconds);
-      GadgetTextEntrySetText(textEntryStreamDelay, delayText);
-      textEntryStreamDelay->winEnable(isHost);
-      if (staticTextStreamDelay)
-        staticTextStreamDelay->winEnable(isHost);
+    // "N observers waiting", for the host and members: read-only viewers parked in this
+    // lobby's pre-game view. Same code-created approach as the stream controls; updated
+    // by refreshObserverCountLabel on every lobby refresh. Sized and styled like the
+    // observer's own label (map-display font), and parked right before the Enable Stream
+    // checkbox so the two stream-related rows read together.
+    if (staticTextObserverCount == NULL)
+    {
+      TextData countTextData;
+      memset(&countTextData, 0, sizeof(countTextData));
+      WinInstanceData countInstData;
+      countInstData.init();
+      countInstData.m_style = GWS_STATIC_TEXT | GWS_MOUSE_TRACK;
+      countInstData.m_textLabelString = "0 observers waiting";
+
+      // Start position: right of centre, ending just before the Enable Stream checkbox at
+      // 537 in the layout's 800x600 design space. The observer's pre-game lobby count label
+      // sits at the same spot (see LobbyObserverMenu).
+      staticTextObserverCount = TheWindowManager->gogoGadgetStaticText(parentWOLGameSetup,
+        streamControlStatus,
+        (Int)(410 * xScale), (Int)(52 * yScale),
+        (Int)(150 * xScale), (Int)(20 * yScale),
+        &countInstData, &countTextData, nullptr, TRUE);
+
+      // The same visual/font source the observer's count label uses (the map display),
+      // not the game-name title — that one is sized for a heading.
+      if (staticTextObserverCount && textEntryMapDisplay)
+      {
+        staticTextObserverCount->winCopyVisualsFrom(textEntryMapDisplay);
+        staticTextObserverCount->winSetFont(textEntryMapDisplay->winGetFont());
+      }
     }
 
-    refreshStreamControls();
+    refreshObserverCountLabel();
   }
 #endif
 
@@ -1940,6 +2027,7 @@ void DeinitWOLGameGadgets()
   checkBoxStreamGame = NULL;
   textEntryStreamDelay = NULL;
   staticTextStreamDelay = NULL;
+  staticTextObserverCount = NULL;
 #endif
 
 //	GameWindow *staticTextTitle = NULL;
@@ -1966,6 +2054,17 @@ Bool initialAcceptEnable = FALSE;
 //-------------------------------------------------------------------------------------------------
 void WOLGameSetupMenuInit( WindowLayout *layout, void *userData )
 {
+#if defined(GENERALS_ONLINE)
+	// Read-only pre-game lobby view: the same layout, a completely different screen. The
+	// branch runs before anything lobby/mesh/NGMP-related — observer mode never joins a
+	// lobby and must not touch that state (see plans/lobby-observer.md).
+	if (LobbyObserverModeActive())
+	{
+		LobbyObserverInit(layout, userData);
+		return;
+	}
+#endif
+
 	NGMP_OnlineServices_LobbyInterface* pLobbyInterface = NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
 	if (pLobbyInterface == nullptr)
 	{
@@ -2478,6 +2577,14 @@ static void shutdownComplete( WindowLayout *layout )
 //-------------------------------------------------------------------------------------------------
 void WOLGameSetupMenuShutdown( WindowLayout *layout, void *userData )
 {
+#if defined(GENERALS_ONLINE)
+	if (LobbyObserverModeActive())
+	{
+		LobbyObserverShutdown(layout, userData);
+		return;
+	}
+#endif
+
 	NGMP_OnlineServices_LobbyInterface* pLobbyInterface = NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
 
 	if (pLobbyInterface != nullptr)
@@ -2548,6 +2655,14 @@ static void fillPlayerInfo(const PeerResponse *resp, PlayerInfo *info)
 //-------------------------------------------------------------------------------------------------
 void WOLGameSetupMenuUpdate( WindowLayout * layout, void *userData)
 {
+#if defined(GENERALS_ONLINE)
+	if (LobbyObserverModeActive())
+	{
+		LobbyObserverUpdate(layout, userData);
+		return;
+	}
+#endif
+
 	// Refresh only the fast-changing connection indicators each frame.
 	WOLRefreshConnectionIndicators();
 
@@ -3619,6 +3734,13 @@ void WOLGameSetupMenuUpdate( WindowLayout * layout, void *userData)
 WindowMsgHandledType WOLGameSetupMenuInput( GameWindow *window, UnsignedInt msg,
 																			 WindowMsgData mData1, WindowMsgData mData2 )
 {
+#if defined(GENERALS_ONLINE)
+	if (LobbyObserverModeActive())
+	{
+		return LobbyObserverInput(window, msg, mData1, mData2);
+	}
+#endif
+
 	/*
 	switch( msg )
 	{
@@ -4001,6 +4123,18 @@ static Int getFirstSelectablePlayer(const GameInfo *game)
 WindowMsgHandledType WOLGameSetupMenuSystem( GameWindow *window, UnsignedInt msg,
 														 WindowMsgData mData1, WindowMsgData mData2 )
 {
+#if defined(GENERALS_ONLINE)
+	// Button clicks arrive here as GBM_SELECTED (the button's owner chain), not in the
+	// Input callback. Observer mode routes them to the lobby view's own handler; the
+	// stock back-button case could not match anyway (buttonBackID stays invalid because
+	// WOLGameSetupMenuInit is skipped in observer mode) and its PopBackToLobby is wrong
+	// for a watcher who is not a lobby member.
+	if (LobbyObserverModeActive() && msg == GBM_SELECTED)
+	{
+		return LobbyObserverInput(window, msg, mData1, mData2);
+	}
+#endif
+
 	UnicodeString txtInput;
 
 	static int buttonCommunicatorID = NAMEKEY_INVALID;

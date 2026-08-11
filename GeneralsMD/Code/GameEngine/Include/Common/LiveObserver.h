@@ -54,7 +54,17 @@ public:
 	/// Begin receiving replay data. Non-blocking; spawns a background thread.
 	/// Start watching a livestream by GO lobby id. The relay URL comes from GO, which mints
 	/// the single-use watch ticket -- callers neither know nor build it.
-	void connect(const AsciiString& lobbyId);
+	/// password is sent with the ticket request when a lobby's stream is password-protected;
+	/// a wrong one latches m_passwordRejected instead of retrying (see fetchWatchTicket).
+	/// expectedDelaySeconds (lobby's broadcast delay, -1 = unknown) pre-seeds the countdown
+	/// and join timeout before the ticket response (or the relay's ROLE) pins the real value.
+	void connect(const AsciiString& lobbyId, const std::string& password = std::string(),
+		Int expectedDelaySeconds = -1);
+
+	/// TRUE when GO rejected the last ticket request with 401 — the stream is password
+	/// protected and the supplied password was missing or wrong. The join pump shows the
+	/// password popup again instead of waiting out the retry window.
+	Bool isPasswordRejected() const { return m_passwordRejected.load(); }
 
 	/// Returns true once the HEADER has been received and playback can start.
 	Bool isReady() const { return m_headerReceived.load(); }
@@ -154,6 +164,37 @@ public:
 	/// build runs at 60, not the original 30) — with frames derived from it.
 	UnsignedInt getDelaySeconds() const { return m_delaySeconds.load(); }
 	UnsignedInt getDelayFrames() const { return m_delaySeconds.load() * LOGICFRAMES_PER_SECOND; }
+
+	/// Effective delay: 0 when GO holds the stream server-side (server_held — the ticket was
+	/// only minted once the broadcast delay had elapsed, so the relay stream itself is
+	/// already delayed). Otherwise the session delay from the relay's ROLE frame. The gate
+	/// functions all use this, so a server-held stream plays at the live edge instead of
+	/// double-holding (GO's admission wait on top of the client's own).
+	UnsignedInt getEffectiveDelaySeconds() const
+	{
+		return m_serverHeld.load() ? 0 : m_delaySeconds.load();
+	}
+
+	/// TRUE while GO is holding this viewer's watch ticket behind the broadcast delay
+	/// (423 response, plans/live-observer-server-delay.md). The join pump and the countdown
+	/// displays use this to show the hold instead of a failure.
+	Bool isWaitingForBroadcastDelay() const { return m_delayWaitActive.load(); }
+
+	/// Whole seconds left in the admission hold (rounded up), 0 when not waiting.
+	Int getBroadcastDelayRemainingSeconds() const;
+
+	/// TRUE once the watch ticket was minted with server_held=true: GO owns the broadcast
+	/// delay, so this client must not hold playback itself.
+	Bool isServerHeld() const { return m_serverHeld.load(); }
+
+	/// The broadcast delay known before the ticket/ROLE arrive: the expected value supplied
+	/// at connect() when >= 0, otherwise whatever the session delay currently says (the
+	/// ROLE default). The countdown and join timeout use this while the admission hold has
+	/// not yet published its exact remaining time.
+	UnsignedInt getExpectedDelaySeconds() const
+	{
+		return (m_expectedDelaySeconds >= 0) ? (UnsignedInt)m_expectedDelaySeconds : m_delaySeconds.load();
+	}
 
 	/// Record the frame at which this client's simulation was first seen to diverge from the
 	/// streamed one. Playback deliberately continues afterwards — the observer just needs to
@@ -285,6 +326,19 @@ private:
 	// plain UnsignedInt on the Recorder this crossed the boundary unsynchronised.
 	std::atomic<UnsignedInt> m_delaySeconds;
 
+	// GO admission-hold state (plans/live-observer-server-delay.md). Written by the network
+	// thread in fetchWatchTicket, read by the game thread. The deadline is a steady-clock ms
+	// timestamp; m_serverHeld latches on the 200 response and switches the effective delay
+	// to 0 for the rest of the session.
+	std::atomic<Bool> m_serverHeld;
+	std::atomic<Bool> m_delayWaitActive;
+	std::atomic<UnsignedInt> m_delayWaitDeadlineMs;
+
+	// The lobby's broadcast delay as known before any ticket/ROLE response: written on the
+	// main thread before the network thread spawns (happens-before via thread creation), -1
+	// = unknown. Pre-seeds the countdown and join timeout during the admission wait.
+	Int m_expectedDelaySeconds;
+
 	// Watermarks published by the network thread, read by the game thread.
 	std::atomic<UnsignedInt> m_maxCompleteFrame;
 	std::atomic<Int> m_safeReadOffset;
@@ -296,6 +350,12 @@ private:
 	Bool m_parseCorrupt;                      // latched: watermark frozen, see advanceParseCursor
 
 	AsciiString m_gameId;
+
+	// Password for a password-protected livestream, sent with the watch-ticket request.
+	// Written on the main thread before the network thread spawns, read only by the network
+	// thread — happens-before via thread creation, no lock needed.
+	std::string m_password;
+	std::atomic<Bool> m_passwordRejected{ FALSE };
 
 	File* m_liveFile;
 	AsciiString m_liveFilePath;
@@ -369,13 +429,29 @@ Bool liveRelayFetchInFlight();
 struct LiveGameEntry
 {
 	AsciiString lobbyId;      ///< GO's LobbyID as decimal text; also the relay's session key.
+	AsciiString name;         ///< The lobby's display name (popup titles, diagnostics).
 	AsciiString mapName;      ///< Display name, never a path.
 	AsciiString players;      ///< Human players, comma separated.
 	Int observerCount;
 	Int delaySeconds;
 	Int ageSeconds;
+	Int state;                ///< 1 = live stream, 0 = pre-game lobby (read-only observe).
+	Bool passworded;
+	Int pendingObserverCount; ///< Pre-game observers waiting on this lobby (0 when live).
 
-	LiveGameEntry() : observerCount(0), delaySeconds(0), ageSeconds(0) {}
+	/// What GO says to do with this row, computed per viewer (plans/live-observer-server-delay.md):
+	/// 0 = observe (pre-game — enter the read-only lobby view),
+	/// 1 = wait (stream not live yet, or this viewer is held behind the broadcast delay —
+	///     enter the read-only lobby view and wait there),
+	/// 2 = join (stream live and this viewer may mint now — connect directly, skip the lobby).
+	Int watchAction;
+
+	/// Remaining broadcast-delay hold in seconds for this viewer (0 when not held).
+	Int delayRemainingSeconds;
+
+	LiveGameEntry() : observerCount(0), delaySeconds(0), ageSeconds(0),
+		state(1), passworded(FALSE), pendingObserverCount(0),
+		watchAction(2), delayRemainingSeconds(0) {}
 };
 
 /// Parse a GO /Livestreams reply into entries. FALSE when the body is not usable at all;
@@ -395,24 +471,9 @@ std::string liveServicesAuthToken();
 Bool liveServicesRequest(const AsciiString& url, Bool bPost, const char* szPostBody,
 	AsciiString& outBody, Int& outStatusCode);
 
-/// Queue a live-observer session for the given lobby (implemented in MainMenu.cpp).
-///
-/// Only records the intent. The connection blocks on the relay's HEADER and then starts a
-/// game, neither of which may happen while a screen is still animating — so the screen the
-/// player lands on performs it, via LiveObserverStartPendingSession() below.
-void StartLiveObserverSession(const AsciiString& lobbyId);
-
-/// Start a queued live-observer session if one is pending and the shell has settled; a no-op
-/// otherwise. Returns TRUE when playback actually started, which means the calling screen
-/// should now stand itself down so the running game is visible.
-///
-/// Pumped from every shell screen the browser can be reached from — today the main menu and
-/// the Online welcome screen — because a session is queued from whichever one the player
-/// happens to be on, and only that screen can tear itself down afterwards.
-Bool LiveObserverStartPendingSession(void);
-
-/// Switch the replay menu into live-games mode before pushing it (ReplayMenu.cpp).
-void ReplayMenuEnterLiveGamesMode(void);
+// Queueing and pumping a live-observer session lives in GameClient/LiveObserverSession.h —
+// it sequences shell screens (TheShell, transitions, the password popup), which is not this
+// layer's business.
 
 // ---------------------------------------------------------------------------------------
 // TheSuperHackers @build 03/08/2026 Live observer/streamer file logging.
@@ -437,7 +498,7 @@ void ReplayMenuEnterLiveGamesMode(void);
 // apart, which is precisely the confusion this tag exists to prevent. Any file using it must
 // include this header — that also brings the LIVE_OBSERVER_LOGGING resolution above, without
 // which logging silently stays off in a DEFAULT build.
-#define LIVE_OBSERVER_BUILD_TAG "2026-08-08-observer-chat"
+#define LIVE_OBSERVER_BUILD_TAG "2026-08-10-observer-server-delay"
 
 void liveObserverLog(const char* fmt, ...);
 void liveObserverInitLog(const char* lobbyId);

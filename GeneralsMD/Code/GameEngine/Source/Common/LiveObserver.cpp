@@ -39,8 +39,10 @@
 #include <cstdarg>
 #include <cstring>
 #include <cstdlib>
+#include <chrono>
 #include <fstream>		// cacert.pem presence check, see connectToRelay
 #include <string>
+#include <thread>
 #include <windows.h>
 
 // ============================================================================
@@ -110,6 +112,10 @@ LiveObserver::LiveObserver()
     , m_lastLiveEdgeChangeMs(timeGetTime())
     , m_desyncFrame(0)
     , m_delaySeconds(LIVE_DELAY_SECONDS_DEFAULT)
+    , m_serverHeld(FALSE)
+    , m_delayWaitActive(FALSE)
+    , m_delayWaitDeadlineMs(0)
+    , m_expectedDelaySeconds(-1)
     , m_spectatorChatMode(SPECTATOR_CHAT_AUTO)
     , m_liveFile(nullptr)
     , m_curlEasy(nullptr)
@@ -265,6 +271,10 @@ Bool liveServicesParseLivestreams(const AsciiString& body, std::vector<LiveGameE
 			const std::string mapName = game.value("map_name", std::string(""));
 			entry.mapName = mapName.empty() ? "(unknown map)" : mapName.c_str();
 
+			// The lobby's display name — used for the password popup title on passworded rows.
+			const std::string lobbyName = game.value("name", std::string(""));
+			entry.name = lobbyName.empty() ? entry.mapName : lobbyName.c_str();
+
 			// players[] arrives already reduced to the humans in the lobby, so unlike the relay's
 			// old members[] there are no empty slots to filter out.
 			std::string playerList;
@@ -293,6 +303,23 @@ Bool liveServicesParseLivestreams(const AsciiString& body, std::vector<LiveGameE
 				? game["delay_seconds"].get<Int>() : (Int)LIVE_DELAY_SECONDS_DEFAULT;
 			entry.ageSeconds = (game.contains("age_seconds") && game["age_seconds"].is_number_integer())
 				? game["age_seconds"].get<Int>() : 0;
+
+			// state/passworded/pending_observer_count are new in the expanded /Livestreams list
+			// (pre-game lobbies included). Defaults keep an old GO's live-only rows behaving as
+			// before: live, not passworded, no waiting count.
+			entry.state = (game.contains("state") && game["state"].is_number_integer())
+				? game["state"].get<Int>() : 1;
+			entry.passworded = game.value("passworded", false) ? TRUE : FALSE;
+			entry.pendingObserverCount = game.value("pending_observer_count", 0);
+
+			// watch_action is GO's per-viewer directive (0 observe / 1 wait / 2 join). Absent
+			// on older GO, fall back to the old state-derived rule: live rows join, pre-game
+			// rows observe.
+			entry.watchAction = (game.contains("watch_action") && game["watch_action"].is_number_integer())
+				? game["watch_action"].get<Int>() : (entry.state == 1 ? 2 : 0);
+			entry.delayRemainingSeconds = (game.contains("delay_remaining_seconds") &&
+				game["delay_remaining_seconds"].is_number_integer())
+				? game["delay_remaining_seconds"].get<Int>() : 0;
 
 			outGames.push_back(entry);
 		}
@@ -626,7 +653,7 @@ void LiveObserver::updatePlaybackGate(UnsignedInt curFrame)
 
     const UnsignedInt liveEdge = getMaxCompleteFrame();
     const UnsignedInt gap = (liveEdge > curFrame) ? (liveEdge - curFrame) : 0;
-    const UnsignedInt delayFrames = getDelayFrames();
+    const UnsignedInt delayFrames = getEffectiveDelaySeconds() * LOGICFRAMES_PER_SECOND;
     const Bool streamEnded = m_streamEnded.load();
 
     // The near-live gate keeps the observer a full broadcast delay behind the live edge. It
@@ -726,7 +753,7 @@ Int LiveObserver::getPreRollSecondsRemaining() const
     const UnsignedInt curFrame = TheGameLogic ? TheGameLogic->getFrame() : 0;
     const UnsignedInt liveEdge = getMaxCompleteFrame();
     const UnsignedInt gap = (liveEdge > curFrame) ? (liveEdge - curFrame) : 0;
-    const UnsignedInt delayFrames = getDelayFrames();
+    const UnsignedInt delayFrames = getEffectiveDelaySeconds() * LOGICFRAMES_PER_SECOND;
     if (gap >= delayFrames)
         return 0;
 
@@ -740,7 +767,7 @@ Bool LiveObserver::isWithinBroadcastDelay(UnsignedInt curFrame) const
     const UnsignedInt gap = (liveEdge > curFrame) ? (liveEdge - curFrame) : 0;
     // The release bound of the gate's hysteresis band: the observer may sit a full band
     // past the delay while playing, and fast-forward must stay refused for all of it.
-    return gap <= getDelayFrames() + LIVE_GATE_HYSTERESIS_FRAMES;
+    return gap <= getEffectiveDelaySeconds() * LOGICFRAMES_PER_SECOND + LIVE_GATE_HYSTERESIS_FRAMES;
 }
 
 Bool LiveObserver::isPlaybackReady() const
@@ -757,15 +784,39 @@ Bool LiveObserver::isPlaybackReady() const
     // depends on. A zero delay still needs that first record, hence the offset check.
     if (m_safeReadOffset.load() <= m_bodyStartOffset)
         return false;
-    return getMaxCompleteFrame() >= getDelayFrames();
+    return getMaxCompleteFrame() >= getEffectiveDelaySeconds() * LOGICFRAMES_PER_SECOND;
+}
+
+Int LiveObserver::getBroadcastDelayRemainingSeconds() const
+{
+    if (!m_delayWaitActive.load())
+        return 0;
+
+    const UnsignedInt nowMs = timeGetTime();
+    const UnsignedInt deadline = m_delayWaitDeadlineMs.load();
+    if (deadline <= nowMs)
+        return 0;
+
+    // Round up, so the countdown only reads 0 when the hold is genuinely over.
+    return (Int)((deadline - nowMs + 999) / 1000);
 }
 
 Int LiveObserver::getSecondsUntilPlaybackReady() const
 {
+    // The GO admission hold replaces the pre-roll wait: while the ticket itself is held
+    // behind the broadcast delay there is no file yet, so the countdown must come from the
+    // hold deadline, not from the buffer.
+    if (isWaitingForBroadcastDelay())
+        return getBroadcastDelayRemainingSeconds();
+
     if (isPlaybackReady())
         return 0;
 
-    const UnsignedInt delayFrames = getDelayFrames();
+    // Before the ticket/ROLE arrive there is no authoritative delay yet: use the expected
+    // lobby delay (pre-seeded at connect), which is what the countdown should show while
+    // GO is still holding. Once connected, the relay/GO values apply.
+    const UnsignedInt delaySeconds = m_connected.load() ? getEffectiveDelaySeconds() : getExpectedDelaySeconds();
+    const UnsignedInt delayFrames = delaySeconds * LOGICFRAMES_PER_SECOND;
     const UnsignedInt edge = getMaxCompleteFrame();
     const UnsignedInt remaining = (delayFrames > edge) ? (delayFrames - edge) : 0;
     // Round up so the countdown only reads 0 when playback can genuinely start.
@@ -774,14 +825,35 @@ Int LiveObserver::getSecondsUntilPlaybackReady() const
 
 UnsignedInt LiveObserver::getJoinTimeoutMs() const
 {
+    // While GO holds the ticket behind the broadcast delay the wait can be minutes long
+    // (the host's delay, up to 600 s). The timeout must cover the remaining hold plus
+    // headroom, or the join pump would abandon a perfectly healthy wait.
+    if (m_delayWaitActive.load())
+    {
+        return getBroadcastDelayRemainingSeconds() * 1000 + 60000;
+    }
+
+    // A server-held stream never needs the client's pre-roll buffer (effective delay 0),
+    // so the whole wait is connection + first record — headroom only.
+    if (m_serverHeld.load())
+    {
+        return 60000;
+    }
+
+    // Before the ticket/ROLE arrive, time out on the expected lobby delay (pre-seeded at
+    // connect) rather than the ROLE default: the pre-live phase can legitimately last the
+    // whole delay once the join is queued at game start.
+    const UnsignedInt delaySeconds = m_connected.load() ? getDelaySeconds() : getExpectedDelaySeconds();
+
     // Ceiling for how long the join may wait before giving up — nothing expects to reach it.
     // A game already past the broadcast delay is playable the moment its catch-up arrives,
     // because isPlaybackReady() compares the live edge against the delay; it does not sit out
     // the delay itself. Only a freshly-started game approaches this ceiling, and there the
     // wait really is the delay: the stream must produce a full delay's worth of records before
     // playback may begin. The delay in real seconds plus headroom for the connection, ticket
-    // minting and the first record bounds that worst case.
-    return getDelaySeconds() * 1000 + 20000;
+    // minting and the first record bounds that worst case. 60s of headroom also covers the
+    // lobby-observer flow, where the ticket retry can wait out the stream going live.
+    return delaySeconds * 1000 + 60000;
 }
 
 LiveObserver::~LiveObserver()
@@ -866,20 +938,134 @@ bool LiveObserver::fetchWatchTicket(AsciiString& outConnectUrl)
 
     AsciiString body;
     Int statusCode = 0;
-    if (!liveServicesRequest(url, TRUE, "", body, statusCode))
+
+    // The POST body carries the lobby password when one was supplied; unpassworded streams
+    // keep the empty body. Built once: nlohmann's dump() escapes it, so a quote in a
+    // password cannot break the JSON.
+    std::string postBody;
+    if (!m_password.empty())
     {
-        liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s failed (request not sent)\n",
-            m_gameId.str());
-        return false;
+        nlohmann::json pwPayload;
+        pwPayload["password"] = m_password;
+        postBody = pwPayload.dump();
     }
 
-    if (statusCode != 200)
+    // The observer can arrive just as the stream goes live (the pre-game lobby view hands off
+    // on the stream-live push, but there is a race: the relay may not hold the header yet, or
+    // GO may not have processed its liveness report). GO answers 404 for that window. Retry on
+    // a short cadence for a bounded time instead of aborting — a normal Watch Live join is
+    // unaffected (the ticket is minted in the first request), and the retry loop aborts as
+    // soon as the session is cancelled, so LEAVE does not hang behind it.
+    //
+    // 401 is different and must NOT retry: it means the stream is password-protected and the
+    // supplied password was missing or wrong. Latched and returned immediately so the join
+    // pump can reprompt.
+    //
+    // 423 is the broadcast-delay admission hold (plans/live-observer-server-delay.md): GO
+    // will not mint the ticket until the stream has been live for the host's delay. The
+    // retry deadline is re-armed past the end of the hold on every 423, and the client
+    // sleeps to the end of the hold instead of polling: GO re-computes the remaining hold
+    // on every request, so a single retry right after the deadline mints the ticket. Long
+    // holds sleep in 30s steps, which keeps the 404 "stream ended" case detectable within
+    // half a minute.
+    const int64_t kTicketRetryWindowMs = 40000;
+    const auto retryStart = std::chrono::steady_clock::now();
+    auto retryDeadline = retryStart + std::chrono::milliseconds(kTicketRetryWindowMs);
+    for (;;)
     {
-        // 404 is the ordinary "that stream is over" answer: the game was listed a moment ago,
-        // but the relay has closed it since. Anything else is a real failure.
-        liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s refused (status=%d) %s\n",
-            m_gameId.str(), statusCode, body.str());
-        return false;
+        if (!m_shouldRun.load())
+        {
+            liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s cancelled\n",
+                m_gameId.str());
+            return false;
+        }
+
+        if (!liveServicesRequest(url, TRUE, postBody.c_str(), body, statusCode))
+        {
+            liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s failed (request not sent)\n",
+                m_gameId.str());
+            return false;
+        }
+
+        if (statusCode == 200)
+        {
+            // GO owns the broadcast delay: the ticket was only minted once the stream
+            // outlived it, so the relay stream is already delayed and this client must not
+            // hold playback itself. Absent field (older GO) keeps the client-side hold.
+            try
+            {
+                nlohmann::json ticketResponse = nlohmann::json::parse(body.str());
+                if (ticketResponse.is_object() && ticketResponse.contains("server_held")
+                    && ticketResponse["server_held"].is_boolean())
+                {
+                    m_serverHeld.store(ticketResponse["server_held"].get<bool>() ? TRUE : FALSE);
+                }
+            }
+            catch (const nlohmann::json::exception&) { }
+            m_delayWaitActive.store(FALSE);
+            break;
+        }
+
+        if (statusCode == 401)
+        {
+            // Wrong or missing password for a password-protected stream.
+            m_passwordRejected.store(TRUE);
+            liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s password rejected (status=%d)\n",
+                m_gameId.str(), statusCode);
+            return false;
+        }
+
+        if (statusCode == 423)
+        {
+            Int holdRemainingSeconds = 0;
+            try
+            {
+                nlohmann::json holdResponse = nlohmann::json::parse(body.str());
+                if (holdResponse.is_object() && holdResponse.contains("delay_remaining_seconds")
+                    && holdResponse["delay_remaining_seconds"].is_number_integer())
+                {
+                    holdRemainingSeconds = holdResponse["delay_remaining_seconds"].get<Int>();
+                }
+            }
+            catch (const nlohmann::json::exception&) { }
+
+            if (holdRemainingSeconds > 0)
+            {
+                m_delayWaitDeadlineMs.store(timeGetTime() + (UnsignedInt)holdRemainingSeconds * 1000);
+                m_delayWaitActive.store(TRUE);
+                retryDeadline = std::chrono::steady_clock::now()
+                    + std::chrono::milliseconds((int64_t)holdRemainingSeconds * 1000 + 30000);
+
+                // Sleep to the end of the hold (plus a small margin so the retry lands after
+                // the window opens) rather than polling at 1s. Holds longer than 30s sleep in
+                // 30s steps: each wake re-requests, gets the fresh remaining hold, and re-arms
+                // — so a hold that ends early (stream gone, viewer granted priority mid-wait)
+                // is still picked up within half a minute.
+                Int64 holdSleepMs = (Int64)holdRemainingSeconds * 1000 + 500;
+                if (holdSleepMs > 30000)
+                {
+                    holdSleepMs = 30000;
+                }
+                liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s held behind the "
+                    "broadcast delay (%ds remaining), retrying in %lldms\n",
+                    m_gameId.str(), holdRemainingSeconds, holdSleepMs);
+                std::this_thread::sleep_for(std::chrono::milliseconds(holdSleepMs));
+                continue;
+            }
+        }
+
+        if (std::chrono::steady_clock::now() > retryDeadline)
+        {
+            // 404 is the ordinary "that stream is over" answer: the game was listed a moment
+            // ago, but the relay has closed it since. Anything else is a real failure.
+            liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s gave up (status=%d) %s\n",
+                m_gameId.str(), statusCode, body.str());
+            return false;
+        }
+
+        liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s not watchable yet (status=%d), retrying\n",
+            m_gameId.str(), statusCode);
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
 
     bool success = false;
@@ -905,9 +1091,13 @@ bool LiveObserver::fetchWatchTicket(AsciiString& outConnectUrl)
     return success;
 }
 
-void LiveObserver::connect(const AsciiString& lobbyId)
+void LiveObserver::connect(const AsciiString& lobbyId, const std::string& password,
+    Int expectedDelaySeconds)
 {
     m_shouldRun.store(true);
+    m_password = password;
+    m_passwordRejected.store(FALSE);
+    m_expectedDelaySeconds = expectedDelaySeconds;
 
     // The lobby id is all this needs. Where to connect is not knowable here and never was
     // ours to assemble: admission runs through GO, which mints a single-use ticket for this
@@ -1074,7 +1264,7 @@ Bool LiveObserver::isSpectatorGateOpen(UnsignedInt curFrame) const
     if (liveEdge <= curFrame)
         return TRUE;    // at or past the live edge — as live as it gets
     const UnsignedInt gap = liveEdge - curFrame;
-    return gap <= getDelayFrames() + 5 * LOGICFRAMES_PER_SECOND;
+    return gap <= getEffectiveDelaySeconds() * LOGICFRAMES_PER_SECOND + 5 * LOGICFRAMES_PER_SECOND;
 }
 
 void LiveObserver::pollChatMessages(UnsignedInt curFrame)
