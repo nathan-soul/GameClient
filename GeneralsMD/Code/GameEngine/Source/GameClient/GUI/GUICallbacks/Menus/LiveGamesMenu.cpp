@@ -244,7 +244,10 @@ static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiStri
 		const LiveGameEntry& game = *it;
 		const Bool isLive = (game.watchAction == 2);
 		const Bool isWaiting = (game.watchAction == 1);
-		const Color rowColor = isLive ? GameMakeColor(255, 255, 255, 255)
+		// Priority-player matches render gold (all row kinds) so they stand out on top of
+		// the priority-first sort.
+		const Color rowColor = game.priority ? GameMakeColor(255, 215, 0, 255)
+			: isLive ? GameMakeColor(255, 255, 255, 255)
 			: GameMakeColor(200, 200, 200, 255);
 		UnicodeString text;
 		AsciiString tmp;

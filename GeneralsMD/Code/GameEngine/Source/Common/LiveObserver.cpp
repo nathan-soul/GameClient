@@ -321,6 +321,10 @@ Bool liveServicesParseLivestreams(const AsciiString& body, std::vector<LiveGameE
 				game["delay_remaining_seconds"].is_number_integer())
 				? game["delay_remaining_seconds"].get<Int>() : 0;
 
+			// priority: GO latches the lobby when a user_priority = Player creates/joins.
+			// Absent on older GO = not priority.
+			entry.priority = game.value("priority", false) ? TRUE : FALSE;
+
 			outGames.push_back(entry);
 		}
 	}
@@ -856,6 +860,23 @@ UnsignedInt LiveObserver::getJoinTimeoutMs() const
     return delaySeconds * 1000 + 60000;
 }
 
+UnsignedInt LiveObserver::getJoinDeadlineMs() const
+{
+    // While GO holds the ticket behind the broadcast delay the wait is the hold itself, so
+    // the deadline is the (absolute) hold end plus headroom. The hold deadline is refreshed
+    // forward on every 423, so it never moves backward while the hold is running — an
+    // elapsed-since-connect budget would, which is how the pump used to abandon a healthy
+    // hold just as it was about to end (the log read "timed out" with the hold still active).
+    if (m_delayWaitActive.load())
+    {
+        return m_delayWaitDeadlineMs.load() + 60000;
+    }
+
+    // Non-held: join start plus the ordinary timeout budget, measured once against the
+    // absolute baseline set at connect.
+    return m_joinStartedAtMs + getJoinTimeoutMs();
+}
+
 LiveObserver::~LiveObserver()
 {
     // Anything this session paused dies with it. The pause is global game state, so unlike
@@ -1098,6 +1119,7 @@ void LiveObserver::connect(const AsciiString& lobbyId, const std::string& passwo
     m_password = password;
     m_passwordRejected.store(FALSE);
     m_expectedDelaySeconds = expectedDelaySeconds;
+    m_joinStartedAtMs = timeGetTime();
 
     // The lobby id is all this needs. Where to connect is not knowable here and never was
     // ours to assemble: admission runs through GO, which mints a single-use ticket for this

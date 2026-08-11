@@ -97,6 +97,13 @@ public:
 	/// delay plus headroom for the connection, ticket minting and the first record.
 	UnsignedInt getJoinTimeoutMs() const;
 
+	/// Absolute deadline (timeGetTime ms) by which the join must have started playback.
+	/// While GO holds the ticket behind the broadcast delay this is the hold end plus
+	/// headroom — anchored to the hold, never to when the join started, so the time spent
+	/// waiting before the hold cannot eat into the budget (the hold deadline only moves
+	/// forward on every 423). Otherwise it is the join start plus getJoinTimeoutMs().
+	UnsignedInt getJoinDeadlineMs() const;
+
 	/// Returns the filename of the live replay file (e.g. "996C586F_live.rep").
 	const AsciiString& getLiveReplayFilename() const { return m_liveFilename; }
 
@@ -343,6 +350,10 @@ private:
 	std::atomic<UnsignedInt> m_maxCompleteFrame;
 	std::atomic<Int> m_safeReadOffset;
 
+	// When connect() was called (timeGetTime ms) — the baseline for the non-held join
+	// deadline. Written on the main thread before the network thread spawns.
+	UnsignedInt m_joinStartedAtMs;
+
 	// Parse-cursor state. Owned exclusively by the network thread — no locking.
 	std::vector<unsigned char> m_parseTail;   // bytes after the last complete record
 	Int m_parseAbsOffset;                     // absolute file offset of m_parseTail[0]
@@ -449,9 +460,13 @@ struct LiveGameEntry
 	/// Remaining broadcast-delay hold in seconds for this viewer (0 when not held).
 	Int delayRemainingSeconds;
 
+	/// TRUE when the lobby is a priority-player match (latched by GO at create/join). The
+	/// browser marks these rows gold.
+	Bool priority;
+
 	LiveGameEntry() : observerCount(0), delaySeconds(0), ageSeconds(0),
 		state(1), passworded(FALSE), pendingObserverCount(0),
-		watchAction(2), delayRemainingSeconds(0) {}
+		watchAction(2), delayRemainingSeconds(0), priority(FALSE) {}
 };
 
 /// Parse a GO /Livestreams reply into entries. FALSE when the body is not usable at all;
@@ -498,7 +513,7 @@ Bool liveServicesRequest(const AsciiString& url, Bool bPost, const char* szPostB
 // apart, which is precisely the confusion this tag exists to prevent. Any file using it must
 // include this header — that also brings the LIVE_OBSERVER_LOGGING resolution above, without
 // which logging silently stays off in a DEFAULT build.
-#define LIVE_OBSERVER_BUILD_TAG "2026-08-10-observer-server-delay"
+#define LIVE_OBSERVER_BUILD_TAG "2026-08-11-observer-join-deadline"
 
 void liveObserverLog(const char* fmt, ...);
 void liveObserverInitLog(const char* lobbyId);

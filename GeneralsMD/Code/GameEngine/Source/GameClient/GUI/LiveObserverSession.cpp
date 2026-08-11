@@ -271,7 +271,7 @@ Bool LiveObserverStartPendingSession(void)
 		return FALSE;
 	}
 
-	if (timeGetTime() - s_observerJoinStartedAt > TheLiveObserver->getJoinTimeoutMs())
+	if (timeGetTime() > TheLiveObserver->getJoinDeadlineMs())
 	{
 		liveObserverLog("LiveObserverStartPendingSession: timed out waiting for a playable file — abandoning the join\n");
 		liveObserverEndSession();
