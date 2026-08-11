@@ -61,6 +61,7 @@
 #include "Common/DamageFX.h"
 #include "Common/MultiplayerSettings.h"
 #include "Common/Recorder.h"
+#include "GameNetwork/GeneralsOnline/Plugins/PluginManager.h"
 #include "Common/SpecialPower.h"
 #include "Common/TerrainTypes.h"
 #include "Common/Upgrade.h"
@@ -305,6 +306,8 @@ GameEngine::GameEngine()
 //-------------------------------------------------------------------------------------------------
 GameEngine::~GameEngine()
 {
+	GOPluginManager::UnloadAll();
+
 	delete m_discordRichPresence;
 	m_discordRichPresence = nullptr;
 
@@ -829,6 +832,11 @@ void GameEngine::init()
 
 	HideControlBar();
 
+	// NGMP: Load every plugin DLL (*.goplugin.dll) found in the plugins directory once at startup.
+	// Each plugin opts into whichever hook categories it supports (see PluginABI.h); a plugin that
+	// fails to load is logged and skipped, never fatal.
+	GOPluginManager::LoadPluginsFromDirectory("plugins");
+
 	m_discordRichPresence = new GeneralsOnlineDiscordRPC();
 	m_discordRichPresence->Initialize();
 }
@@ -986,6 +994,12 @@ void GameEngine::update()
 
 			TheAudio->UPDATE();
 			TheGameClient->UPDATE();
+
+			// NGMP: Tick every loaded plugin (GO_Plugin_Tick) once per frame, unconditionally — not
+			// gated behind GameLogic pause state, so a plugin's own polling (e.g. tracking the
+			// active-player roster) is never blocked by a paused simulation.
+			GOPluginManager::Tick();
+
 			TheMessageStream->propagateMessages();
 
             if (TheNetwork != nullptr)

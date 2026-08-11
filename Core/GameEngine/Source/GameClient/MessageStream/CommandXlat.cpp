@@ -48,6 +48,9 @@
 #include "Common/Radar.h"
 #include "Common/Recorder.h"
 #include "Common/SpecialPower.h"
+#if defined(GENERALS_ONLINE)
+#include "GameNetwork/GeneralsOnline/Plugins/PluginManager.h"
+#endif
 #include "Common/StatsCollector.h"
 #include "Common/ThingTemplate.h"
 #include "Common/GameLOD.h"
@@ -60,6 +63,7 @@
 #include "GameClient/GameClient.h"
 #include "GameClient/GameWindowManager.h"
 #include "GameClient/GameText.h"
+#include "GameClient/Keyboard.h"
 #include "GameClient/ParticleSys.h"
 #include "GameClient/GUICallbacks.h"
 #include "GameClient/Shell.h"
@@ -3932,6 +3936,22 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
                 }
 
                 disp = DESTROY_MESSAGE;
+            }
+
+            // NGMP: Forward every raw key-up to any plugin registered for IRenderHooks, regardless
+            // of whether the engine already handled this specific key above — plugin hotkeys are
+            // chosen by the plugin and are not expected to collide with the engine's own
+            // (F11/F10/F5/INS).
+            if (GOPluginManager::HasRenderHooks())
+            {
+                uint32_t modifierFlags = 0;
+                if (TheKeyboard != nullptr)
+                {
+                    if (TheKeyboard->isCtrl())  modifierFlags |= 1;
+                    if (TheKeyboard->isShift()) modifierFlags |= 2;
+                    if (TheKeyboard->isAlt())   modifierFlags |= 4;
+                }
+                GOPluginManager::DispatchRawKeyUp((uint32_t)key, modifierFlags);
             }
 
             break;
