@@ -813,14 +813,21 @@ struct GameSortStruct
 
 static Int insertGame(GameWindow* win, LobbyEntry& lobbyInfo, Bool showMap)
 {
+	// Priority-player matches render gold, exactly like the Watch Live browser
+	// (LiveGamesMenu). The latch comes from GO, so the highlight never goes stale;
+	// it also wins over the joinability and buddy colors below.
 	Color gameColor = GameSpyColor[GSCOLOR_GAME];
-	if (lobbyInfo.exe_crc != TheGlobalData->m_exeCRC || lobbyInfo.ini_crc != TheGlobalData->m_iniCRC)
+	if (lobbyInfo.priority)
+	{
+		gameColor = GameMakeColor(255, 215, 0, 255);
+	}
+	else if (lobbyInfo.exe_crc != TheGlobalData->m_exeCRC || lobbyInfo.ini_crc != TheGlobalData->m_iniCRC)
 	{
 		gameColor = GameSpyColor[GSCOLOR_GAME_CRCMISMATCH];
 	}
 #if defined(GENERALS_ONLINE)
-	// Buddy lobby highlight:
-	if (theBuddyGames && theBuddyGames->count(lobbyInfo.lobbyID))
+	// Buddy lobby highlight (kept off priority rows — gold already marks those):
+	if (theBuddyGames && !lobbyInfo.priority && theBuddyGames->count(lobbyInfo.lobbyID))
 	{
 		const bool nonJoinable =
 				(gameColor == GameSpyColor[GSCOLOR_GAME_CRCMISMATCH]);

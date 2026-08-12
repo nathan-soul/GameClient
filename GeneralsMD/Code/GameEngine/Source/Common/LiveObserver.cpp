@@ -867,14 +867,22 @@ UnsignedInt LiveObserver::getJoinDeadlineMs() const
     // forward on every 423, so it never moves backward while the hold is running — an
     // elapsed-since-connect budget would, which is how the pump used to abandon a healthy
     // hold just as it was about to end (the log read "timed out" with the hold still active).
-    if (m_delayWaitActive.load())
+    //
+    // The hold deadline is sticky: once any 423 has armed it, it keeps governing the rest
+    // of the session even after the ticket is granted and m_delayWaitActive clears. The
+    // post-admission phase (relay connect + first record) must not fall back to an elapsed
+    // budget measured from connect() — that budget starts before the hold, and a hold
+    // longer than the headroom would leave it already expired the moment the stream
+    // becomes watchable.
+    const UnsignedInt holdDeadline = m_delayWaitDeadlineMs.load();
+    if (holdDeadline != 0)
     {
-        return m_delayWaitDeadlineMs.load() + 60000;
+        return holdDeadline + 60000;
     }
 
-    // Non-held: join start plus the ordinary timeout budget, measured once against the
-    // absolute baseline set at connect.
-    return m_joinStartedAtMs + getJoinTimeoutMs();
+    // Never held: join start plus the ordinary timeout budget, measured once against the
+    // absolute baseline set at connect (and re-based forward at ticket grant).
+    return m_joinStartedAtMs.load() + getJoinTimeoutMs();
 }
 
 LiveObserver::~LiveObserver()
@@ -1024,6 +1032,14 @@ bool LiveObserver::fetchWatchTicket(AsciiString& outConnectUrl)
             }
             catch (const nlohmann::json::exception&) { }
             m_delayWaitActive.store(FALSE);
+
+            // Admission granted: re-base the join clock here. connect() ran before the
+            // hold, and the hold can outlive the elapsed budget it started, so without
+            // this the join pump's deadline would already be in the past the moment the
+            // hold ended (LiveObserverSession timed out right as the game let the player
+            // in). Forward-only: a session that was never held moves the baseline by the
+            // few ms the ticket request took.
+            m_joinStartedAtMs.store(timeGetTime());
             break;
         }
 

@@ -351,8 +351,11 @@ private:
 	std::atomic<Int> m_safeReadOffset;
 
 	// When connect() was called (timeGetTime ms) — the baseline for the non-held join
-	// deadline. Written on the main thread before the network thread spawns.
-	UnsignedInt m_joinStartedAtMs;
+	// deadline. Re-based forward when the watch ticket is granted (fetchWatchTicket 200),
+	// so the post-admission budget is measured from admission, not from the start of a
+	// possibly minutes-long GO hold. Written by both the main thread (connect) and the
+	// network thread (ticket grant), read by the game thread — hence atomic.
+	std::atomic<UnsignedInt> m_joinStartedAtMs;
 
 	// Parse-cursor state. Owned exclusively by the network thread — no locking.
 	std::vector<unsigned char> m_parseTail;   // bytes after the last complete record

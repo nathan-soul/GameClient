@@ -114,6 +114,7 @@ static UnsignedInt s_countdownNextMs = 0;
 static UnsignedInt s_lastLobbyFetchMs = 0;
 static UnsignedInt s_gameStartedAtMs = 0;
 static Bool s_warnedNoStream = FALSE;
+static Bool s_streamNotStartedShown = FALSE;	// amber "not started yet" line printed once
 static Bool s_joinQueued = FALSE;
 static UnsignedInt s_joinQueuedAtMs = 0;
 static Bool s_streamLivePending = FALSE;	// stream-live arrived mid-countdown; join at 0
@@ -397,7 +398,7 @@ static void beginCountdown(void)
 	if (s_phase != LobbyObserverPhase::kIdle || s_lobbyGone)
 		return;
 
-	observerChat(UnicodeString(L"Match starting - observing in 5s"), GameMakeColor(255, 194, 15, 255));
+	observerChat(UnicodeString(L"Game starts in 5s"), GameMakeColor(255, 194, 15, 255));
 	s_countdownValue = 5;
 	s_countdownNextMs = timeGetTime() + 1000;
 	s_gameStartedAtMs = timeGetTime();
@@ -1061,11 +1062,19 @@ void LobbyObserverInit(WindowLayout* layout, void* userData)
 					s_gameStartSignal.store(true);
 					break;
 				case NGMP_OnlineServices_LobbyInterface::ELobbyObserverEventType::STREAM_LIVE:
-				case NGMP_OnlineServices_LobbyInterface::ELobbyObserverEventType::GAME_STARTED:
-					// STREAM_LIVE: the stream is up — join now. GAME_STARTED: the match
-					// started — join now; the ticket request is held by GO's broadcast-delay
-					// gate (423 + countdown) until the delay has passed.
+					// The relay confirmed the stream is watchable (it holds the streamer's
+					// header) — join now. This is the ONLY liveness signal; the client
+					// never guesses "live" from the match having started.
 					s_streamLiveSignal.store(true);
+					break;
+				case NGMP_OnlineServices_LobbyInterface::ELobbyObserverEventType::GAME_STARTED:
+					// The match started, but that says nothing about a stream: the host and
+					// members may all have streaming off. The join must wait for the relay's
+					// liveness report (STREAM_LIVE above, or the IsStreaming flag on the
+					// lobby fetch) — queuing it here printed a false "Stream is live -
+					// connecting..." on games nobody streams, and the ticket request would
+					// only 404. The stream-aware "host may not be streaming" warning below
+					// covers the never-streamed case.
 					break;
 				}
 			});
@@ -1122,7 +1131,7 @@ void LobbyObserverUpdate(WindowLayout* layout, void* userData)
 		if (s_countdownValue > 0)
 		{
 			UnicodeString text;
-			text.format(L"Match starting in %ds", s_countdownValue);
+			text.format(L"Game starts in %ds", s_countdownValue);
 			observerChat(text, GameMakeColor(255, 194, 15, 255));
 			s_countdownNextMs = now + 1000;
 		}
@@ -1216,7 +1225,7 @@ void LobbyObserverUpdate(WindowLayout* layout, void* userData)
 			// queue itself. Tell the player and drop back to the lobby view. The password
 			// reprompt popup suppresses this for its own duration — if the player then
 			// cancels it, this generic message appears after 3 s, which is acceptable.
-			observerChat(UnicodeString(L"Could not connect to the stream - the host may not be streaming"),
+			observerChat(UnicodeString(L"Timed out waiting for the stream - the host may not be streaming"),
 				GameMakeColor(255, 120, 120, 255));
 			s_joinQueued = FALSE;
 			s_phase = LobbyObserverPhase::kIdle;
@@ -1224,12 +1233,33 @@ void LobbyObserverUpdate(WindowLayout* layout, void* userData)
 	}
 
 	// ── Host-never-streams warning ──
-	if (s_gameStartedAtMs != 0 && !s_joinQueued && !s_warnedNoStream &&
-		(now - s_gameStartedAtMs) > 180000)
+	// The match started (INGAME) but the relay still reports no stream. Two stages,
+	// because GO's match-start moment is the host's START_GAME — before any client has
+	// loaded the map — and the streamer registers only once its own client is in-game,
+	// so a slow map load easily outlasts 20s:
+	//  - 20s: the stream simply has not started yet; say so without accusing the host.
+	//  - 60s: the stream is definitively not coming (GO drops the game from Watch Live
+	//    on the same schedule); tell the observer to LEAVE.
+	// A live stream (or a held join) keeps s_joinQueued / s_isStreaming true and never
+	// trips either. The lobby state is refreshed every ~30s.
+	if (s_gameStartedAtMs != 0 && !s_joinQueued &&
+		s_lobbyState == 1 /* ELobbyState::INGAME */ && !s_isStreaming)
 	{
-		s_warnedNoStream = TRUE;
-		observerChat(UnicodeString(L"The stream has not started - the host may not be streaming. LEAVE to stop waiting."),
-			GameMakeColor(255, 120, 120, 255));
+		if ((now - s_gameStartedAtMs) > 60000)
+		{
+			if (!s_warnedNoStream)
+			{
+				s_warnedNoStream = TRUE;
+				observerChat(UnicodeString(L"The stream has not started - the host may not be streaming. LEAVE to stop waiting."),
+					GameMakeColor(255, 120, 120, 255));
+			}
+		}
+		else if ((now - s_gameStartedAtMs) > 20000 && !s_streamNotStartedShown)
+		{
+			s_streamNotStartedShown = TRUE;
+			observerChat(UnicodeString(L"The stream has not started yet - waiting for the host to start streaming"),
+				GameMakeColor(255, 194, 15, 255));
+		}
 	}
 
 	// ── Lobby gone → auto-return ──
@@ -1263,6 +1293,7 @@ void LobbyObserverShutdown(WindowLayout* layout, void* userData)
 	s_streamLivePending = FALSE;
 	s_lobbyGone = FALSE;
 	s_warnedNoStream = FALSE;
+	s_streamNotStartedShown = FALSE;
 	s_loadingStatusShown = FALSE;
 	s_lastStartCountdown = -1;
 	s_gameStartedAtMs = 0;

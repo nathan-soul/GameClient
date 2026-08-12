@@ -780,6 +780,18 @@ void NGMP_OnlineServices_LobbyInterface::SearchForLobbies(std::function<void()> 
 					lobbyEntryIter["StreamDelaySeconds"].get_to(lobbyEntry.stream_delay_seconds);
 				}
 
+				// Lobby-level priority latch (the Watch Live browser's gold rows). The
+				// /Livestreams endpoint calls the field "priority"; the /Lobbies list
+				// serializes the C# property as "IsPriority". Accept both, default false.
+				if (lobbyEntryIter.contains("IsPriority") && lobbyEntryIter["IsPriority"].is_boolean())
+				{
+					lobbyEntryIter["IsPriority"].get_to(lobbyEntry.priority);
+				}
+				else if (lobbyEntryIter.contains("priority") && lobbyEntryIter["priority"].is_boolean())
+				{
+					lobbyEntryIter["priority"].get_to(lobbyEntry.priority);
+				}
+
 				// attach latency
 				if (latencyIndex < vecLatencies.size())
 				{

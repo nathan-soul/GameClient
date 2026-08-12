@@ -273,7 +273,12 @@ Bool LiveObserverStartPendingSession(void)
 
 	if (timeGetTime() > TheLiveObserver->getJoinDeadlineMs())
 	{
-		liveObserverLog("LiveObserverStartPendingSession: timed out waiting for a playable file — abandoning the join\n");
+		liveObserverLog("LiveObserverStartPendingSession: timed out waiting for a playable file — abandoning the join "
+			"(now=%ums deadline=%ums connected=%d serverHeld=%d delayWait=%d)\n",
+			timeGetTime(), TheLiveObserver->getJoinDeadlineMs(),
+			TheLiveObserver->isConnected() ? 1 : 0,
+			TheLiveObserver->isServerHeld() ? 1 : 0,
+			TheLiveObserver->isWaitingForBroadcastDelay() ? 1 : 0);
 		liveObserverEndSession();
 		s_observerJoinPhase = kObserverJoinIdle;
 		startLiveObserverGame = FALSE;

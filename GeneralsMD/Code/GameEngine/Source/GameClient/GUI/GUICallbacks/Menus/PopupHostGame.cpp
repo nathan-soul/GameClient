@@ -425,23 +425,54 @@ void PopupHostGameInit( WindowLayout *layout, void *userData )
 		int hObs = 0;
 		checkBoxAllowObservers->winGetSize(&wObs, &hObs);
 
+		// Align with the Limit Armies checkbox column below, on the Allow Observers
+		// row, so both rows read as two columns:
+		//   [x] Allow observers   [x] Allow streamers
+		//   [x] Use stats         [x] Limit armies
+		int xLimit = 0;
+		int yLimit = 0;
+		checkBoxLimitArmies->winGetPosition(&xLimit, &yLimit);
+
+		// The layout's checkbox rows are tighter than the checkboxes themselves: at
+		// the 800x600 creation resolution the Allow Observers row (y=264) and the
+		// Use Stats / Limit Armies row (y=280) are only 16px apart while every
+		// checkbox is 24px tall — an inherent 8px overlap band. The original Allow
+		// Observers dodges it because its column has nothing below it; this checkbox
+		// shares Limit Armies' column, so it cannot dodge. Rather than shrink the
+		// checkbox to fit the band (which made it look tiny), push the whole
+		// Use Stats / Limit Armies row down by the band so every checkbox keeps its
+		// full height. The shift is derived from the geometry (adapts to the stock
+		// layout), and everything scales uniformly, so the separation holds at every
+		// resolution.
+		const Int rowShift = (yObs + hObs) - yLimit;
+		if (rowShift > 0)
+		{
+			int xStat = 0;
+			int yStat = 0;
+			checkBoxUseStats->winGetPosition(&xStat, &yStat);
+			checkBoxUseStats->winSetPosition(xStat, yStat + rowShift);
+			checkBoxLimitArmies->winSetPosition(xLimit, yLimit + rowShift);
+		}
+
 		WinInstanceData streamInstData;
 		streamInstData.init();
 		streamInstData.m_style = GWS_CHECK_BOX | GWS_MOUSE_TRACK;
 		streamInstData.m_textLabelString = "Allow streamers";
 		streamInstData.setTooltipText(L"Let this game be watched live: it appears in Watch Live and observers can wait in the pre-game lobby");
 
-		// To the right of Allow Observers on the same row — anchored on the position
-		// Allow Observers was moved to above (xStats, yObs), not its pre-move spot.
-		// The row sits above the Limit Armies checkboxes in the layout, so nothing
-		// overlaps.
 		checkBoxAllowStreamers = TheWindowManager->gogoGadgetCheckbox(parentPopup,
 			WIN_STATUS_ENABLED | WIN_STATUS_IMAGE,
-			xStats + wObs + 6, yObs, wObs, hObs,
+			xLimit, yObs, wObs, hObs,
 			&streamInstData, nullptr, TRUE);
 
 		if (checkBoxAllowStreamers != nullptr)
+		{
 			checkBoxAllowStreamers->winCopyVisualsFrom(checkBoxAllowObservers);
+
+			// Default ON: a freshly created lobby is watchable unless the host opts out.
+			// Matches the Allow Observers checkbox, which is forced checked above.
+			GadgetCheckBoxSetChecked(checkBoxAllowStreamers, TRUE);
+		}
 	}
 
 	// hide password for streams

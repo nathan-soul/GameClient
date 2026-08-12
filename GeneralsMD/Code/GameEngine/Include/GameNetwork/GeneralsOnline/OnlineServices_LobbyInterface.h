@@ -91,6 +91,11 @@ struct LobbyEntry
 	// GO tracks the count over the websocket subscriptions; members see it on their lobby
 	// refreshes.
 	int pending_observer_count = 0;
+
+	// Latched by GO when a priority Player (users.user_priority = 1) created or joined this
+	// lobby (cleared again when the last one leaves). Rendered gold in the custom-games
+	// browser, exactly like the Watch Live rows. Older GO omits the field — default false.
+	bool priority = false;
 };
 
 /// Assemble the live-stream relay registration from the lobby the local player is currently in,

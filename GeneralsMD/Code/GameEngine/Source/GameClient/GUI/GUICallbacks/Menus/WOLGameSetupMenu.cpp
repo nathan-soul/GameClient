@@ -278,9 +278,36 @@ static void refreshStreamControls(void)
 	if (checkBoxStreamGame == NULL)
 		return;
 
-	const Bool streaming = GadgetCheckBoxIsChecked(checkBoxStreamGame);
 	NGMP_OnlineServices_LobbyInterface* pLobbyInterface =
 		NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
+
+	// A lobby whose host disabled "Allow streamers" can never be watched: hide the whole
+	// stream row (Enable Stream, the Delay label and field) — none of it means anything
+	// there. The observers-waiting count is hidden by refreshObserverCountLabel for the
+	// same reason. When streamers are allowed the controls show, with the delay greyed
+	// out unless this player is streaming.
+	const Bool streamersAllowed = pLobbyInterface != nullptr
+		&& pLobbyInterface->IsInLobby()
+		&& pLobbyInterface->GetCurrentLobby().allow_streamers;
+	if (!streamersAllowed)
+	{
+		if (checkBoxStreamGame != nullptr)
+			checkBoxStreamGame->winHide(TRUE);
+		if (staticTextStreamDelay != nullptr)
+			staticTextStreamDelay->winHide(TRUE);
+		if (textEntryStreamDelay != nullptr)
+			textEntryStreamDelay->winHide(TRUE);
+		return;
+	}
+
+	if (checkBoxStreamGame != nullptr)
+		checkBoxStreamGame->winHide(FALSE);
+	if (staticTextStreamDelay != nullptr)
+		staticTextStreamDelay->winHide(FALSE);
+	if (textEntryStreamDelay != nullptr)
+		textEntryStreamDelay->winHide(FALSE);
+
+	const Bool streaming = GadgetCheckBoxIsChecked(checkBoxStreamGame);
 	const Bool delayEditable = streaming && pLobbyInterface && pLobbyInterface->IsHost();
 	if (textEntryStreamDelay)
 		textEntryStreamDelay->winEnable(delayEditable);
