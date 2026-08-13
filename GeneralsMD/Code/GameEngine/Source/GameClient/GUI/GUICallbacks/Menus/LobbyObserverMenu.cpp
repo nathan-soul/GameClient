@@ -43,6 +43,7 @@
 #include "GameClient/GadgetCheckBox.h"
 #include "GameClient/GadgetComboBox.h"
 #include "GameClient/GadgetListBox.h"
+#include "GameClient/GadgetPushButton.h"	// GadgetButtonSetText (map start buttons)
 #include "GameClient/GadgetStaticText.h"
 #include "GameClient/GadgetTextEntry.h"
 #include "GameClient/KeyDefs.h"
@@ -515,6 +516,29 @@ static void renderLobby(void)
 	// preview image (or the UnknownMap placeholder) and the numbered start buttons.
 	if (s_mapWindow != nullptr && !s_mapPathLocal.isEmpty())
 		positionStartSpots(s_mapPathLocal, s_startButtons, s_mapWindow);
+
+	// Paint the start buttons the way the real lobby's updateMapStartSpots does. This
+	// view has no GameInfo, but the fetched slots carry the same data: the slot index
+	// IS the start position, and the team number maps to the player color. Occupied
+	// slots show their player number (1..8) in the player's team color; the rest stay
+	// blank. Mirrors the stock gate: only slots with a resolved side are painted.
+	for (Int i = 0; i < MAX_OBSERVER_SLOTS; ++i)
+	{
+		if (s_startButtons[i] == nullptr)
+			continue;
+		GadgetButtonSetText(s_startButtons[i], UnicodeString::TheEmptyString);
+		if (!s_slotOccupied[i] || s_slotSides[i] < 0)
+			continue;
+
+		AsciiString displayNumber;
+		displayNumber.format("NUMBER:%d", i + 1);
+		GadgetButtonSetText(s_startButtons[i], TheGameText->fetch(displayNumber));
+
+		const UnsignedInt col = (s_slotTeams[i] >= 0)
+			? GetTeamUiColor(s_slotTeams[i])
+			: GameMakeColor(255, 255, 255, 255);
+		GadgetTextEntrySetTextColor(s_startButtons[i], col);
+	}
 
 	for (Int i = 0; i < MAX_OBSERVER_SLOTS; ++i)
 	{
