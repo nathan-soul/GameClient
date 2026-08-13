@@ -316,6 +316,12 @@ private:
 	// boundary, and a plain threshold there toggled pause/resume constantly — the stutter.
 	enum { LIVE_GATE_HYSTERESIS_FRAMES = 60 };
 
+	// Relay liveness watchdog threshold: no frame of any kind (stream bytes or the relay's
+	// protocol-level keepalive pings, which arrive every ~20 s) for this long means the
+	// relay — or the connection to it — is gone. The watch must then wind down like a
+	// stream END instead of freezing on the last frame forever.
+	enum { LIVE_RELAY_WATCHDOG_MS = 120000 };
+
 	// Buffering-gate state. Game thread only — updatePlaybackGate() is the sole writer.
 	Bool m_holdPlayback;			// playback must wait; the Recorder acts on this
 	Bool m_nearLiveHeld;			// latched: the near-live gate is holding (hysteresis)
@@ -357,6 +363,15 @@ private:
 	// network thread (ticket grant), read by the game thread — hence atomic.
 	std::atomic<UnsignedInt> m_joinStartedAtMs;
 
+	// Relay liveness watchdog (the "keep-alive" for the watch): the relay's websocket
+	// library pings us every ~20 s, so any frame — stream bytes or a ping — refreshes this
+	// timestamp. Written by the network thread (wsRecv), read by the network thread's loop;
+	// atomic because the parse-cursor comment above is the only other owner of that thread.
+	// Once the HEADER has arrived (the watch is committed) and no frame at all arrives for
+	// LIVE_RELAY_WATCHDOG_MS, the relay (or the path to it) is gone: the watch would
+	// otherwise freeze on the last frame forever, with no END to wind the session down.
+	std::atomic<UnsignedInt> m_lastFrameReceivedMs{ 0 };
+
 	// Parse-cursor state. Owned exclusively by the network thread — no locking.
 	std::vector<unsigned char> m_parseTail;   // bytes after the last complete record
 	Int m_parseAbsOffset;                     // absolute file offset of m_parseTail[0]
@@ -397,6 +412,12 @@ LiveObserver* createLiveObserver();
 /// rejoining a game already watched targets the same path, and Windows will not let the observer
 /// recreate a file the Recorder still holds open.
 void liveObserverEndSession(void);
+
+/// One-shot "a live-observer game just ended" latch. Set in liveObserverEndSession() while a
+/// game was actually running; consumed by the shell screens' game-end hooks
+/// (WOLGameSetupMenuInit / MainMenuInit), which then return the player to the Watch Live
+/// browser instead of the main menu. An aborted join (no game ran) must not set it.
+Bool LiveObserverConsumeReturnedFromGame(void);
 
 /// Called from GameLogic::clearGameData(), the one point every game-end path converges on.
 ///
@@ -516,7 +537,7 @@ Bool liveServicesRequest(const AsciiString& url, Bool bPost, const char* szPostB
 // apart, which is precisely the confusion this tag exists to prevent. Any file using it must
 // include this header — that also brings the LIVE_OBSERVER_LOGGING resolution above, without
 // which logging silently stays off in a DEFAULT build.
-#define LIVE_OBSERVER_BUILD_TAG "2026-08-11-observer-join-deadline"
+#define LIVE_OBSERVER_BUILD_TAG "2026-08-13-observer-keepalive"
 
 void liveObserverLog(const char* fmt, ...);
 void liveObserverInitLog(const char* lobbyId);

@@ -82,6 +82,7 @@
 #include "Common/GameCommon.h"					// LIVE_DEFAULT_RELAY_URL, LIVE_DELAY_SECONDS_DEFAULT
 #include "Common/MessageStream.h"
 #include "GameClient/LiveObserverSession.h"		// LiveObserverStartPendingSession pump
+#include "GameClient/LiveGamesMenu.h"			// LiveGamesMenuEnterLiveGamesMode (game-end hook)
 #include "GameClient/GadgetListBox.h"			// live game browser list
 #include "GameNetwork/GeneralsOnline/HTTP/HTTPManager.h"
 #include "GameNetwork/GeneralsOnline/json.hpp"	// already vendored; used to parse /games
@@ -462,6 +463,21 @@ static void initLabelVersion()
 //-------------------------------------------------------------------------------------------------
 void MainMenuInit( WindowLayout *layout, void *userData )
 {
+#if defined(GENERALS_ONLINE)
+	// A live-observer game just ended and the shell re-inited this screen — a direct join
+	// pops the browser when the session starts, leaving the main menu as the top of the
+	// stack for the whole watch. Return to the Watch Live browser (the online destination
+	// the watch came from), the same re-arm + push the setup menu's game-end hook does
+	// for the pre-game flow. Pushed on top, not popped-to: the main menu stays as the
+	// root below, so Back → Welcome → main menu still unwinds correctly.
+	if (LiveObserverConsumeReturnedFromGame())
+	{
+		LiveGamesMenuEnterLiveGamesMode();
+		TheShell->push("Menus/ReplayMenu.wnd", TRUE);
+		return;
+	}
+#endif
+
 	TheWritableGlobalData->m_breakTheMovie = FALSE;
 
 	TheShell->showShellMap(TRUE);

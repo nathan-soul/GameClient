@@ -60,7 +60,9 @@
 
 #if defined(GENERALS_ONLINE)
 #include "Common/LiveObserver.h"	// liveObserverLog for diagnostics
+#include "Common/Recorder.h"		// TheRecorder / RECORDERMODETYPE_LIVE_OBSERVER (game-end hook)
 #include "GameClient/LobbyObserverMenu.h"		// read-only pre-game lobby view (observer mode)
+#include "GameClient/LiveGamesMenu.h"			// LiveGamesMenuEnterLiveGamesMode (game-end hook)
 #endif
 
 #include "GameNetwork/GameSpy/BuddyDefs.h"
@@ -2083,6 +2085,19 @@ Bool initialAcceptEnable = FALSE;
 void WOLGameSetupMenuInit( WindowLayout *layout, void *userData )
 {
 #if defined(GENERALS_ONLINE)
+	// Returning from a live-observer game: this layout was the read-only pre-game waiting
+	// room and the shell re-inits it now that the session is over. It must not come back
+	// as a real lobby (the observer is not a member of anything) — the same problem the
+	// normal setup menu solves below with its in-progress check, which cannot fire here
+	// (the observer never set the NGMP game in progress). Pop straight back to the Watch
+	// Live browser; the pop re-inits it, re-armed in live mode.
+	if (LiveObserverConsumeReturnedFromGame())
+	{
+		LiveGamesMenuEnterLiveGamesMode();
+		TheShell->popImmediate();
+		return;
+	}
+
 	// Read-only pre-game lobby view: the same layout, a completely different screen. The
 	// branch runs before anything lobby/mesh/NGMP-related — observer mode never joins a
 	// lobby and must not touch that state (see plans/lobby-observer.md).

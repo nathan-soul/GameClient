@@ -69,6 +69,11 @@ static NameKeyType buttonCopyID = NAMEKEY_INVALID;
 
 static Bool isShuttingDown = false;
 
+// Screen to push after this one pops (the WOLLobbyMenu pattern). Empty = plain pop back to
+// whatever is below; set by the Watch Live browser's Back button so it returns to a fresh
+// WOLWelcomeMenu instead of the hidden instance that used to survive underneath it.
+static AsciiString s_nextScreen;
+
 // window pointers --------------------------------------------------------------------------------
 static GameWindow *parentReplayMenu = nullptr;
 static GameWindow *buttonLoad = nullptr;
@@ -394,6 +399,9 @@ void PopulateReplayFileListbox(GameWindow *listbox)
 //-------------------------------------------------------------------------------------------------
 void ReplayMenuInit( WindowLayout *layout, void *userData )
 {
+	// No pop-then-push carry-over into a fresh visit.
+	s_nextScreen.clear();
+
 	TheShell->showShellMap(TRUE);
 
 	// get ids for our children controls
@@ -457,6 +465,29 @@ void ReplayMenuInit( WindowLayout *layout, void *userData )
 }
 
 //-------------------------------------------------------------------------------------------------
+/** Complete the shutdown, optionally pushing the next screen (mirrors WOLLobbyMenu). */
+//-------------------------------------------------------------------------------------------------
+static void shutdownComplete( WindowLayout *layout )
+{
+	isShuttingDown = FALSE;
+
+	// hide the layout
+	layout->hide( TRUE );
+
+	// our shutdown is complete; if a push is coming, the screen below is not re-inited
+	TheShell->shutdownComplete( layout, s_nextScreen.isNotEmpty() );
+
+	// push the next screen (fresh WOLWelcomeMenu when leaving the Watch Live browser)
+	if (s_nextScreen.isNotEmpty())
+	{
+		TheShell->push(s_nextScreen);
+	}
+
+	s_nextScreen.clear();
+
+}
+
+//-------------------------------------------------------------------------------------------------
 /** single player menu shutdown method */
 //-------------------------------------------------------------------------------------------------
 void ReplayMenuShutdown( WindowLayout *layout, void *userData )
@@ -470,8 +501,7 @@ void ReplayMenuShutdown( WindowLayout *layout, void *userData )
 	if( popImmediate )
 	{
 
-		layout->hide( TRUE );
-		TheShell->shutdownComplete( layout );
+		shutdownComplete( layout );
 		return;
 
 	}
@@ -510,7 +540,7 @@ void ReplayMenuUpdate( WindowLayout *layout, void *userData )
 		deleteReplay();
 		// We'll only be successful if we've requested to
 	if(isShuttingDown && TheShell->isAnimFinished()&& TheTransitionHandler->isFinished())
-		TheShell->shutdownComplete( layout );
+		shutdownComplete( layout );
 
 }
 
@@ -747,6 +777,15 @@ WindowMsgHandledType ReplayMenuSystem( GameWindow *window, UnsignedInt msg,
 			}
 			else if( controlID == buttonBackID )
 			{
+#if defined(GENERALS_ONLINE)
+				// Leaving the Watch Live browser returns to a fresh Welcome, pushed by
+				// shutdownComplete — the same pop-then-push the custom lobby uses. Outside
+				// live mode the legacy replay menu just pops back to the main menu.
+				if (LiveGamesMenuIsLiveGamesMode())
+					s_nextScreen = "Menus/WOLWelcomeMenu.wnd";
+				else
+					s_nextScreen.clear();
+#endif
 
 				// thou art directed to return to thy known solar system immediately!
 				TheShell->pop();

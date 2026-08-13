@@ -6,12 +6,25 @@
 #include "../OnlineServices_Init.h"
 #include "../HTTP/HTTPManager.h"
 #include "GameNetwork/GameSpy/PeerDefs.h"
+#include "Common/Recorder.h"		// TheRecorder / RECORDERMODETYPE_LIVE_OBSERVER (in-game WS policy)
 
 
 WebSocket::WebSocket()
 {
 	m_pMulti = curl_multi_init();
 	m_pHeaders = nullptr;
+}
+
+// The GO websocket only matters at the front end: a match — or a live-observer watch — can
+// play on without it. A live watch is a replay, so TheNGMPGame is never "in progress" for
+// it; the recorder mode is the reliable in-game signal for that case. While a game runs the
+// websocket keeps reconnecting instead of giving up, so a GO outage can never tear the
+// session down under the game; the bounded front-end retries and the "connection lost"
+// teardown only apply once the player is back at the shell.
+static bool isGOWebsocketInGame()
+{
+	return (TheNGMPGame != nullptr && TheNGMPGame->isGameInProgress())
+		|| (TheRecorder != nullptr && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER);
 }
 
 WebSocket::~WebSocket()
@@ -476,7 +489,7 @@ void WebSocket::Tick()
 		int64_t currTime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::utc_clock::now().time_since_epoch()).count();
 
 		int maxReconnectAttempts = (TheNGMPGame != nullptr && TheNGMPGame->isGameInProgress()) ? maxReconnectAttempts_Ingame : maxReconnectAttempts_Frontend;
-		if (m_numReconnectAttempts >= maxReconnectAttempts)
+		if (m_numReconnectAttempts >= maxReconnectAttempts && !isGOWebsocketInGame())
 		{
 			// fully disconnect
             NetworkLog(ELogVerbosity::LOG_RELEASE, "Going to teardown (reconnect 1)");
@@ -491,7 +504,7 @@ void WebSocket::Tick()
 		}
 		else
 		{
-			int timeBetweenReconnectAttempts = (TheNGMPGame != nullptr && TheNGMPGame->isGameInProgress()) ? timeBetweenReconnectAttempts_Ingame : timeBetweenReconnectAttempts_Frontend;
+			int timeBetweenReconnectAttempts = isGOWebsocketInGame() ? timeBetweenReconnectAttempts_Ingame : timeBetweenReconnectAttempts_Frontend;
 
             if (currTime - m_lastReconnectAttempt >= timeBetweenReconnectAttempts)
             {
@@ -559,12 +572,12 @@ void WebSocket::Tick()
                         m_vecWSPartialBuffer.clear();
                         NetworkLog(ELogVerbosity::LOG_RELEASE, "[WebSocket] Failed to connect (%d - %s)", m->data.result, curl_easy_strerror(m->data.result));
 
-                        // reconnecting? give up eventually
+                        // reconnecting? give up eventually (but never mid-game — see isGOWebsocketInGame)
                         if (m_bReconnecting)
                         {
                             int maxReconnectAttempts = (TheNGMPGame != nullptr && TheNGMPGame->isGameInProgress()) ? maxReconnectAttempts_Ingame : maxReconnectAttempts_Frontend;
 
-                            if (m_numReconnectAttempts >= maxReconnectAttempts || (m->data.result == CURLE_HTTP_RETURNED_ERROR && httpResponseCode == 205)) // 205 = need full teardown
+                            if ((m_numReconnectAttempts >= maxReconnectAttempts && !isGOWebsocketInGame()) || (m->data.result == CURLE_HTTP_RETURNED_ERROR && httpResponseCode == 205)) // 205 = need full teardown
                             {
                                 if (httpResponseCode == 205)
                                 {

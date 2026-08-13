@@ -106,7 +106,6 @@ enum class LobbyObserverPhase
 	kCountdown,		// match starting: 5..0 ticked into the chat box
 	kWaiting,		// match started; waiting for the stream to go live
 	kJoining,		// join queued; the shell screens pump the pending-session machinery
-	kJoined,		// playback started; leave the screen on the next update
 };
 
 static LobbyObserverPhase s_phase = LobbyObserverPhase::kIdle;
@@ -1175,32 +1174,15 @@ void LobbyObserverUpdate(WindowLayout* layout, void* userData)
 	// ── Join handoff ──
 	// The pending-session pump is owned by the shell screens below (MainMenu/Welcome run
 	// every frame, and whichever sees the pump's TRUE is the one that starts the game) —
-	// this screen must NOT consume it. Instead it watches for playback actually starting
-	// (the Recorder flips into live-observer mode) and then leaves the shell cleanly, so
-	// the stale lobby screen does not come back at game end.
+	// this screen must NOT consume it, and it must NOT pop itself when playback starts.
+	// A normal game start never pops its setup menu: MSG_NEW_GAME's hideShell hides it (and
+	// everything below was already hidden when this screen was pushed), and the game-end
+	// re-init handles the stale screen — see the LiveObserverConsumeReturnedFromGame hook
+	// in WOLGameSetupMenuInit. Popping here instead re-inits the Watch Live browser below,
+	// which is how the browser (with its border) ended up rendering on top of the running
+	// game.
 	if (s_phase == LobbyObserverPhase::kJoining)
 	{
-		if (TheRecorder != nullptr && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
-		{
-			s_phase = LobbyObserverPhase::kJoined;
-			s_joinQueued = FALSE;
-
-			// Unsubscribe and pop. No cancel: the pump already cleared its own queue when
-			// playback started. LobbyObserverShutdown runs via the pop and resets statics.
-			if (!s_observerLobbyId.isEmpty())
-			{
-				NGMP_OnlineServices_LobbyInterface* pLobbyInterface =
-					NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
-				if (pLobbyInterface != nullptr)
-					pLobbyInterface->UnsubscribeFromLobbyObserver(_atoi64(s_observerLobbyId.str()));
-			}
-			// Same re-arm as doLeave: the browser below is re-inited by the pop, and it
-			// must still be the Watch Live browser when the shell comes back at game end.
-			LiveGamesMenuEnterLiveGamesMode();
-			TheShell->pop();
-			return;
-		}
-
 		// Broadcast-delay admission hold (plans/live-observer-server-delay.md): while GO
 		// holds the watch ticket, the observer is not connected yet, so the pre-roll block
 		// below cannot show anything. Report the remaining hold in the chat instead.
@@ -1218,7 +1200,7 @@ void LobbyObserverUpdate(WindowLayout* layout, void* userData)
 		// Pre-roll status in the chat, replacing the top banner: while the relayed stream
 		// has no complete frames yet, the players are still loading the match; once frames
 		// flow, report the remaining broadcast delay once per second. This screen stays up
-		// for the whole wait (it pops when playback starts), so the chat is its home.
+		// for the whole wait (the game start hides it), so the chat is its home.
 		else if (TheLiveObserver != nullptr && TheLiveObserver->isConnected() && !TheLiveObserver->hasPlaybackStarted())
 		{
 			if (TheLiveObserver->getMaxCompleteFrame() == 0)

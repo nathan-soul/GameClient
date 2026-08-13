@@ -901,6 +901,19 @@ LiveObserver* createLiveObserver()
     return new LiveObserver();
 }
 
+// One-shot "a live-observer game just ended" latch (see LiveObserverConsumeReturnedFromGame
+// in LiveObserver.h). Set by liveObserverEndSession() while a game was actually running;
+// the shell screens' game-end hooks consume it to return the player to the Watch Live
+// browser. An aborted join (no game ran) must not set it.
+static bool g_bLiveObserverReturnedFromGame = false;
+
+Bool LiveObserverConsumeReturnedFromGame(void)
+{
+    const Bool returned = g_bLiveObserverReturnedFromGame ? TRUE : FALSE;
+    g_bLiveObserverReturnedFromGame = false;
+    return returned;
+}
+
 void liveObserverEndSession(void)
 {
     liveObserverLog("liveObserverEndSession: observer=%s\n", TheLiveObserver ? "destroying" : "(none)");
@@ -911,6 +924,14 @@ void liveObserverEndSession(void)
         delete TheLiveObserver;
         TheLiveObserver = nullptr;
     }
+
+    // The game this session was watching is still running (a stream END or an in-game
+    // quit both end the session before the game clears): the shell re-inits whichever
+    // screen is on top when it comes back, and its hook uses this latch to return the
+    // player to the Watch Live browser instead of the main menu. An aborted join ends
+    // the session from the shell — no game — and must not re-route the next visit.
+    if (TheGameLogic != nullptr && TheGameLogic->isInInteractiveGame())
+        g_bLiveObserverReturnedFromGame = true;
 
     // Closes the playback file and parks the playback cursor, but deliberately does not
     // reset() the Recorder: the score screen runs immediately after the session ends and
@@ -1671,6 +1692,12 @@ bool LiveObserver::wsRecv(std::vector<char>& outBuffer)
         return false;
     }
 
+    // Any frame — stream bytes or the relay's protocol-level keepalive pings — proves the
+    // relay is alive. The relay liveness watchdog keys off this timestamp (see
+    // LIVE_RELAY_WATCHDOG_MS): without it, a relay that goes silent would leave the watch
+    // frozen on the last frame, with no END to wind the session down.
+    m_lastFrameReceivedMs.store(timeGetTime());
+
     // TheSuperHackers @fix Only binary payloads belong in the envelope reassembly buffer. meta was
     // being ignored entirely, so a PING/PONG/TEXT/CLOSE payload surfaced by libcurl would be
     // appended straight into the byte stream and misparse everything after it - and the relay's
@@ -1916,6 +1943,23 @@ void LiveObserver::networkThreadFunc()
                 liveObserverLog("LiveObserver: sent spectator chat %zu bytes -> %s\n",
                     framed.size(), sent ? "OK" : "FAILED");
             }
+        }
+
+        // Relay liveness watchdog (the watch's keep-alive): the relay's websocket library
+        // pings us every ~20 s, so a long silence after the header can only mean the relay
+        // — or the connection to it — is gone. End the session the same way a stream END
+        // does: the playout winds down and the shell returns the player to the Watch Live
+        // browser, instead of freezing the watch on the last frame forever. Gated on the
+        // header: before it (the join, the broadcast-delay hold) the relay may
+        // legitimately be silent for longer than the threshold.
+        if (m_headerReceived.load()
+            && (timeGetTime() - m_lastFrameReceivedMs.load()) > (UnsignedInt)LIVE_RELAY_WATCHDOG_MS)
+        {
+            liveObserverLog("LiveObserver: no data from relay for %ums — connection lost, winding down the session\n",
+                (unsigned)(timeGetTime() - m_lastFrameReceivedMs.load()));
+            m_streamEnded.store(true);
+            m_connected.store(false);
+            break;
         }
     }
 

@@ -1180,11 +1180,14 @@ WindowMsgHandledType WOLWelcomeMenuSystem( GameWindow *window, UnsignedInt msg,
 #if defined(GENERALS_ONLINE)
 				else if (buttonWatchLive != nullptr && controlID == (Int)buttonWatchLiveID)
 				{
-					// The browser reuses the replay menu's layout, so it gets the real frame,
-					// listbox and hover states instead of the placeholder look a code-built
-					// dialog had. Pushed rather than popped-to, so Back returns here.
+					// Same navigation as every other page on this screen (Quick Match,
+					// Custom Match): pop this layout and let shutdownComplete push the
+					// browser fresh. Back from Watch Live then returns to a fresh Welcome
+					// instead of this hidden instance lingering under the browser.
+					buttonPushed = TRUE;
 					LiveGamesMenuEnterLiveGamesMode();
-					TheShell->push("Menus/ReplayMenu.wnd");
+					nextScreen = "Menus/ReplayMenu.wnd";
+					TheShell->pop();
 				}
 #endif
 				break;
