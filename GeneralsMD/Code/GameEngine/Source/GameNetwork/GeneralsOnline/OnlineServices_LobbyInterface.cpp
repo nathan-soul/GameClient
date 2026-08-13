@@ -220,7 +220,7 @@ enum class ELobbyUpdateField
 	AI_START_POS = 16,
 	MAX_CAMERA_HEIGHT = 17,
 	JOINABILITY = 18,
-	// 19 is HOST_ACTION_BULK_SLOT_UPDATE on the service (never sent by the client).
+	HOST_ACTION_BULK_SLOT_UPDATE = 19,
 	LOBBY_STREAM_DELAY = 20
 };
 
@@ -496,6 +496,45 @@ void NGMP_OnlineServices_LobbyInterface::SetJoinability(ELobbyJoinability joinab
 
             });
     }
+}
+
+void NGMP_OnlineServices_LobbyInterface::UpdateCurrentLobby_BulkSlotUpdate()
+{
+	// reset autostart if host changes anything (because ready flag will reset too)
+	ClearAutoReadyCountdown();
+	if (TheNGMPGame && TheNGMPGame->IsCountdownStarted())
+		TheNGMPGame->StopCountdown();
+
+	std::string strURI = std::format("{}/{}", NGMP_OnlineServicesManager::GetAPIEndpoint("Lobby"), m_CurrentLobby.lobbyID);
+	std::map<std::string, std::string> mapHeaders;
+
+	nlohmann::json j;
+	j["field"] = ELobbyUpdateField::HOST_ACTION_BULK_SLOT_UPDATE;
+	j["slots"] = nlohmann::json::array();
+	if (TheNGMPGame)
+	{
+		for (Int i = 0; i < MAX_SLOTS; ++i)
+		{
+			GameSlot* slot = TheNGMPGame->getSlot(i);
+			if (!slot || !slot->isOccupied() || slot->getPlayerTemplate() == PLAYERTEMPLATE_OBSERVER)
+				continue;
+
+			nlohmann::json entry;
+			entry["slot_index"] = i;
+			entry["side"] = slot->getPlayerTemplate();
+			entry["color"] = slot->getColor();
+			entry["start_pos"] = slot->getStartPos();
+			entry["team"] = slot->getTeamNumber();
+			j["slots"].push_back(entry);
+		}
+	}
+	std::string strPostData = j.dump();
+
+	// convert
+	NGMP_OnlineServicesManager::GetInstance()->GetHTTPManager()->SendPOSTRequest(strURI.c_str(), EIPProtocolVersion::DONT_CARE, mapHeaders, strPostData.c_str(), [=](bool bSuccess, int statusCode, std::string strBody, HTTPRequest* pReq)
+		{
+
+		});
 }
 
 void NGMP_OnlineServices_LobbyInterface::UpdateCurrentLobby_AIColor(int slot, int color)

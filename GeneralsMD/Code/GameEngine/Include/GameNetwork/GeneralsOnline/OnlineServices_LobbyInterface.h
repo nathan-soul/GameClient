@@ -226,6 +226,11 @@ public:
 
 	void UpdateCurrentLobby_ForceReady();
 
+	/// Host-only: push a full per-slot assignment (side/color/start_pos/team for every occupied
+	/// non-observer slot) to GO. Used by the lobby /roll command. GO stores and broadcasts it;
+	/// it does NOT persist anyone's favorites.
+	void UpdateCurrentLobby_BulkSlotUpdate();
+
 	void SetLobbyListDirty()
 	{
 		m_bLobbyListDirty = true;

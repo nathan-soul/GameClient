@@ -59,6 +59,7 @@ class ThingTemplate;
 class Team;
 class CommandList;
 class GameMessage;
+class GameInfo;
 class LoadScreen;
 class WindowLayout;
 class TerrainLogic;
@@ -170,6 +171,10 @@ public:
 	// super hack
 	void startNewGame(Bool loadSaveGame);
 	void loadMapINI(AsciiString mapName);
+
+	///< Resolve all random slots (faction, color, start position) exactly like a game start
+	///< would, using the game's own RNG seed. Used by the lobby /roll command.
+	void rollRandomSlots(GameInfo* game);
 
 	void updateLoadProgress( Int progress );
 	void deleteLoadScreen();

@@ -74,6 +74,7 @@
 #include "GameNetwork/GameSpy/GSConfig.h"
 
 #include "GameNetwork/GeneralsOnline/NGMP_interfaces.h"
+#include <chrono>
 #include <ws2ipdef.h>
 #include <format>
 #include "../OnlineServices_Init.h"
@@ -3867,6 +3868,7 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/maxcameraheight <value> - Sets the maximum camera zoom out level - Example: /maxcameraheight 650"), GameSpyColor[GSCOLOR_CHAT_NORMAL], -1, -1);
 		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/friendsonly - Sets the lobby to only be joinable by friends"), GameSpyColor[GSCOLOR_CHAT_NORMAL], -1, -1);
 		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/public - Sets the lobby to be joinable by anyone"), GameSpyColor[GSCOLOR_CHAT_NORMAL], -1, -1);
+		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/roll - Host only: rolls all slots (faction, color, start position) and updates the lobby"), GameSpyColor[GSCOLOR_CHAT_NORMAL], -1, -1);
 		return TRUE; // was a slash command
 	}
 	else if (token == "friendsonly")
@@ -3976,6 +3978,105 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 				}
 			}
 		}
+
+		return TRUE; // was a slash command
+	}
+	else if (token == "roll")
+	{
+		NGMP_OnlineServices_LobbyInterface* pLobbyInterface = NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
+		if (pLobbyInterface == nullptr || !pLobbyInterface->IsInLobby() || TheNGMPGame == nullptr)
+		{
+			return TRUE; // was a slash command
+		}
+
+		// the roll updates the lobby, so only the host may trigger it (enforced service-side too)
+		if (!pLobbyInterface->IsHost())
+		{
+			GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"Only the lobby host can roll the lobby."), GameMakeColor(255, 0, 0, 255), -1, -1);
+			return TRUE; // was a slash command
+		}
+
+		// the start-position roll needs the map's waypoints; bail out if we can't find the map
+		if (TheMapCache->findMap(TheNGMPGame->getMap()) == nullptr)
+		{
+			GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"Could not roll: map not found in the map cache."), GameMakeColor(255, 0, 0, 255), -1, -1);
+			return TRUE; // was a slash command
+		}
+
+		// Use the lobby's own RNG seed (the one GO hands every client at game start), so the
+		// /roll assignment is exactly what the game would roll — even if the slots are still
+		// Random at start, the game re-rolls the same values. Deterministic per lobby: an
+		// unchanged lobby always rolls the same assignment; a fresh lobby draws a new seed.
+
+		// re-roll every occupied non-observer slot (this is a full lobby roll, not a preview)
+		for (Int i = 0; i < MAX_SLOTS; ++i)
+		{
+			GameSlot* slot = TheNGMPGame->getSlot(i);
+			if (!slot || !slot->isOccupied() || slot->getPlayerTemplate() == PLAYERTEMPLATE_OBSERVER)
+				continue;
+
+			slot->setPlayerTemplate(PLAYERTEMPLATE_RANDOM);
+			slot->setColor(-1);
+			slot->setStartPos(-1);
+		}
+
+		// resolve every random slot exactly like a game start would
+		TheGameLogic->rollRandomSlots(TheNGMPGame);
+
+		UnicodeString msg = UnicodeString(L"Lobby roll:");
+		for (Int i = 0; i < MAX_SLOTS; ++i)
+		{
+			GameSlot* slot = TheNGMPGame->getSlot(i);
+			if (!slot || !slot->isOccupied() || slot->getPlayerTemplate() == PLAYERTEMPLATE_OBSERVER)
+				continue;
+
+			UnicodeString part;
+			part.format(L" %ls:", slot->getName().str());
+
+			if (slot->getPlayerTemplate() == PLAYERTEMPLATE_RANDOM)
+			{
+				part.concat(UnicodeString(L" Random"));
+			}
+			else
+			{
+				const PlayerTemplate* pt = ThePlayerTemplateStore->getNthPlayerTemplate(slot->getPlayerTemplate());
+				if (pt)
+				{
+					part.concat(pt->getDisplayName());
+				}
+				else
+				{
+					part.concat(UnicodeString(L" ?"));
+				}
+			}
+
+			UnicodeString posPart;
+			posPart.format(L" @ %d", slot->getStartPos() + 1);
+			part.concat(posPart);
+
+			MultiplayerColorDefinition* colorDef = TheMultiplayerSettings->getColor(slot->getColor());
+			if (colorDef)
+			{
+				UnicodeString colorName = TheGameText->fetch(colorDef->getTooltipName());
+				if (!colorName.isEmpty())
+				{
+					part.concat(UnicodeString(L" ("));
+					part.concat(colorName);
+					part.concat(UnicodeString(L")"));
+				}
+			}
+
+			msg.concat(part);
+		}
+		msg.concat(UnicodeString(L" - the lobby has been updated with this assignment."));
+
+		pLobbyInterface->SendAnnouncementMessageToCurrentLobby(msg, true);
+
+		// write the assignment back to the lobby; every member's slot list updates via the service
+		pLobbyInterface->UpdateCurrentLobby_BulkSlotUpdate();
+
+		// refresh the host's slot list immediately (the service echo confirms it shortly after)
+		WOLDisplaySlotList();
 
 		return TRUE; // was a slash command
 	}

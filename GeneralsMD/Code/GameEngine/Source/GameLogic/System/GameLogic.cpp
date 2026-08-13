@@ -1192,6 +1192,25 @@ static void populateRandomStartPosition(GameInfo* game)
 }
 
 // ------------------------------------------------------------------------------------------------
+/** Resolve all random slots exactly like a game start would, but without starting a game.
+  * Used by the lobby /roll command. The sequence mirrors tryStartNewGame() so the result is
+  * exactly what the game will roll: checkForDuplicateColors -> seed the logic RNG ->
+  * populateRandomSideAndColor -> populateRandomStartPosition. Deterministic per
+  * (seed, slot state) pair, and the game uses the same seed at start.
+  */
+// ------------------------------------------------------------------------------------------------
+void GameLogic::rollRandomSlots(GameInfo* game)
+{
+	if (!game)
+		return;
+
+	checkForDuplicateColors(game);
+	InitRandom(game->getSeed());
+	populateRandomSideAndColor(game);
+	populateRandomStartPosition(game);
+}
+
+// ------------------------------------------------------------------------------------------------
 /** Update the load screen progress */
 // ------------------------------------------------------------------------------------------------
 void GameLogic::updateLoadProgress(Int progress)
