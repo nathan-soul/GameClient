@@ -65,6 +65,7 @@
 #include "Common/Player.h"
 #include "Common/PlayerList.h"
 #include "Common/PlayerTemplate.h"
+#include "Common/Recorder.h"
 #include "GameClient/CampaignManager.h"
 #include "GameClient/Display.h"
 #include "GameClient/GadgetProgressBar.h"
@@ -1390,7 +1391,19 @@ void MultiPlayerLoadScreen::init( GameInfo *game )
         const PlayerTemplate* pt = ThePlayerTemplateStore->getNthPlayerTemplate(slot->getPlayerTemplate());
         GadgetStaticTextSetText(m_playerSide[netSlot], pt ? pt->getDisplayName() : slot->getApparentPlayerTemplateDisplayName());
 #else
-        GadgetStaticTextSetText(m_playerSide[netSlot], slot->getApparentPlayerTemplateDisplayName());
+        // A live observer is nobody's ally, so the apparent-name masking (which hides a
+        // random-picked side as "Random" from non-alleys) would print "Random" for the whole
+        // board. The observer watches the full game anyway, so reveal the resolved sides on
+        // their load screen - which is also how they see the assignment without any /roll.
+        if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
+        {
+            const PlayerTemplate* pt = ThePlayerTemplateStore->getNthPlayerTemplate(slot->getPlayerTemplate());
+            GadgetStaticTextSetText(m_playerSide[netSlot], pt ? pt->getDisplayName() : slot->getApparentPlayerTemplateDisplayName());
+        }
+        else
+        {
+            GadgetStaticTextSetText(m_playerSide[netSlot], slot->getApparentPlayerTemplateDisplayName());
+        }
 #endif
 		
 		m_playerSide[netSlot]->winSetEnabledTextColors(houseColor, m_playerSide[netSlot]->winGetEnabledTextBorderColor());

@@ -58,6 +58,8 @@
 #include "GameNetwork/GeneralsOnline/OnlineServices_LobbyInterface.h"
 #include "GameNetwork/GeneralsOnline/json.hpp"
 #include "GameNetwork/GUIUtil.h"	// GetTeamUiColor
+#include "GameNetwork/GameInfo.h"	// GameInfo / GameSlot / SlotState (roll prediction)
+#include "GameLogic/GameLogic.h"	// TheGameLogic->rollRandomSlots (roll prediction)
 
 #include <atomic>
 #include <cstdlib>
@@ -170,9 +172,14 @@ static AsciiString s_mapPath;		// raw MapPath as GO sends it (relative)
 static AsciiString s_mapPathLocal;	// rewritten to a path this machine can open
 static UnicodeString s_slotNames[MAX_OBSERVER_SLOTS];
 static Bool s_slotOccupied[MAX_OBSERVER_SLOTS];	// player or AI
+static Int s_slotStates[MAX_OBSERVER_SLOTS];	// raw EPlayerType int from the JSON
 static Int s_slotSides[MAX_OBSERVER_SLOTS];		// player template ids, -1 = none
 static Int s_slotColors[MAX_OBSERVER_SLOTS];		// color ids, -1 = none
 static Int s_slotTeams[MAX_OBSERVER_SLOTS];		// team numbers, -1 = none
+static Int s_slotStartPos[MAX_OBSERVER_SLOTS];	// start positions, -1 = none
+static Int s_rolledSides[MAX_OBSERVER_SLOTS];	// predicted template ids, -1 = none
+static Int s_rolledStartPos[MAX_OBSERVER_SLOTS];	// predicted start positions, -1 = none
+static Bool s_rollPredicted = FALSE;			// the last fetch could compute a roll prediction
 static Int s_startingCash = -1;
 static Bool s_trackStats = FALSE;
 static Bool s_vanillaTeams = FALSE;
@@ -516,27 +523,42 @@ static void renderLobby(void)
 	if (s_mapWindow != nullptr && !s_mapPathLocal.isEmpty())
 		positionStartSpots(s_mapPathLocal, s_startButtons, s_mapWindow);
 
-	// Paint the start buttons the way the real lobby's updateMapStartSpots does. This
-	// view has no GameInfo, but the fetched slots carry the same data: the slot index
-	// IS the start position, and the team number maps to the player color. Occupied
-	// slots show their player number (1..8) in the player's team color; the rest stay
-	// blank. Mirrors the stock gate: only slots with a resolved side are painted.
+	// Paint the start buttons the way the real lobby's updateMapStartSpots does: each
+	// occupied slot shows its player number (1..8) at its resolved start position, in the
+	// player's team color. When the roll is predicted, the resolved position comes from the
+	// prediction (this is what the load screen will show); without a prediction, fall back
+	// to the slot-index assumption, and random slots stay blank.
 	for (Int i = 0; i < MAX_OBSERVER_SLOTS; ++i)
 	{
 		if (s_startButtons[i] == nullptr)
 			continue;
 		GadgetButtonSetText(s_startButtons[i], UnicodeString::TheEmptyString);
-		if (!s_slotOccupied[i] || s_slotSides[i] < 0)
+		if (!s_slotOccupied[i])
+			continue;
+
+		Int posIdx = i;
+		if (s_rollPredicted)
+		{
+			if (s_rolledStartPos[i] < 0)
+				continue;
+			posIdx = s_rolledStartPos[i];
+		}
+		else if (s_slotSides[i] < 0)
+		{
+			continue;
+		}
+
+		if (posIdx < 0 || posIdx >= MAX_OBSERVER_SLOTS || s_startButtons[posIdx] == nullptr)
 			continue;
 
 		AsciiString displayNumber;
 		displayNumber.format("NUMBER:%d", i + 1);
-		GadgetButtonSetText(s_startButtons[i], TheGameText->fetch(displayNumber));
+		GadgetButtonSetText(s_startButtons[posIdx], TheGameText->fetch(displayNumber));
 
 		const UnsignedInt col = (s_slotTeams[i] >= 0)
 			? GetTeamUiColor(s_slotTeams[i])
 			: GameMakeColor(255, 255, 255, 255);
-		GadgetTextEntrySetTextColor(s_startButtons[i], col);
+		GadgetTextEntrySetTextColor(s_startButtons[posIdx], col);
 	}
 
 	for (Int i = 0; i < MAX_OBSERVER_SLOTS; ++i)
@@ -565,7 +587,10 @@ static void renderLobby(void)
 			continue;
 		}
 
-		populateTemplateComboReadOnly(s_templateCombos[i], s_slotSides[i]);
+		// A random side shows the predicted roll (what the load screen will display);
+		// concrete sides show themselves.
+		const Int displaySide = (s_slotSides[i] < 0 && s_rollPredicted) ? s_rolledSides[i] : s_slotSides[i];
+		populateTemplateComboReadOnly(s_templateCombos[i], displaySide);
 		populateColorComboReadOnly(s_colorCombos[i], s_slotColors[i]);
 		populateTeamComboReadOnly(s_teamCombos[i], s_slotTeams[i]);
 	}
@@ -663,6 +688,77 @@ static void renderLobby(void)
 	}
 }
 
+// ============================================================================
+// Roll prediction
+// ============================================================================
+
+// The game start resolves every random slot deterministically: the lobby's RNG seed
+// (GO mints it at lobby creation) plus the member list, replayed by tryStartNewGame
+// through populateRandomSideAndColor / populateRandomStartPosition. The stream header
+// cannot help here — it is only sent once the stream is live, and even then it carries
+// the PRE-roll slot list (the live-observer determinism design re-rolls it identically
+// on the observer, so the header never contains the resolved assignment). So the
+// pre-game view replays the same resolution from the lobby JSON it already fetches,
+// which is exactly what the players will see on the load screen.
+static void predictLobbyRoll(const nlohmann::json& response)
+{
+	s_rollPredicted = FALSE;
+	for (Int i = 0; i < MAX_OBSERVER_SLOTS; ++i)
+	{
+		s_rolledSides[i] = -1;
+		s_rolledStartPos[i] = -1;
+	}
+
+	if (TheGameLogic == nullptr || s_mapPathLocal.isEmpty())
+		return;
+
+	// The position part needs the map's waypoints, exactly like the game start.
+	AsciiString lowerMap = s_mapPathLocal;
+	lowerMap.toLower();
+	if (TheMapCache->findMap(lowerMap) == nullptr)
+		return;
+
+	// The seed the game start will re-seed from (the lobby's RNGSeed).
+	int seed = 0;
+	if (!jsonGetIntFlexible(response, "RNGSeed", "rngSeed", seed))
+		return;
+
+	GameInfo scratch;
+	GameSlot scratchSlots[MAX_SLOTS];
+	for (Int i = 0; i < MAX_SLOTS; ++i)
+		scratch.setSlotPointer(i, &scratchSlots[i]);
+	scratch.setSeed(seed);
+	scratch.setMap(lowerMap);
+
+	for (Int i = 0; i < MAX_OBSERVER_SLOTS; ++i)
+	{
+		if (!s_slotOccupied[i])
+			continue;
+
+		GameSlot slot;
+		slot.setState((SlotState)s_slotStates[i], s_slotNames[i], i);
+		slot.setPlayerTemplate(s_slotSides[i] < 0 ? PLAYERTEMPLATE_RANDOM : s_slotSides[i]);
+		slot.setColor(s_slotColors[i]);
+		slot.setTeamNumber(s_slotTeams[i]);
+		slot.setStartPos(s_slotStartPos[i]);
+		scratch.setSlot(i, slot);
+	}
+
+	TheGameLogic->rollRandomSlots(&scratch);
+
+	for (Int i = 0; i < MAX_OBSERVER_SLOTS; ++i)
+	{
+		if (!s_slotOccupied[i])
+			continue;
+		const GameSlot* slot = scratch.getConstSlot(i);
+		if (slot == nullptr)
+			continue;
+		s_rolledSides[i] = slot->getPlayerTemplate();
+		s_rolledStartPos[i] = slot->getStartPos();
+	}
+	s_rollPredicted = TRUE;
+}
+
 static void applyLobbyFetch(Bool success, Int statusCode, const AsciiString& body)
 {
 	if (statusCode == 404)
@@ -730,9 +826,11 @@ static void applyLobbyFetch(Bool success, Int statusCode, const AsciiString& bod
 		{
 			s_slotNames[i].clear();
 			s_slotOccupied[i] = FALSE;
+			s_slotStates[i] = -1;
 			s_slotSides[i] = -1;
 			s_slotColors[i] = -1;
 			s_slotTeams[i] = -1;
+			s_slotStartPos[i] = -1;
 		}
 
 		const nlohmann::json* members = nullptr;
@@ -758,6 +856,8 @@ static void applyLobbyFetch(Bool success, Int statusCode, const AsciiString& bod
 				if (slotIndex < 0 || slotIndex >= MAX_OBSERVER_SLOTS)
 					continue;
 
+				s_slotStates[slotIndex] = slotState;
+
 				// EPlayerType: SLOT_OPEN=0, SLOT_CLOSED=1, EASY/MED/BRUTAL_AI=2/3/4,
 				// SLOT_PLAYER=5. Mirror the stock lobby's slot labels.
 				switch (slotState)
@@ -772,6 +872,7 @@ static void applyLobbyFetch(Bool success, Int statusCode, const AsciiString& bod
 						jsonGetIntFlexible(member, "Side", "side", s_slotSides[slotIndex]);
 						jsonGetIntFlexible(member, "Color", "color", s_slotColors[slotIndex]);
 						jsonGetIntFlexible(member, "Team", "team", s_slotTeams[slotIndex]);
+						jsonGetIntFlexible(member, "StartingPosition", "startingPosition", s_slotStartPos[slotIndex]);
 					}
 					break;
 				case 2:	// SLOT_EASY_AI
@@ -783,6 +884,7 @@ static void applyLobbyFetch(Bool success, Int statusCode, const AsciiString& bod
 					jsonGetIntFlexible(member, "Side", "side", s_slotSides[slotIndex]);
 					jsonGetIntFlexible(member, "Color", "color", s_slotColors[slotIndex]);
 					jsonGetIntFlexible(member, "Team", "team", s_slotTeams[slotIndex]);
+					jsonGetIntFlexible(member, "StartingPosition", "startingPosition", s_slotStartPos[slotIndex]);
 					break;
 				case 0:	// SLOT_OPEN
 					s_slotNames[slotIndex] = TheGameText->fetch("GUI:Open");
@@ -856,6 +958,10 @@ static void applyLobbyFetch(Bool success, Int statusCode, const AsciiString& bod
 				s_phase = LobbyObserverPhase::kWaiting;
 			}
 		}
+
+		// The assignment the game start will produce (factions + start positions), computed
+		// from the same seed and member list the game will use.
+		predictLobbyRoll(response);
 
 		renderLobby();
 	}
@@ -1320,6 +1426,7 @@ void LobbyObserverShutdown(WindowLayout* layout, void* userData)
 	s_firstLobbyFetchDone = FALSE;
 	s_delayRemaining = 0;
 	s_delayHoldShown = FALSE;
+	s_rollPredicted = FALSE;
 	s_refetchRequested.store(false);
 	s_gameStartSignal.store(false);
 	s_streamLiveSignal.store(false);

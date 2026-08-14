@@ -3883,7 +3883,7 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/maxcameraheight <value> - Sets the maximum camera zoom out level - Example: /maxcameraheight 650"), GameSpyColor[GSCOLOR_CHAT_NORMAL], -1, -1);
 		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/friendsonly - Sets the lobby to only be joinable by friends"), GameSpyColor[GSCOLOR_CHAT_NORMAL], -1, -1);
 		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/public - Sets the lobby to be joinable by anyone"), GameSpyColor[GSCOLOR_CHAT_NORMAL], -1, -1);
-		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/roll - Host only: rolls all slots (faction, color, start position) and updates the lobby"), GameSpyColor[GSCOLOR_CHAT_NORMAL], -1, -1);
+		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/roll - Host only: rolls all slots (faction, start position) and updates the lobby"), GameSpyColor[GSCOLOR_CHAT_NORMAL], -1, -1);
 		return TRUE; // was a slash command
 	}
 	else if (token == "friendsonly")
@@ -4023,7 +4023,10 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 		// Random at start, the game re-rolls the same values. Deterministic per lobby: an
 		// unchanged lobby always rolls the same assignment; a fresh lobby draws a new seed.
 
-		// re-roll every occupied non-observer slot (this is a full lobby roll, not a preview)
+		// Re-roll every occupied non-observer slot (this is a full lobby roll, not a preview).
+		// Colors are left untouched: the game start only rolls a color that is still -1 at
+		// start, and in GO lobbies colors are always concrete — resetting them here would
+		// consume extra RNG draws the game start won't, and the assignments would diverge.
 		for (Int i = 0; i < MAX_SLOTS; ++i)
 		{
 			GameSlot* slot = TheNGMPGame->getSlot(i);
@@ -4031,7 +4034,6 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 				continue;
 
 			slot->setPlayerTemplate(PLAYERTEMPLATE_RANDOM);
-			slot->setColor(-1);
 			slot->setStartPos(-1);
 		}
 
