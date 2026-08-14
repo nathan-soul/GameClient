@@ -65,6 +65,29 @@ public:
 
 	int GetChatLifeSeconds() const { return std::max<int>(m_Chat_LifeSeconds, 10); }
 
+	/// How far behind the live edge a live observer keeps itself, in milliseconds.
+	///
+	/// Playback always runs at exactly 100% speed — the observer never invents a rate change
+	/// to smooth itself out, because that would drift its clock away from the real match
+	/// clock and make everything read off it (build timings, countdowns) wrong. So the only
+	/// way to absorb a network hiccup is lead that was already banked, which is what this is:
+	/// a fixed offset taken once at join, not an ongoing speed change.
+	///
+	/// 0 reproduces the in-game lockstep observer exactly — stall whenever the data is not
+	/// there, never be wrong about the game. Larger values trade a little liveness for
+	/// riding out jitter. Well under a second either way; this is not the broadcast delay,
+	/// which is a separate server-side anti-ghosting policy and wins when it is larger.
+	int LiveObserver_GetJitterBufferMs() const
+	{
+		return std::max<int>(0, std::min<int>(m_LiveObserver_JitterBufferMs, LIVE_OBSERVER_JITTER_BUFFER_MS_MAX));
+	}
+
+	void LiveObserver_SetJitterBufferMs(int ms)
+	{
+		m_LiveObserver_JitterBufferMs = std::max<int>(0, std::min<int>(ms, LIVE_OBSERVER_JITTER_BUFFER_MS_MAX));
+		Save();
+	}
+
 	void Initialize()
 	{
 		m_bInitialized = true;
@@ -128,6 +151,14 @@ private:
 	bool m_Render_LimitFramerate = true;
 	int m_Render_FramerateLimit_FPSVal = 60;
 	int m_Chat_LifeSeconds = 30;
+
+	// Deliberately small. The point of the live observer is to be where the game is; this is
+	// only meant to cover ordinary transport jitter, and the floor on a WebSocket-over-TCP
+	// relay is one RTT anyway (a lost packet blocks everything behind it until retransmit).
+	// Sized from the cross-border test, not from theory.
+	static const int LIVE_OBSERVER_JITTER_BUFFER_MS_MAX = 2000;
+	const int m_LiveObserver_JitterBufferMs_default = 250;
+	int m_LiveObserver_JitterBufferMs = m_LiveObserver_JitterBufferMs_default;
 
 	bool m_Social_Notification_FriendComesOnline_Menus = true;
 	bool m_Social_Notification_FriendComesOnline_Gameplay = true;

@@ -1,4 +1,4 @@
-/*
+﻿/*
 **	Command & Conquer Generals Zero Hour(tm)
 **	Copyright 2025 Electronic Arts Inc.
 **
@@ -41,7 +41,7 @@
 #include <windows.h>
 
 // ============================================================================
-// liveStreamLog — write diagnostic messages to live_streamer_debug.log
+// liveStreamLog â€” write diagnostic messages to live_streamer_debug.log
 // ============================================================================
 // LIVE_OBSERVER_BUILD_TAG and the LIVE_OBSERVER_LOGGING gate both come from LiveObserver.h,
 // included above. Without that include this file kept its own copy of the tag (which drifted
@@ -50,12 +50,12 @@
 
 void liveStreamLog(const char* fmt, ...) {
 #if !defined(LIVE_OBSERVER_LOGGING)
-    // Compiled out by RTS_DEBUG_LIVE_OBSERVER=OFF — see LiveObserver.h.
+    // Compiled out by RTS_DEBUG_LIVE_OBSERVER=OFF â€” see LiveObserver.h.
     (void)fmt;
 #else
     static FILE* logFile = NULL;
     if (!logFile) {
-        // TheSuperHackers @fix Give this log a per-instance name — see the matching
+        // TheSuperHackers @fix Give this log a per-instance name â€” see the matching
         // comment in LiveObserver.cpp::liveObserverLog.
         AsciiString path;
         path.format("live_streamer_debug_Instance%.2u.log", rts::ClientInstance::getInstanceId());
@@ -64,6 +64,11 @@ void liveStreamLog(const char* fmt, ...) {
             fprintf(logFile, "LIVE_OBSERVER_BUILD_TAG=%s\n", LIVE_OBSERVER_BUILD_TAG);
     }
     if (logFile) {
+        // Wall-clock prefix on every line so the six test instances' logs can be aligned
+        // against each other (and against the relay's) when correlating a dead stream.
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        fprintf(logFile, "[%02u:%02u:%02u.%03u] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
         va_list args;
         va_start(args, fmt);
         vfprintf(logFile, fmt, args);
@@ -80,7 +85,7 @@ void liveStreamerInitLog() {
         liveStreamLog("LiveStreamRelayUrl: %s\n", TheGlobalData->m_liveStreamRelayUrl.str());
         liveStreamLog("LiveStreamCanStream: %s\n", TheGlobalData->m_liveStreamCanStream ? "true" : "false");
     } else {
-        liveStreamLog("TheGlobalData is NULL — cannot read config\n");
+        liveStreamLog("TheGlobalData is NULL â€” cannot read config\n");
     }
 }
 
@@ -88,7 +93,7 @@ void liveStreamerInitLog() {
 // UTF-8 helpers (chat payloads travel as UTF-8, like the rest of the GO wire format)
 //
 // These three are MIRRORED in LiveObserver.cpp (chatWideToUtf8/chatUtf8ToWide/
-// chatAppendU32LE) — keep both copies in sync; like the build tag, they have already
+// chatAppendU32LE) â€” keep both copies in sync; like the build tag, they have already
 // drifted once.
 // ============================================================================
 
@@ -138,6 +143,9 @@ LiveStreamer::LiveStreamer()
     , m_curlEasy(nullptr)
     , m_curlMulti(nullptr)
     , m_bodySentOffset(0)
+    , m_sentBytes(0)
+    , m_sentFrames(0)
+    , m_endReason("shutdown")
 {
     m_headerBuffer.reserve(4096);
     m_bodyBuffer.reserve(64 * 1024);
@@ -154,11 +162,11 @@ LiveStreamer* createLiveStreamer()
 }
 
 // ============================================================================
-// Pending registration — the pre-game lobby → Recorder handover
+// Pending registration â€” the pre-game lobby â†’ Recorder handover
 // ============================================================================
 
 // Only ever touched from the main thread: the lobby fills it in from a UI callback, the Recorder
-// consumes it from MSG_NEW_GAME. The network thread never sees it — by the time any of this
+// consumes it from MSG_NEW_GAME. The network thread never sees it â€” by the time any of this
 // reaches the wire it has been copied into the REGISTER payload.
 static LiveStreamRegistration s_pendingRegistration;
 
@@ -196,7 +204,7 @@ LiveStreamer* liveStreamStartPendingSession()
 
     if (!s_pendingRegistration.isValid())
     {
-        // Normal for skirmish, replays and LAN — there is no lobby to have registered one.
+        // Normal for skirmish, replays and LAN â€” there is no lobby to have registered one.
         liveStreamLog("liveStreamStartPendingSession: nothing pending, not streaming this game\n");
         return nullptr;
     }
@@ -218,7 +226,7 @@ LiveStreamer* liveStreamStartPendingSession()
     TheLiveStreamer->init();
 
     // Consumed. A second recording without a fresh lobby visit must not re-register this one
-    // under the same lobby id — that would merge two unrelated matches into one relay session.
+    // under the same lobby id â€” that would merge two unrelated matches into one relay session.
     liveStreamClearPendingRegistration();
 
     return TheLiveStreamer;
@@ -242,7 +250,7 @@ void LiveStreamer::onHeaderComplete()
     if (m_headerBuffer.empty())
         return;
 
-    // Demoted (backup) streamers do not send the header — the relay already has the
+    // Demoted (backup) streamers do not send the header â€” the relay already has the
     // session's canonical one. Defensive: the header is normally sent at match start,
     // before any demotion can occur, so this only matters for an edge-case ordering.
     if (m_isBackup.load())
@@ -292,7 +300,7 @@ void LiveStreamer::onBodyBytes(const void* data, Int size)
 
     // One buffer, both roles: while streaming it is flushed to the wire by onBodyFlush;
     // while backup (demoted) onBodyFlush does nothing, so the same buffer accumulates the
-    // body from the demotion point onward — which is exactly the backfill source a later
+    // body from the demotion point onward â€” which is exactly the backfill source a later
     // takeover needs. Its first byte sits at absolute offset m_bodySentOffset (frozen while
     // backup), so takeover offsets stay absolute-correct. Guarded by m_sendMutex because
     // onTakeover (network thread) reads it while this (game thread) appends.
@@ -439,7 +447,7 @@ void LiveStreamer::registerForGame(const LiveStreamRegistration& registration)
 
     // Built into a std::string rather than a fixed buffer: the GO-shaped lobby block carries a
     // lobby name, two map paths and up to eight members, which comfortably outgrew the 2KB
-    // char array this used to use — and a truncated payload is unparseable, not merely lossy.
+    // char array this used to use â€” and a truncated payload is unparseable, not merely lossy.
     char scratch[64];
     std::string regJson = "{\"type\":\"register\"";
 
@@ -488,7 +496,7 @@ void LiveStreamer::registerForGame(const LiveStreamRegistration& registration)
 
     liveStreamLog("LiveStreamer::registerForGame payload=%s\n", regJson.c_str());
 
-    // Queue the REGISTER message — the network thread will send it once connected.
+    // Queue the REGISTER message â€” the network thread will send it once connected.
     // (Must NOT call sendBinaryFrame directly here because m_connected may still be false.)
     queueFrame(LIVE_MSG_REGISTER, regJson.c_str(), regJson.length());
 }
@@ -500,7 +508,7 @@ void LiveStreamer::onRoleAssigned(const AsciiString& role, const AsciiString& lo
     // Only the initial streamer ROLE (fresh connect or mid-match reconnect) establishes the
     // send offset from the relay's value. A demote (backup) ROLE must not: while backup,
     // m_bodySentOffset is frozen at the absolute offset of the accumulating body buffer (see
-    // onBodyBytes/onBodyFlush), and the relay's current body length is ahead of it —
+    // onBodyBytes/onBodyFlush), and the relay's current body length is ahead of it â€”
     // clobbering it would mislabel the buffered bytes. A takeover ROLE (streamer + action)
     // must not either: onTakeover runs right after and computes the backfill slice against
     // that same frozen offset, then advances m_bodySentOffset itself.
@@ -537,11 +545,11 @@ void LiveStreamer::onTakeover(uint64_t bodyOffset)
         std::lock_guard<std::mutex> lock(m_sendMutex);
         if (bodyOffset < m_bodySentOffset)
         {
-            // The cap trimmed past the requested offset — we no longer hold those bytes, so
+            // The cap trimmed past the requested offset â€” we no longer hold those bytes, so
             // the hole cannot be filled. Degrade to skip-forward; the relay logs a gap, as
             // it does for any missing chunk.
             liveStreamLog("LiveStreamer::onTakeover cannot backfill from %llu "
-                "(buffer starts at %llu) — skipping forward\n",
+                "(buffer starts at %llu) â€” skipping forward\n",
                 (unsigned long long)bodyOffset, (unsigned long long)m_bodySentOffset);
             backfillStart = m_bodySentOffset;
         }
@@ -556,7 +564,7 @@ void LiveStreamer::onTakeover(uint64_t bodyOffset)
         m_bodyBuffer.clear();
     }
 
-    // Send the backfill in bounded chunks (network thread — same thread that drains the
+    // Send the backfill in bounded chunks (network thread â€” same thread that drains the
     // send queue, so a direct send here cannot interleave with it).
     if (!backfill.empty())
     {
@@ -582,10 +590,11 @@ void LiveStreamer::onTakeover(uint64_t bodyOffset)
             framed.insert(framed.end(), offBuf, offBuf + 8);
             framed.insert(framed.end(), backfill.data() + i, backfill.data() + i + n);
 
-            if (!sendBinaryFrame(LIVE_MSG_BODY, framed.data(), framed.size()))
+            WsSendResult sendRes = sendBinaryFrame(LIVE_MSG_BODY, framed.data(), framed.size());
+            if (sendRes != WsSendResult::Sent)
             {
-                liveStreamLog("LiveStreamer::onTakeover backfill send failed at offset %llu\n",
-                    (unsigned long long)absOff);
+                liveStreamLog("LiveStreamer::onTakeover backfill send failed at offset %llu (result %d)\n",
+                    (unsigned long long)absOff, (int)sendRes);
                 break;
             }
             absOff += n;
@@ -601,7 +610,7 @@ void LiveStreamer::onTakeover(uint64_t bodyOffset)
 
 void LiveStreamer::onChat(UnsignedInt frame, const UnicodeString& text, UnsignedInt colorArgb)
 {
-    // Payload: [frame u32 LE][textLen u32 LE][UTF-8 text][color u32 LE] — opaque to the
+    // Payload: [frame u32 LE][textLen u32 LE][UTF-8 text][color u32 LE] â€” opaque to the
     // relay; the observer frame-gates on `frame` and recolors from `colorArgb`. See
     // plans/relay/live-observer-chat.md.
     std::string utf8 = wideToUtf8(text);
@@ -613,6 +622,22 @@ void LiveStreamer::onChat(UnsignedInt frame, const UnicodeString& text, Unsigned
     appendU32LE(payload, colorArgb);
     queueFrame(LIVE_MSG_CHAT, payload.data(), payload.size());
     liveStreamLog("LiveStreamer::onChat frame=%u bytes=%zu\n", frame, payload.size());
+}
+
+void LiveStreamer::onTick(UnsignedInt frame)
+{
+    // Backup: say nothing. A demoted source has stopped pushing body data (see onBodyFlush),
+    // so a tick from it would assert an edge for bytes it is not sending â€” the observer would
+    // be told the game is at frame N while nothing behind N is arriving.
+    if (m_isBackup.load())
+        return;
+
+    // Payload: [frame u32 LE]. Opaque to the relay, which only forwards it and remembers the
+    // latest value for observers joining later.
+    std::vector<char> payload;
+    payload.reserve(4);
+    appendU32LE(payload, frame);
+    queueFrame(LIVE_MSG_TICK, payload.data(), payload.size());
 }
 
 void LiveStreamer::pumpSpectatorChat()
@@ -668,17 +693,17 @@ void LiveStreamer::queueFrame(LiveMsgType type, const void* data, size_t len)
         }
 
         m_queuedBytes += frame.data.size();
-        m_outgoingQueue.push(std::move(frame));
+        m_outgoingQueue.push_back(std::move(frame));
     }
 }
 
-bool LiveStreamer::sendBinaryFrame(LiveMsgType type, const void* payload, size_t payloadLen)
+LiveStreamer::WsSendResult LiveStreamer::sendBinaryFrame(LiveMsgType type, const void* payload, size_t payloadLen)
 {
     if (!m_connected.load())
-        return false;
+        return WsSendResult::Error;
 
     // Envelope: 1 byte type + 4 bytes length (LE) + payload
-    // Must be sent as ONE WebSocket frame — curl_ws_send writes a frame per call.
+    // Must be sent as ONE WebSocket frame â€” curl_ws_send writes a frame per call.
     unsigned int len = (unsigned int)payloadLen;
     size_t totalSize = 5 + (payload ? len : 0);
     std::vector<unsigned char> buf(totalSize);
@@ -693,7 +718,7 @@ bool LiveStreamer::sendBinaryFrame(LiveMsgType type, const void* payload, size_t
     return wsSendBinary(buf.data(), totalSize);
 }
 
-bool LiveStreamer::sendBinaryFrame(const QueuedFrame& frame)
+LiveStreamer::WsSendResult LiveStreamer::sendBinaryFrame(const QueuedFrame& frame)
 {
     return sendBinaryFrame((LiveMsgType)frame.type,
         frame.data.empty() ? nullptr : frame.data.data(),
@@ -704,19 +729,34 @@ bool LiveStreamer::sendBinaryFrame(const QueuedFrame& frame)
 // WebSocket I/O (libcurl, background thread)
 // ============================================================================
 
-bool LiveStreamer::wsSendBinary(const unsigned char* data, size_t len)
+LiveStreamer::WsSendResult LiveStreamer::wsSendBinary(const unsigned char* data, size_t len)
 {
     if (!m_curlEasy)
-        return false;
+        return WsSendResult::Error;
 
     size_t sent = 0;
     CURLcode rc = curl_ws_send(m_curlEasy, data, len, &sent, 0, CURLWS_BINARY);
+    if (rc == CURLE_AGAIN)
+    {
+        // Socket buffer full â€” the relay is reading slowly. Nothing was sent; the caller
+        // keeps the frame and retries on the next loop pass. This is a pause, not a failure:
+        // TheSuperHackers @fix killing the session here turned relay backpressure into
+        // "stream ended prematurely".
+        return WsSendResult::WouldBlock;
+    }
     if (rc != CURLE_OK)
     {
         liveStreamLog("LiveStreamer::wsSendBinary failed: %d\n", (int)rc);
-        return false;
+        return WsSendResult::Error;
     }
-    return (sent == len);
+    if (sent != len)
+    {
+        // curl_ws_send sends whole frames â€” a short send would leave the relay holding a
+        // truncated frame, which is worse than ending the session cleanly.
+        liveStreamLog("LiveStreamer::wsSendBinary short send: %zu of %zu bytes\n", sent, len);
+        return WsSendResult::Error;
+    }
+    return WsSendResult::Sent;
 }
 
 bool LiveStreamer::wsRecv(std::vector<char>& outBuffer)
@@ -737,10 +777,23 @@ bool LiveStreamer::wsRecv(std::vector<char>& outBuffer)
     }
     if (rc != CURLE_OK)
     {
-        liveStreamLog("LiveStreamer::wsRecv error: %d\n", (int)rc);
+        // The connection itself is gone (relay crash/restart, socket closed without an
+        // ERROR frame). Wind down instead of spinning on a dead socket until the
+        // watchdog catches up â€” the UI must stop saying "streaming" when nothing is
+        // consuming the upload.
+        liveStreamLog("STREAM DEAD: wsRecv error: %d â€” connection lost, winding down the session\n", (int)rc);
+        m_endReason = "recv-failed";
+        m_connected.store(false);
         outBuffer.clear();
         return false;
     }
+
+    // Any frame â€” stream data or the relay's protocol-level keepalive pings â€” proves the
+    // relay is alive. The relay liveness watchdog keys off this timestamp (see
+    // LIVE_STREAM_WATCHDOG_MS): without it, a relay that goes silent would leave the
+    // streamer "streaming" into a dead connection forever, with nothing left to consume
+    // the upload.
+    m_lastFrameReceivedMs.store(timeGetTime());
 
     // TheSuperHackers @fix Only binary payloads belong in the envelope reassembly buffer. meta was
     // being ignored entirely, so a PING/PONG/TEXT/CLOSE payload surfaced by libcurl would be
@@ -855,7 +908,7 @@ bool LiveStreamer::connectToRelay()
 
     // TheSuperHackers @fix 03/08/2026 wss:// relays need a CA bundle. This libcurl is built
     // against OpenSSL (libssl-3.dll / libcrypto-3.dll ship beside it), and unlike Schannel
-    // OpenSSL does not consult the Windows certificate store — with no trust anchors it
+    // OpenSSL does not consult the Windows certificate store â€” with no trust anchors it
     // rejects every certificate, including valid ones, as CURLE_PEER_FAILED_VERIFICATION (60).
     // Same approach as HTTPRequest.cpp; see the TODO_NGMP there about moving to Schannel.
     {
@@ -871,7 +924,7 @@ bool LiveStreamer::connectToRelay()
         {
             // Matches the existing fallback rather than failing the connection outright.
             // Worth knowing this is an unverified link, so say so in the log.
-            liveStreamLog("LiveStreamer: cacert.pem not found — TLS certificate verification DISABLED\n");
+            liveStreamLog("LiveStreamer: cacert.pem not found â€” TLS certificate verification DISABLED\n");
             curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 0L);
             curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 0L);
         }
@@ -944,45 +997,83 @@ void LiveStreamer::networkThreadFunc()
 
     m_connected.store(true);
 
-    while (m_shouldRun.load())
+    // m_connected is the wind-down signal: a send failure, a relay ERROR frame or the
+    // liveness watchdog all clear it, which exits this loop and (because the final drain
+    // is gated on it too) stops any further upload. Without it the streamer would keep
+    // "streaming" into a dead session and the UI would keep saying so.
+    while (m_shouldRun.load() && m_connected.load())
     {
-        // Drain outgoing queue
+        // Drain outgoing queue. Pop under the lock, send outside it: curl_ws_send is
+        // blocking network I/O (TLS to the relay), and the game thread takes the same
+        // mutex every frame in onBodyBytes/onBodyFlush. Holding it across a slow send
+        // stalled the whole game frame ("game stops every 4-5 s" while streaming) and
+        // could let the relay reap the session as idle when a send blocked for long.
+        // TheSuperHackers @fix streamer no longer sends while holding m_sendMutex.
+        std::vector<QueuedFrame> toSend;
         {
             std::lock_guard<std::mutex> lock(m_sendMutex);
             while (!m_outgoingQueue.empty() && m_connected.load())
             {
-                QueuedFrame& frame = m_outgoingQueue.front();
-                if (!sendBinaryFrame(frame))
-                {
-                    liveStreamLog("LiveStreamer::networkThreadFunc send failed, type=%d\n", (int)frame.type);
-                    m_connected.store(false);
-                    break;
-                }
-                if (frame.type == LIVE_MSG_HEADER)
-                    liveStreamLog("LiveStreamer: sent HEADER (%zu bytes)\n", frame.data.size());
-                else if (frame.type == LIVE_MSG_BODY)
-                {
-                    // Log only periodically
-                    static int bodyCount = 0;
-                    if (++bodyCount % 60 == 0)
-                        liveStreamLog("LiveStreamer: sent BODY #%d (%zu bytes)\n", bodyCount, frame.data.size());
-                }
-                else if (frame.type == LIVE_MSG_END)
-                    liveStreamLog("LiveStreamer: sent END\n");
-                m_queuedBytes -= frame.data.size();
-                m_outgoingQueue.pop();
+                toSend.push_back(std::move(m_outgoingQueue.front()));
+                m_outgoingQueue.pop_front();
+                m_queuedBytes -= toSend.back().data.size();
             }
         }
 
+        for (size_t i = 0; i < toSend.size(); ++i)
+        {
+            if (!m_connected.load())
+                break;
+            const QueuedFrame& frame = toSend[i];
+            WsSendResult res = sendBinaryFrame(frame);
+            if (res == WsSendResult::WouldBlock)
+            {
+                // Socket buffer full â€” the relay is reading slowly. Put every unsent frame
+                // back at the FRONT of the queue (stream order is data) and retry on the
+                // next loop pass. Backpressure slows the upload; it must never kill it.
+                std::lock_guard<std::mutex> lock(m_sendMutex);
+                for (size_t j = toSend.size(); j-- > i; )
+                {
+                    m_queuedBytes += toSend[j].data.size();
+                    m_outgoingQueue.push_front(std::move(toSend[j]));
+                }
+                break;
+            }
+            if (res == WsSendResult::Error)
+            {
+                liveStreamLog("STREAM DEAD: send of type=%d failed (%zu bytes) â€” connection to relay lost, winding down the session\n",
+                    (int)frame.type, frame.data.size());
+                m_endReason = "send-failed";
+                m_connected.store(false);
+                break;
+            }
+            m_sentBytes += frame.data.size();
+            m_sentFrames += 1;
+            if (frame.type == LIVE_MSG_HEADER)
+                liveStreamLog("LiveStreamer: sent HEADER (%zu bytes)\n", frame.data.size());
+            else if (frame.type == LIVE_MSG_BODY)
+            {
+                // Log only periodically
+                static int bodyCount = 0;
+                if (++bodyCount % 60 == 0)
+                    liveStreamLog("LiveStreamer: sent BODY #%d (%zu bytes)\n", bodyCount, frame.data.size());
+            }
+            else if (frame.type == LIVE_MSG_END)
+                liveStreamLog("LiveStreamer: sent END\n");
+        }
+
+        if (!m_connected.load())
+            break;
+
         // Receive incoming messages
         std::vector<char> recvBuf;
-        while (wsRecv(recvBuf) && m_shouldRun.load())
+        while (wsRecv(recvBuf) && m_shouldRun.load() && m_connected.load())
         {
             if (recvBuf.size() < 5)
                 continue;
 
             // TheSuperHackers @fix Same signed-char sign-extension bug as
-            // LiveObserver.cpp::networkThreadFunc — must zero-extend through unsigned char.
+            // LiveObserver.cpp::networkThreadFunc â€” must zero-extend through unsigned char.
             unsigned char msgType = (unsigned char)recvBuf[0];
             unsigned int msgLen = (unsigned int)(unsigned char)recvBuf[1]
                 | ((unsigned int)(unsigned char)recvBuf[2] << 8)
@@ -999,7 +1090,7 @@ void LiveStreamer::networkThreadFunc()
                 //
                 // Each key advances by the literal's own strlen rather than a hand-counted
                 // constant. The old hand-counted skip for the id key was one too many, quietly
-                // chopping the first character off every id it read — harmless only because
+                // chopping the first character off every id it read â€” harmless only because
                 // nothing but a log line ever consumed it.
                 static const char ROLE_KEY[]     = "\"role\":\"";
                 static const char ACTION_KEY[]   = "\"action\":\"";
@@ -1048,12 +1139,21 @@ void LiveStreamer::networkThreadFunc()
             }
             else if (msgType == LIVE_MSG_ERROR)
             {
-                liveStreamLog("LiveStreamer: received ERROR\n");
+                // The relay tells us our session is gone (reaped/refused) while the socket
+                // is still open. Log the reason it gives and wind down â€” this is what turns
+                // "UI says streaming, relay says no stream" into a visible, attributable end.
+                std::string errText;
+                if (msgLen > 0 && (uint64_t)recvBuf.size() >= 5ull + msgLen)
+                    errText.assign(recvBuf.data() + 5, msgLen);
+                liveStreamLog("STREAM DEAD: relay ERROR frame received (%s) â€” session is gone, winding down\n",
+                    errText.empty() ? "no detail" : errText.c_str());
+                m_endReason = "relay-error";
+                m_connected.store(false);
             }
             else if (msgType == LIVE_MSG_SPECTATOR_CHAT && msgLen >= 8
                 && (uint64_t)recvBuf.size() >= 5ull + msgLen)
             {
-                // [nameLen u32 LE][UTF-8 name][textLen u32 LE][UTF-8 text] — live spectator
+                // [nameLen u32 LE][UTF-8 name][textLen u32 LE][UTF-8 text] â€” live spectator
                 // chat for in-game observers (we are a source). See
                 // plans/relay/live-observer-spectator-chat.md.
                 const unsigned char* p = (const unsigned char*)recvBuf.data() + 5;
@@ -1081,9 +1181,25 @@ void LiveStreamer::networkThreadFunc()
             }
         }
 
+        // Relay liveness watchdog (the streamer's mirror of LiveObserver's): the relay
+        // pings this websocket every ~20 s, so a long silence can only mean the relay â€” or
+        // the connection to it â€” is gone. Gated on having seen at least one frame (the
+        // pre-ROLE join may legitimately be silent) and on m_connected (send failures and
+        // ERROR frames wind down through the flag instead).
+        if (m_connected.load()
+            && m_lastFrameReceivedMs.load() != 0
+            && (timeGetTime() - m_lastFrameReceivedMs.load()) > (UnsignedInt)LIVE_STREAM_WATCHDOG_MS)
+        {
+            liveStreamLog("STREAM DEAD: no frame from relay for %ums â€” relay stopped consuming our stream, winding down the session\n",
+                (unsigned)(timeGetTime() - m_lastFrameReceivedMs.load()));
+            m_endReason = "relay-silent";
+            m_connected.store(false);
+            break;
+        }
+
         // Small sleep to avoid busy-looping.
         // TheSuperHackers @fix curl_multi_poll's out-param is numfds, not "still
-        // running" — see the matching comment in LiveObserver.cpp::networkThreadFunc.
+        // running" â€” see the matching comment in LiveObserver.cpp::networkThreadFunc.
         // curl_multi_perform() must run unconditionally or incoming ROLE/ERROR
         // messages can silently stop being received.
         {
@@ -1094,22 +1210,45 @@ void LiveStreamer::networkThreadFunc()
         }
     }
 
-    // Final drain — frames queued after the last loop iteration
+    // Final drain â€” frames queued after the last loop iteration
     // (e.g. PATCH + END from stopRecording) must still be sent.
+    // Same pop-under-lock / send-outside-lock split as the main loop.
+    std::vector<QueuedFrame> toSend;
     {
         std::lock_guard<std::mutex> lock(m_sendMutex);
         while (!m_outgoingQueue.empty() && m_connected.load())
         {
-            QueuedFrame& frame = m_outgoingQueue.front();
-            if (!sendBinaryFrame(frame))
-            {
-                liveStreamLog("LiveStreamer: final drain send failed, type=%d\n", (int)frame.type);
-                break;
-            }
-            liveStreamLog("LiveStreamer: final drain sent type=%d (%zu bytes)\n", (int)frame.type, frame.data.size());
-            m_queuedBytes -= frame.data.size();
-            m_outgoingQueue.pop();
+            toSend.push_back(std::move(m_outgoingQueue.front()));
+            m_outgoingQueue.pop_front();
+            m_queuedBytes -= toSend.back().data.size();
         }
+    }
+    for (size_t i = 0; i < toSend.size(); ++i)
+    {
+        if (!m_connected.load())
+            break;
+        const QueuedFrame& frame = toSend[i];
+        WsSendResult res = sendBinaryFrame(frame);
+        if (res == WsSendResult::WouldBlock)
+        {
+            // Same as the main loop: keep the unsent frames in order, in case the relay
+            // catches up before the process goes away.
+            std::lock_guard<std::mutex> lock(m_sendMutex);
+            for (size_t j = toSend.size(); j-- > i; )
+            {
+                m_queuedBytes += toSend[j].data.size();
+                m_outgoingQueue.push_front(std::move(toSend[j]));
+            }
+            break;
+        }
+        if (res == WsSendResult::Error)
+        {
+            liveStreamLog("LiveStreamer: final drain send failed, type=%d\n", (int)frame.type);
+            break;
+        }
+        liveStreamLog("LiveStreamer: final drain sent type=%d (%zu bytes)\n", (int)frame.type, frame.data.size());
+        m_sentBytes += frame.data.size();
+        m_sentFrames += 1;
     }
 
     // Cleanup
@@ -1126,5 +1265,7 @@ void LiveStreamer::networkThreadFunc()
         m_curlEasy = nullptr;
     }
     m_connected.store(false);
-    liveStreamLog("LiveStreamer::networkThreadFunc ended\n");
+    m_isStreaming.store(false);
+    liveStreamLog("LiveStreamer::networkThreadFunc ended â€” lobby=%s reason=%s sentFrames=%zu sentBytes=%zu queuedLeft=%zu\n",
+        m_lobbyId.str(), m_endReason.str(), m_sentFrames, m_sentBytes, m_queuedBytes);
 }

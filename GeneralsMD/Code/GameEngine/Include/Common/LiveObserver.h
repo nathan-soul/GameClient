@@ -112,6 +112,28 @@ public:
 	/// Replaces the old RecorderClass::probeLiveEdge() file scan.
 	UnsignedInt getMaxCompleteFrame() const { return m_maxCompleteFrame.load(); }
 
+	/// Where the live game actually is — the value the buffering gate reasons about.
+	///
+	/// getMaxCompleteFrame() can only ever report the last frame that happened to *contain a
+	/// record*, and the replay format writes records only for frames with input. During quiet
+	/// play that is the CRC record alone, one per REPLAY_CRC_INTERVAL (100) frames, so the
+	/// record-derived edge advances in ~1.7 s jumps while our own clock advances smoothly:
+	/// the gap sawtooths, hits zero once per interval, and the observer stalls on a stream
+	/// that is not actually late. The streamer's frame heartbeat (MSG_TICK) fills the silence
+	/// by stating the frame outright, so this is the record edge or the heartbeat, whichever
+	/// is further ahead.
+	///
+	/// Safe to simulate up to: the streamer emits a tick only after flushing that frame's
+	/// records, and the relay preserves order, so a tick for frame N means every record with
+	/// frame <= N has already arrived. It is a statement about what was sent, never a guess
+	/// about what might come — see the acceptance rule in handleFrame's LIVE_MSG_TICK case.
+	UnsignedInt getLiveEdge() const
+	{
+		const UnsignedInt records = m_maxCompleteFrame.load();
+		const UnsignedInt heartbeat = m_liveFrameHint.load();
+		return heartbeat > records ? heartbeat : records;
+	}
+
 	/// Absolute file offset one past the last complete record. The Recorder must never
 	/// read beyond this — doing so is what allowed a torn record at the growing tail to
 	/// misalign the playback stream permanently.
@@ -171,6 +193,19 @@ public:
 	/// build runs at 60, not the original 30) — with frames derived from it.
 	UnsignedInt getDelaySeconds() const { return m_delaySeconds.load(); }
 	UnsignedInt getDelayFrames() const { return m_delaySeconds.load() * LOGICFRAMES_PER_SECOND; }
+
+	/// How far behind the live edge this session aims to sit, in frames.
+	///
+	/// Two independent reasons to hold back, so the larger wins:
+	///   - the broadcast delay, a server-side anti-ghosting promise (often 0 here — either the
+	///     lobby set no delay, or the relay is enforcing it byte-wise and told us 0);
+	///   - the viewer's jitter buffer, a local cushion against transport hiccups.
+	///
+	/// Paid once at join as a fixed offset, never as a rate change: the observer's clock must
+	/// agree with the real match clock, so it plays at exactly 100% and absorbs jitter out of
+	/// lead it already banked. A jitter buffer of 0 is legitimate and reproduces the in-game
+	/// lockstep observer — stall rather than ever be wrong about the game.
+	UnsignedInt getTargetLeadFrames() const;
 
 	/// Effective delay: 0 when GO holds the stream server-side (server_held — the ticket was
 	/// only minted once the broadcast delay had elapsed, so the relay stream itself is
@@ -249,6 +284,7 @@ private:
 		UnsignedInt frame;      ///< player chat: streamer-side frame; spectator chat: unused
 		UnsignedInt colorArgb;  ///< display color (sender color for player chat)
 		Bool spectator;         ///< live spectator chat (no frame gate, spoiler gate instead)
+		Bool disaster = FALSE;  ///< stream-failure notice: shown unconditionally, never gated
 		UnicodeString text;     ///< already-formatted line ("[name] msg" / "[Spec] name: msg")
 	};
 	std::deque<ChatEntry> m_chatQueue;          // written by the network thread (handleFrame)
@@ -310,11 +346,17 @@ private:
 	// seconds of warmup costs a rounding error against a 3600-frame delay.
 	enum { LIVE_PREROLL_WARMUP_FRAMES = 120 };
 
-	// Hysteresis band (frames) for the near-live gate. Holding engages only once the gap has
-	// fallen a full band below the delay boundary and releases only once the source has
-	// pulled a full band ahead again. At equal frame rates the gap sits exactly on the
-	// boundary, and a plain threshold there toggled pause/resume constantly — the stutter.
-	enum { LIVE_GATE_HYSTERESIS_FRAMES = 60 };
+	// How much lead the gate rebuilds past the target before resuming from a hold. Sized at
+	// one heartbeat interval (Recorder::LIVE_TICK_INTERVAL_FRAMES): enough that the observer
+	// can play a full tick's worth of frames before approaching the engage bound again, so
+	// the gate cannot re-engage every tick and micro-stutter.
+	//
+	// This was 60 frames — a full second — back when the live edge could only be read from
+	// the records themselves and so advanced in ~1.7 s jumps; the band existed to damp the
+	// resulting sawtooth. The frame heartbeat removes the sawtooth, which leaves the wide
+	// band as pure cost: it made every hold, however brief the gap that caused it, freeze the
+	// picture for a flat second or two while the source pulled that far ahead.
+	enum { LIVE_GATE_RELEASE_MARGIN_FRAMES = 10 };
 
 	// Relay liveness watchdog threshold: no frame of any kind (stream bytes or the relay's
 	// protocol-level keepalive pings, which arrive every ~20 s) for this long means the
@@ -377,6 +419,13 @@ private:
 	Int m_parseAbsOffset;                     // absolute file offset of m_parseTail[0]
 	Int m_bodyStartOffset;                    // file offset of the first body byte (the header length)
 	Bool m_parseCorrupt;                      // latched: watermark frozen, see advanceParseCursor
+	Bool m_parseGapPending;                   // a chunk arrived out of order; bytes are missing behind the cursor
+
+	// Newest frame stated by the streamer's heartbeat (MSG_TICK). Written by the network
+	// thread, read by the game thread through getLiveEdge() — the same split as
+	// m_maxCompleteFrame, and atomic for the same reason. Zero until the first tick, which is
+	// why getLiveEdge() maxes rather than prefers: an old streamer never sends one.
+	std::atomic<UnsignedInt> m_liveFrameHint;
 
 	AsciiString m_gameId;
 
@@ -537,7 +586,7 @@ Bool liveServicesRequest(const AsciiString& url, Bool bPost, const char* szPostB
 // apart, which is precisely the confusion this tag exists to prevent. Any file using it must
 // include this header — that also brings the LIVE_OBSERVER_LOGGING resolution above, without
 // which logging silently stays off in a DEFAULT build.
-#define LIVE_OBSERVER_BUILD_TAG "2026-08-13-observer-keepalive"
+#define LIVE_OBSERVER_BUILD_TAG "2026-08-14-stream-death-logging"
 
 void liveObserverLog(const char* fmt, ...);
 void liveObserverInitLog(const char* lobbyId);

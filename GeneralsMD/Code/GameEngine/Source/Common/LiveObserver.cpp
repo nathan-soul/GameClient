@@ -71,6 +71,11 @@ void liveObserverLog(const char* fmt, ...) {
             fprintf(logFile, "LIVE_OBSERVER_BUILD_TAG=%s\n", LIVE_OBSERVER_BUILD_TAG);
     }
     if (logFile) {
+        // Wall-clock prefix on every line so the six test instances' logs can be aligned
+        // against each other (and against the relay's) when correlating a dead stream.
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        fprintf(logFile, "[%02u:%02u:%02u.%03u] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
         va_list args;
         va_start(args, fmt);
         vfprintf(logFile, fmt, args);
@@ -101,6 +106,8 @@ LiveObserver::LiveObserver()
     , m_parseAbsOffset(0)
     , m_bodyStartOffset(0)
     , m_parseCorrupt(false)
+    , m_parseGapPending(false)
+    , m_liveFrameHint(0)
     , m_holdPlayback(FALSE)
     , m_nearLiveHeld(FALSE)
     , m_preRollComplete(FALSE)
@@ -553,7 +560,9 @@ void LiveObserver::resetParseCursor(Int bodyStartOffset)
     m_parseAbsOffset = bodyStartOffset;
     m_bodyStartOffset = bodyStartOffset;
     m_parseCorrupt = false;
+    m_parseGapPending = false;
     m_maxCompleteFrame.store(0);
+    m_liveFrameHint.store(0);
     m_safeReadOffset.store(bodyStartOffset);
 }
 
@@ -572,11 +581,16 @@ void LiveObserver::advanceParseCursor(Int chunkOffset, const unsigned char* data
     Int expected = m_parseAbsOffset + (Int)m_parseTail.size();
     if (chunkOffset != expected)
     {
+        // Latch it: the frame heartbeat must not be believed while there is a hole behind
+        // the cursor. The tick's guarantee is "every record up to N was sent", which stops
+        // being useful when we know some of them have not landed here yet.
+        m_parseGapPending = true;
         liveObserverLog("LiveObserver: parse cursor gap — chunkOffset=%d expected=%d, watermark stalled\n",
             chunkOffset, expected);
         return;
     }
 
+    m_parseGapPending = false;
     m_parseTail.insert(m_parseTail.end(), data, data + dataLen);
 
     Int consumed = 0;
@@ -655,25 +669,34 @@ void LiveObserver::updatePlaybackGate(UnsignedInt curFrame)
         return;
     }
 
-    const UnsignedInt liveEdge = getMaxCompleteFrame();
+    const UnsignedInt liveEdge = getLiveEdge();
     const UnsignedInt gap = (liveEdge > curFrame) ? (liveEdge - curFrame) : 0;
     const UnsignedInt delayFrames = getEffectiveDelaySeconds() * LOGICFRAMES_PER_SECOND;
     const Bool streamEnded = m_streamEnded.load();
 
-    // The near-live gate keeps the observer a full broadcast delay behind the live edge. It
-    // is latched with hysteresis: holding engages only once the gap has fallen a whole band
-    // below the delay boundary, and releases only once the source has pulled a whole band
-    // ahead again. Between the bounds the gate keeps its previous decision instead of
-    // re-evaluating every tick — with both sides at the same frame rate the gap sits exactly
-    // on the boundary, and a plain threshold there toggled pause/resume constantly, which
-    // is the stutter every second the observer reported.
-    const UnsignedInt holdBand = LIVE_GATE_HYSTERESIS_FRAMES;
-    const UnsignedInt engageBelow = (delayFrames > holdBand) ? (delayFrames - holdBand) : 0;
-    const UnsignedInt releaseAbove = delayFrames + holdBand;
+    // The two bounds are deliberately asymmetric, because they answer different questions.
+    //
+    // engageBelow — when must we stop? Only at the broadcast delay, which is a hard promise
+    // (a normal viewer may never see closer to live than that). With no client-side delay it
+    // is 0: nothing forces a hold except running out of data altogether. The old code engaged
+    // a whole band *above* this, which meant holding while there was still plenty to play.
+    //
+    // releaseAbove — how much do we rebuild before resuming? The target lead, plus a margin.
+    // Resuming the instant one frame is available would leave no cushion, so the next hiccup
+    // stalls again and the equilibrium lead grinds to zero; rebuilding the buffer is what
+    // makes a stall a one-off rather than the start of a pattern. The margin is one heartbeat
+    // interval so the observer can play a full tick's worth before nearing the engage bound
+    // again — without it the gate re-engages every tick and micro-stutters.
+    //
+    // What this is not: a speed change. Playback is always exactly 100%; the gate only ever
+    // chooses between running and waiting, never between running fast and running slow.
+    const UnsignedInt targetLead = getTargetLeadFrames();
+    const UnsignedInt engageBelow = delayFrames;
+    const UnsignedInt releaseAbove = targetLead + LIVE_GATE_RELEASE_MARGIN_FRAMES;
 
-    // Existing fast-forward auto-disable, now driven by a live edge that is actually real.
-    // Uses the release bound: inside the hysteresis band the observer is close enough to the
-    // edge that a fast-forward would spoil the live game, so it must stay disabled there too.
+    // Fast-forward auto-disable. Uses the release bound so the join catch-up stops exactly
+    // where the gate will settle: any closer to the edge and a fast-forward would spoil the
+    // live game.
     if (gap <= releaseAbove)
     {
         if (TheWritableGlobalData)
@@ -681,10 +704,11 @@ void LiveObserver::updatePlaybackGate(UnsignedInt curFrame)
     }
 
     // Pre-roll: hold playback until the initial buffer has been built once. Sticky for the
-    // rest of the session — after this the delay is maintained by the near-live gate below.
-    // A finished stream is the escape hatch for a game that ends before ever buffering a
-    // full delay; without it a short game would pre-roll-pause forever.
-    if (!m_preRollComplete && (gap >= delayFrames || streamEnded))
+    // rest of the session — after this the lead is maintained by the near-live gate below.
+    // This is where the jitter buffer is actually paid for: once, at join, as a fixed offset.
+    // A finished stream is the escape hatch for a game that ends before ever buffering the
+    // full target; without it a short game would pre-roll-pause forever.
+    if (!m_preRollComplete && (gap >= targetLead || streamEnded))
         m_preRollComplete = TRUE;
 
     // The gate is purely a function of the gap — deliberately not of whether a record
@@ -693,11 +717,10 @@ void LiveObserver::updatePlaybackGate(UnsignedInt curFrame)
     // function disagree (the poll runs before GameLogic::UPDATE() and cannot know), which
     // oscillated the pause every tick and let playback creep forward while starved.
     //
-    // The latched hold replaces what used to be a tight sawtooth around the boundary: paused
-    // at gap == delayFrames, released the moment the source pulled ahead. At equal frame
-    // rates that boundary is crossed constantly, so the observer now settles on whichever
-    // side of the hysteresis band it reaches and the gate only moves when the two sides'
-    // rates genuinely diverge.
+    // In steady state this should not fire at all: the observer consumes frames at exactly
+    // the rate the source produces them, so the gap wanders around the target lead without
+    // reaching either bound. A hold means the wander went all the way to the floor — real
+    // lost time on the link, not the gate second-guessing itself.
     if (m_preRollComplete && !streamEnded)
     {
         if (gap <= engageBelow)
@@ -742,10 +765,14 @@ void LiveObserver::noteDesync(UnsignedInt frame)
     m_desyncFrame = frame;
 
     // Logged with the gate's state, because the interesting question about a divergence is
-    // always whether we had run out of data when it happened.
+    // always whether we had run out of data when it happened. Both edges are reported: the
+    // second question is now whether the heartbeat let playback run past where the records
+    // actually reached, which is exactly what the acceptance rule in handleFrame guards
+    // against — recordEdge far behind curFrame with heartbeat ahead of it is that failure.
     liveObserverLog("DESYNC: observer diverged from the stream at frame %u. curFrame=%u liveEdge=%u "
-        "delayFrames=%u holdPlayback=%d stalled=%d preRoll=%d\n",
-        frame, TheGameLogic ? TheGameLogic->getFrame() : 0, getMaxCompleteFrame(), getDelayFrames(),
+        "recordEdge=%u heartbeat=%u delayFrames=%u holdPlayback=%d stalled=%d preRoll=%d\n",
+        frame, TheGameLogic ? TheGameLogic->getFrame() : 0, getLiveEdge(),
+        getMaxCompleteFrame(), m_liveFrameHint.load(), getDelayFrames(),
         m_holdPlayback ? 1 : 0, m_stalled ? 1 : 0, m_preRollComplete ? 1 : 0);
 }
 
@@ -755,23 +782,43 @@ Int LiveObserver::getPreRollSecondsRemaining() const
         return 0;
 
     const UnsignedInt curFrame = TheGameLogic ? TheGameLogic->getFrame() : 0;
-    const UnsignedInt liveEdge = getMaxCompleteFrame();
+    const UnsignedInt liveEdge = getLiveEdge();
     const UnsignedInt gap = (liveEdge > curFrame) ? (liveEdge - curFrame) : 0;
-    const UnsignedInt delayFrames = getEffectiveDelaySeconds() * LOGICFRAMES_PER_SECOND;
-    if (gap >= delayFrames)
+    // The target, not the delay: this counts down the same buffer the pre-roll latch waits
+    // for, and with no broadcast delay that is the jitter buffer alone.
+    const UnsignedInt targetLead = getTargetLeadFrames();
+    if (gap >= targetLead)
         return 0;
 
     // Round up, so the countdown only reads 0 when playback is genuinely about to start.
-    return (Int)((delayFrames - gap + LOGICFRAMES_PER_SECOND - 1) / LOGICFRAMES_PER_SECOND);
+    return (Int)((targetLead - gap + LOGICFRAMES_PER_SECOND - 1) / LOGICFRAMES_PER_SECOND);
+}
+
+UnsignedInt LiveObserver::getTargetLeadFrames() const
+{
+    const UnsignedInt delayFrames = getEffectiveDelaySeconds() * LOGICFRAMES_PER_SECOND;
+
+    // Settings may not exist yet on very early calls (the countdown can be asked before the
+    // online services are up). Falling back to the delay alone is the safe reading: it never
+    // claims a cushion we have not established.
+    if (NGMP_OnlineServicesManager::GetInstance() == nullptr)
+        return delayFrames;
+
+    const Int jitterMs = NGMP_OnlineServicesManager::Settings.LiveObserver_GetJitterBufferMs();
+    const UnsignedInt jitterFrames =
+        (UnsignedInt)((jitterMs * LOGICFRAMES_PER_SECOND + 999) / 1000);   // round up
+
+    return jitterFrames > delayFrames ? jitterFrames : delayFrames;
 }
 
 Bool LiveObserver::isWithinBroadcastDelay(UnsignedInt curFrame) const
 {
-    const UnsignedInt liveEdge = getMaxCompleteFrame();
+    const UnsignedInt liveEdge = getLiveEdge();
     const UnsignedInt gap = (liveEdge > curFrame) ? (liveEdge - curFrame) : 0;
-    // The release bound of the gate's hysteresis band: the observer may sit a full band
-    // past the delay while playing, and fast-forward must stay refused for all of it.
-    return gap <= getEffectiveDelaySeconds() * LOGICFRAMES_PER_SECOND + LIVE_GATE_HYSTERESIS_FRAMES;
+    // The gate's release bound, so the join catch-up stops fast-forwarding exactly where the
+    // gate will settle. Anywhere inside it the observer is close enough to the edge that a
+    // fast-forward would spoil the live game.
+    return gap <= getTargetLeadFrames() + LIVE_GATE_RELEASE_MARGIN_FRAMES;
 }
 
 Bool LiveObserver::isPlaybackReady() const
@@ -1344,7 +1391,14 @@ void LiveObserver::pollChatMessages(UnsignedInt curFrame)
     std::deque<ChatEntry> holdback;
     for (auto& entry : batch)
     {
-        if (entry.spectator)
+        if (entry.disaster)
+        {
+            // Stream-failure notice: always shown, spoiler rules do not apply — the
+            // stream is gone, there is nothing left to spoil.
+            displayChat(entry);
+            liveObserverLog("LiveObserver: displayed stream-lost notice\n");
+        }
+        else if (entry.spectator)
         {
             // Live meta-chat, shown per the F7 mode: auto = inside the spoiler window only,
             // forced ON = always (spoilers accepted), OFF = never. Outside the window in
@@ -1563,6 +1617,36 @@ void LiveObserver::handleFrame(unsigned char type, const char* payload, size_t l
         break;
     }
 
+    case 9: // LIVE_MSG_TICK — the streamer's current logic frame
+    {
+        if (len < 4)
+            return;
+
+        const unsigned char* p = (const unsigned char*)payload;
+        const UnsignedInt frame = (UnsignedInt)p[0] | ((UnsignedInt)p[1] << 8)
+            | ((UnsignedInt)p[2] << 16) | ((UnsignedInt)p[3] << 24);
+
+        // Acceptance rule. The tick is only a proof of "every record up to this frame has
+        // arrived" while the byte stream behind it is whole. A gap (a chunk that arrived out
+        // of order) or a corrupt record means records below this frame may be missing or
+        // unreadable, and acting on the tick would let playback run past them — which does
+        // not stall, it silently executes those commands at the wrong frame later
+        // (Recorder::updatePlayback) and diverges the simulation for good. Fail closed and
+        // fall back to the record-derived edge; the cursor repairs itself when the missing
+        // bytes are backfilled, and the next tick is a second or so away.
+        //
+        // Same thread as advanceParseCursor (the network thread), so reading its state here
+        // needs no synchronisation.
+        if (m_parseCorrupt || m_parseGapPending)
+            break;
+
+        // Monotonic, mirroring the relay: a late or duplicated tick must not walk the edge
+        // backwards under a game thread that has already simulated past it.
+        if (frame > m_liveFrameHint.load())
+            m_liveFrameHint.store(frame);
+        break;
+    }
+
     case 4: // LIVE_MSG_END
     {
         liveObserverLog("LiveObserver: END received\n");
@@ -1577,12 +1661,47 @@ void LiveObserver::handleFrame(unsigned char type, const char* payload, size_t l
         break;
     }
 
-    case 6: // LIVE_MSG_ERROR
+    case 6: // LIVE_MSG_ERROR — the relay killed the session (a disaster, not a game end).
+    // The relay sends this instead of a plain END when the stream was reaped (inactivity,
+    // undescribed, all sources gone) or the relay itself is shutting down. The player
+    // gets an in-game notice; a normal stream END stays silent.
     {
         AsciiString errMsg;
         if (len > 0)
             errMsg.set(payload, len);
         liveObserverLog("LiveObserver: ERROR from relay: %s\n", errMsg.str());
+
+        // Payload is JSON {"reason":"...","msg":"..."} when the relay sends one; older
+        // relays send a bare text. Parse the reason for the player-facing line.
+        UnicodeString reasonText(L"stream ended unexpectedly");
+        if (len > 0)
+        {
+            const std::string json(payload, len);
+            static const char REASON_KEY[] = "\"reason\":\"";
+            const char* reasonStart = strstr(json.c_str(), REASON_KEY);
+            if (reasonStart)
+            {
+                reasonStart += strlen(REASON_KEY);
+                const char* reasonEnd = strchr(reasonStart, '"');
+                if (reasonEnd)
+                    reasonText = chatUtf8ToWide(std::string(reasonStart, reasonEnd - reasonStart));
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(m_chatMutex);
+            if (m_chatQueue.size() < 1000)
+            {
+                ChatEntry entry;
+                entry.frame = 0;
+                entry.colorArgb = 0xFF7A5Au;    // red: a failure, not a chat line
+                entry.spectator = FALSE;
+                entry.disaster = TRUE;
+                entry.text.format(L"Stream lost — the relay ended the session (%ls)",
+                    reasonText.str());
+                m_chatQueue.push_back(entry);
+            }
+        }
         m_streamEnded.store(true);
         break;
     }
@@ -1687,7 +1806,12 @@ bool LiveObserver::wsRecv(std::vector<char>& outBuffer)
     }
     if (rc != CURLE_OK)
     {
-        liveObserverLog("LiveObserver::wsRecv error: %d\n", (int)rc);
+        // The connection itself is gone (relay crash, socket closed without an ERROR
+        // frame). Wind the session down like a connection loss instead of spinning on a
+        // dead socket until the watchdog catches up.
+        liveObserverLog("LiveObserver::wsRecv error: %d — connection lost, winding down the session\n", (int)rc);
+        m_connected.store(false);
+        m_streamEnded.store(true);
         outBuffer.clear();
         return false;
     }

@@ -252,6 +252,16 @@ protected:
 	UnsignedInt m_nextFrame;												///< The Frame that the next message is to be executed on.  This can be -1.
 
 	IReplayStreamSink* m_streamSink;
+
+	/// How often updateRecord() publishes a frame heartbeat to the stream sink. The tick only
+	/// has to keep an observer's view of the live edge fresh, so it is rate-limited rather
+	/// than sent every frame: at 60 logic fps this is ~6 ticks/s and bounds the observer's
+	/// staleness at this many frames, against the REPLAY_CRC_INTERVAL (100) frames it would
+	/// otherwise be during quiet play. The one knob trading uplink and relay fan-out for how
+	/// tightly an observer can track live.
+	enum { LIVE_TICK_INTERVAL_FRAMES = 10 };
+
+	UnsignedInt m_lastStreamTickFrame;							///< Frame of the last onTick(), for the interval above.
 };
 
 extern RecorderClass *TheRecorder;

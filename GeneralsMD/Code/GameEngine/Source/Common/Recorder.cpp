@@ -365,6 +365,7 @@ RecorderClass::RecorderClass()
 	m_nextFrame = 0;
 	m_wasDesync = FALSE;
 	m_streamSink = nullptr;
+	m_lastStreamTickFrame = 0;
 	init(); // just for the heck of it.
 }
 
@@ -404,6 +405,7 @@ void RecorderClass::init() {
 	m_doingAnalysis = FALSE;
 	m_playbackFrameCount = 0;
 	m_streamSink = nullptr;
+	m_lastStreamTickFrame = 0;
 
 	OptionPreferences optionPref;
 	m_archiveReplays = optionPref.getArchiveReplaysEnabled();
@@ -675,7 +677,26 @@ void RecorderClass::updateRecord()
 	}
 
 	if (m_streamSink)
+	{
 		m_streamSink->onBodyFlush();
+
+		// Frame heartbeat, deliberately after the flush: everything this frame produced is
+		// already on its way, so a receiver may read the tick as "all records up to here
+		// have been sent". Emitting it before the flush would make that false and let an
+		// observer run past records still sitting in the buffer.
+		//
+		// Rate-limited because the value only needs to be fresh, not complete — at
+		// LIVE_TICK_INTERVAL_FRAMES the observer's view of the live edge is never more than
+		// that many frames stale, against the ~REPLAY_CRC_INTERVAL frames it would be
+		// without this.
+		const UnsignedInt curFrame = TheGameLogic ? TheGameLogic->getFrame() : 0;
+		if (TheGameLogic != nullptr
+			&& curFrame - m_lastStreamTickFrame >= (UnsignedInt)LIVE_TICK_INTERVAL_FRAMES)
+		{
+			m_lastStreamTickFrame = curFrame;
+			m_streamSink->onTick(curFrame);
+		}
+	}
 }
 
 /**

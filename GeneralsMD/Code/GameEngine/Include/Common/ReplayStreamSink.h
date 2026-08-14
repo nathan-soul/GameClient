@@ -37,4 +37,11 @@ public:
 	/// color as displayed. Non-pure with an empty default so other implementors are
 	/// unaffected. See plans/relay/live-observer-chat.md.
 	virtual void onChat(UnsignedInt frame, const UnicodeString& text, UnsignedInt colorArgb) {}
+
+	/// Frame heartbeat: the recording client's current logic frame, published so a live
+	/// observer can know where the game is without waiting for the next record to appear in
+	/// the body. Called immediately after onBodyFlush() for the same frame, which is what
+	/// lets a receiver treat it as "every record up to this frame has been sent" rather than
+	/// as a guess. Non-pure with an empty default so other implementors are unaffected.
+	virtual void onTick(UnsignedInt frame) {}
 };

@@ -43,6 +43,7 @@ enum LiveMsgType : unsigned char {
 	LIVE_MSG_ERROR     = 6,
 	LIVE_MSG_CHAT      = 7,  // player chat: [frame u32][textLen u32][UTF-8 text][color u32]
 	LIVE_MSG_SPECTATOR_CHAT = 8,  // spectator chat: [nameLen u32][UTF-8 name][textLen u32][UTF-8 text]
+	LIVE_MSG_TICK      = 9,  // frame heartbeat: [frame u32]
 };
 
 class LiveStreamer;
@@ -158,6 +159,19 @@ public:
 	/// plans/relay/live-observer-chat.md.
 	virtual void onChat(UnsignedInt frame, const UnicodeString& text, UnsignedInt colorArgb) override;
 
+	/// IReplayStreamSink::onTick — publish our current logic frame (MSG_TICK).
+	///
+	/// The replay body only carries records for frames that have input, so in quiet play the
+	/// stream is silent except for one CRC record every REPLAY_CRC_INTERVAL frames. An
+	/// observer deriving the live edge from those records therefore learns where the game is
+	/// in ~1.7 s jumps and starves between them. This states the frame directly.
+	///
+	/// The ordering is what makes it safe to act on: the Recorder calls this immediately
+	/// after onBodyFlush() for the same frame, and frames leave on one WebSocket in queue
+	/// order, so "tick N arrived" proves "every record with frame <= N arrived". The observer
+	/// may simulate to N without guessing.
+	virtual void onTick(UnsignedInt frame) override;
+
 	/// Drain spectator chat received from the relay (MSG_SPECTATOR_CHAT) into the HUD
 	/// message log. Called once per logic frame while recording a live-streamed game.
 	/// See plans/relay/live-observer-spectator-chat.md.
@@ -178,10 +192,15 @@ private:
 	bool requestStreamUrl(AsciiString& outUrl);
 
 	bool connectToRelay();
-	bool wsSendBinary(const unsigned char* data, size_t len);
+
+	/// Tri-state send outcome: Sent = frame handed to the socket, WouldBlock = socket buffer
+	/// full (CURLE_AGAIN — nothing was sent, retry the same frame later), Error = connection
+	/// is gone. WouldBlock is a pause, never a failure: the relay is merely reading slowly.
+	enum class WsSendResult { Sent, WouldBlock, Error };
+	WsSendResult wsSendBinary(const unsigned char* data, size_t len);
 	bool wsRecv(std::vector<char>& outBuffer);
-	bool sendBinaryFrame(LiveMsgType type, const void* payload, size_t payloadLen);
-	bool sendBinaryFrame(const QueuedFrame& frame);
+	WsSendResult sendBinaryFrame(LiveMsgType type, const void* payload, size_t payloadLen);
+	WsSendResult sendBinaryFrame(const QueuedFrame& frame);
 	void queueFrame(LiveMsgType type, const void* data, size_t len);
 
 	// UI-informational flags; m_isBackup additionally gates data flow (see onRoleAssigned)
@@ -189,6 +208,28 @@ private:
 	std::atomic<Bool> m_isBackup;
 	std::atomic<Bool> m_connected;
 	std::atomic<Bool> m_shouldRun;
+
+	// Relay liveness watchdog (the streamer's mirror of LiveObserver's): the relay (or the
+	// reverse proxy in front of it) pings this websocket every ~20 s, so any frame — stream
+	// data or a ping — proves the connection is alive. Written by the network thread in
+	// wsRecv on every received frame, read by the same thread's loop. Zero means "nothing
+	// received yet" (still joining — the watchdog must not fire before the first ROLE).
+	std::atomic<UnsignedInt> m_lastFrameReceivedMs{ 0 };
+
+	// Relay liveness watchdog threshold: no frame of any kind for this long while connected
+	// means the relay (or the path to it) is gone. The streamer must then wind down and say
+	// so — without this it keeps "streaming" into a dead socket forever, and nothing on the
+	// relay side exists anymore to consume the upload. 120 s = ~6 missed pings.
+	enum { LIVE_STREAM_WATCHDOG_MS = 120000 };
+
+	// Why the network thread ended (one of: shutdown / relay-silent / send-failed /
+	// relay-error). Filled by the wind-down sites, printed in the thread-end summary so a
+	// dead stream is always attributable to a side.
+	AsciiString m_endReason;
+
+	// Bytes and frames actually put on the wire, for the thread-end summary.
+	size_t m_sentBytes;
+	size_t m_sentFrames;
 
 	AsciiString m_lobbyId;
 	/// Host-only fields kept from the registration, because the stream is registered with GO
@@ -214,7 +255,10 @@ private:
 	std::deque<SpectatorChatEntry> m_spectatorChatQueue;
 	mutable std::mutex m_spectatorChatMutex;
 
-	std::queue<QueuedFrame> m_outgoingQueue;
+	// deque, not queue: on CURLE_AGAIN (socket buffer full) the network thread must put
+	// unsent frames back at the FRONT of the line — order is data, a misordered stream is
+	// corrupt — and only a queue that supports front insertion can do that.
+	std::deque<QueuedFrame> m_outgoingQueue;
 	/// Bytes currently sitting in m_outgoingQueue, and whether the budget has been blown.
 	/// Frames are queued before the relay connection exists (that is what lets the sink attach
 	/// the moment a match starts), so a registration GO refuses would otherwise let the queue
