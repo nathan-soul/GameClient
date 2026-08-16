@@ -3882,16 +3882,17 @@ void InGameUI::postWindowDraw()
 	if (m_observerNotificationPointSize > 0)
 		drawObserverNotifications(hudOffsetX, hudOffsetY);
 
-	// NGMP: Per-frame overlay draw hook for IRenderHooks plugins. Called last, in the same
+	// Per-frame overlay draw hook for IRenderHooks plugins (e.g. an
+	// observer-overlay plugin drawing unit queues/power cooldowns). Called last, in the same
 	// screen-space 2D context as the draw* calls above, so a plugin can use the host's 2D draw
-	// primitives (GOPluginHostAPI::drawText2D/drawRect2D/...) without touching 3D state.
+	// primitives (GOPluginHostAPI::drawText2D/drawRect2D) without touching 3D state.
 	if (GOPluginManager::HasRenderHooks())
 		GOPluginManager::DispatchDrawOverlay();
 }
 
 //-------------------------------------------------------------------------------------------------
-// NGMP: Backing implementation for GOPluginHostAPI::drawText2D. Reuses the same font
-// (m_messageFont/m_messagePointSize/m_messageBold) as InGameUI's own chat/UI messages, since a
+// Backing implementation for GOPluginHostAPI::drawText2D. Reuses the same
+// font (m_messageFont/m_messagePointSize/m_messageBold) as InGameUI's own chat/UI messages, since a
 // plugin-drawn overlay label is visually the same kind of thing. Creates and frees a DisplayString
 // per call rather than caching one, since this is only ever called from the bounded, low-frequency
 // overlay draw path (not a hot loop), keeping the API simple and stateless from the plugin's side.
@@ -3918,7 +3919,7 @@ void InGameUI::drawPluginText2D(Int x, Int y, const char* utf8Text, Color color)
 }
 
 //-------------------------------------------------------------------------------------------------
-// NGMP: Backing implementation for GOPluginHostAPI::drawRect2D.
+// Backing implementation for GOPluginHostAPI::drawRect2D.
 //-------------------------------------------------------------------------------------------------
 void InGameUI::drawPluginRect2D(Int x, Int y, Int width, Int height, Color color, Bool filled)
 {

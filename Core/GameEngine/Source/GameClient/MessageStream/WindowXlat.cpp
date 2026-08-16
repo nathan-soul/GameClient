@@ -177,10 +177,10 @@ GameMessageDisposition WindowTranslator::translateGameMessage(const GameMessage 
 	WinInputReturnCode returnCode = WIN_INPUT_NOT_USED;
 
 #if defined(GENERALS_ONLINE)
-	// NGMP: Mouse passthrough for IRenderHooks plugins. Deliberately placed
+	// Mouse passthrough for IRenderHooks plugins. Deliberately placed
 	// before the mouse-lock early-return below (unlike everything else in this function) so a
 	// plugin's own drawn UI keeps receiving mouse input even while the tactical view has mouse
-	// input locked (e.g. camera drag) — this is a side-channel notification, never a consumer, so
+	// input locked (e.g. camera drag) - this is a side-channel notification, never a consumer, so
 	// firing here changes nothing about how the engine itself handles the message.
 	if (GOPluginManager::HasRenderHooks())
 	{

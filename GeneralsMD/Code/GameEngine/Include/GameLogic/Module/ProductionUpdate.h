@@ -84,9 +84,9 @@ public:
 	/// get the unique (to the producer object) production ID
 	ProductionID getProductionID() const { return m_productionID; }
 
-	// NGMP: Captures who owned the producing building when this entry
-	// was queued, so a later capture of the producer doesn't change who the cancel/complete
-	// gameplay events are attributed to.
+	// Captures who owned the producing building when this entry was
+	// queued, so a later capture of the producer doesn't change who the cancel/complete gameplay
+	// events are attributed to.
 	/// the player who owned the producing building when this entry was queued - captured once at
 	/// queue time so a later capture of the producer doesn't change who a cancel/complete gameplay
 	/// event is attributed to. May be null for entries that predate this field (e.g. loaded from an

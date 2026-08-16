@@ -19,8 +19,8 @@
 #include "GameLogic/Module/SpecialPowerModule.h"
 #include "GameLogic/Module/ProductionUpdate.h"
 #include "GameNetwork/NetworkDefs.h" // MAX_SLOTS
-#include "GameNetwork/GeneralsOnline/json.hpp"
 
+#include <cctype>
 #include <stdio.h>
 
 std::vector<GOPluginManager::LoadedPlugin> GOPluginManager::s_plugins;
@@ -28,14 +28,10 @@ std::vector<GOGameplayEventCallbacks> GOPluginManager::s_gameplayEventHooks;
 std::vector<GORenderCallbacks> GOPluginManager::s_renderHooks;
 
 // ------------------------------------------------------------------------------------------------
-// NGMP: Host API implementation for the generic plugin framework:
-// loading, the function-pointer table handed to each plugin at Initialize(), and the dispatch
-// fan-out. All callbacks are gated on IsLocalPlayerObserver() so plugins only run for observers.
-// ------------------------------------------------------------------------------------------------
-
-// ------------------------------------------------------------------------------------------------
-// Host API implementation. These free functions are what the function-pointer table handed to each
-// plugin at Initialize() actually points at.
+// Host API implementation for the generic plugin framework: loading,
+// the function-pointer table handed to each plugin at Initialize(), and the dispatch fan-out. All
+// callbacks are gated on IsLocalPlayerObserver() so plugins only run for observers. These free
+// functions are what the function-pointer table handed to each plugin at Initialize() points at.
 // ------------------------------------------------------------------------------------------------
 namespace
 {
@@ -55,7 +51,7 @@ namespace
 	}
 
 	// ---- Player roster queries. Matches playerIndex against Player::getPlayerIndex(), not list
-	// position — those aren't guaranteed to be the same thing. ----
+	// position - those aren't guaranteed to be the same thing. ----
 
 	Player* FindPlayerByIndex(uint32_t playerIndex)
 	{
@@ -104,21 +100,21 @@ namespace
 		return count;
 	}
 
-	// NGMP: Mirrors the same check the engine's own observer-only
-	// UI uses (e.g. InGameUI's observer
-	// stats/notifications gating) - dead also counts as observing, since a dead player becomes
-	// spectator-like. Plugins that display information about other players must gate on this.
+	// Mirrors the same check the engine's own observer-only UI uses (e.g.
+	// InGameUI's observer stats/notifications gating) - dead also counts as observing, since a dead
+	// player becomes spectator-like. Plugins that display information about other players must gate
+	// on this.
 	uint8_t HostAPI_IsLocalPlayerObserver()
 	{
 		return GOPluginManager::IsLocalPlayerObserver() ? 1 : 0;
 	}
 
-	// NGMP: Observer gate: plugin callbacks carry information about
+	// General-power roster. Plugin callbacks carry information about
 	// other players (queues, powers, buildings), so none of it may reach a plugin while the local
 	// client is a match participant - that is an information-advantage vector, not a display bug.
-	// ---- General-power roster. Walks the player template's general-power command set the same
-	// way the engine's own observer UI does: a power counts as owned when the player has the
-	// required science and at least one live object carries its module. ----
+	// Walks the player template's general-power command set the same way the engine's own observer
+	// UI does: a power counts as owned when the player has the required science and at least one
+	// live object carries its module.
 
 	struct PowerModuleFind
 	{
@@ -191,7 +187,7 @@ namespace
 	}
 
 	// ---- Icon drawing. Only valid to call from within a GORenderCallbacks::onDrawOverlay
-	// callback — same 2D-context requirement as drawText2D/drawRect2D. ----
+	// callback - same 2D-context requirement as drawText2D/drawRect2D. ----
 
 	void HostAPI_DrawTemplateIcon2D(const char* templateName, int32_t x, int32_t y, int32_t width, int32_t height)
 	{
@@ -395,11 +391,9 @@ namespace
 		return 1;
 	}
 
-	// NGMP: Camera control: same look-at path the engine's own
-	// observer actions use, so a plugin can jump the viewport to where a gameplay event happened
-	// when the user clicks on it.
-	// ---- Camera control. Same look-at path the engine's own observer actions use, so a plugin
-	// can jump the viewport to where a gameplay event happened when the user clicks on it. ----
+	// Camera control. Same look-at path the engine's own observer actions
+	// use, so a plugin can jump the viewport to where a gameplay event happened when the user
+	// clicks on it.
 
 	void HostAPI_TeleportViewportTo(float worldX, float worldY, float worldZ)
 	{
@@ -486,6 +480,39 @@ void GOPluginManager::RegisterRenderHooks(const GORenderCallbacks* cb)
 		s_renderHooks.push_back(*cb);
 }
 
+// Scans for a single flat "key": "value" string field rather than
+// pulling the full json.hpp parser into this file for two optional log-line fields. Not a general
+// JSON parser - no nested objects/arrays, only \" and \\ are unescaped - but the manifest below is
+// purely informational, so anything this doesn't understand just yields an empty value.
+static std::string ExtractJsonStringField(const std::string& json, const char* key)
+{
+	const std::string quotedKey = std::string("\"") + key + "\"";
+	size_t pos = json.find(quotedKey);
+	if (pos == std::string::npos)
+		return std::string();
+
+	pos = json.find(':', pos + quotedKey.size());
+	if (pos == std::string::npos)
+		return std::string();
+	++pos;
+
+	while (pos < json.size() && isspace((unsigned char)json[pos]))
+		++pos;
+	if (pos >= json.size() || json[pos] != '"')
+		return std::string();
+	++pos;
+
+	std::string value;
+	while (pos < json.size() && json[pos] != '"')
+	{
+		if (json[pos] == '\\' && pos + 1 < json.size())
+			++pos;
+		value += json[pos];
+		++pos;
+	}
+	return value;
+}
+
 // Optional sidecar manifest next to the DLL (foo.goplugin.dll -> foo.goplugin.json) with
 // author/website info for the load log line. Purely informational: GOPluginInfo from the plugin's
 // own export stays authoritative for ABI version and hook categories, so a missing or malformed
@@ -510,24 +537,15 @@ static std::string ReadManifestSummary(const char* dllPath)
 		text.append(buffer, got);
 	fclose(f);
 
-	try
-	{
-		nlohmann::json manifest = nlohmann::json::parse(text);
-		const std::string author = manifest.value("plugin_author", std::string());
-		const std::string website = manifest.value("website", std::string());
-		if (author.empty() && website.empty())
-			return std::string();
-
-		std::string summary = " [by " + (author.empty() ? std::string("unknown") : author);
-		if (!website.empty())
-			summary += ", " + website;
-		return summary + "]";
-	}
-	catch (...)
-	{
-		NetworkLog(ELogVerbosity::LOG_RELEASE, "[Plugin] Manifest %s is not valid JSON, ignoring it", path.c_str());
+	const std::string author = ExtractJsonStringField(text, "plugin_author");
+	const std::string website = ExtractJsonStringField(text, "website");
+	if (author.empty() && website.empty())
 		return std::string();
-	}
+
+	std::string summary = " [by " + (author.empty() ? std::string("unknown") : author);
+	if (!website.empty())
+		summary += ", " + website;
+	return summary + "]";
 }
 
 bool GOPluginManager::LoadPlugin(const char* dllPath)
@@ -578,9 +596,19 @@ bool GOPluginManager::LoadPlugin(const char* dllPath)
 	// the rest of the process (see the lifetime note in PluginABI.h). Building it into a local and
 	// passing its address would hand out a pointer into a stack frame that dies on return - the
 	// plugin's first call after load would then jump through whatever reused that stack.
+	//
+	// A plugin may call registerGameplayEventHooks/registerRenderHooks
+	// during Initialize() and then still return false. Snapshot both hook vectors' sizes first and
+	// roll back on failure - otherwise the callbacks it just registered would keep pointing into
+	// the DLL we are about to FreeLibrary() below, and the next dispatch would call through a freed
+	// function pointer.
+	const size_t gameplayHooksBefore = s_gameplayEventHooks.size();
+	const size_t renderHooksBefore = s_renderHooks.size();
 	if (!fnInitialize(&GetHostAPI()))
 	{
 		NetworkLog(ELogVerbosity::LOG_RELEASE, "[Plugin] %s Initialize() returned failure", dllPath);
+		s_gameplayEventHooks.resize(gameplayHooksBefore);
+		s_renderHooks.resize(renderHooksBefore);
 		FreeLibrary(hModule);
 		return false;
 	}

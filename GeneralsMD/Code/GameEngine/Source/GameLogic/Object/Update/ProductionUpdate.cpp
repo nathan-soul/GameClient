@@ -60,7 +60,7 @@
 
 // PUBLIC /////////////////////////////////////////////////////////////////////////////////////////
 
-// NGMP: Builds the C-ABI event payloads for the GOPluginManager::Dispatch*
+// Builds the C-ABI event payloads for the GOPluginManager::Dispatch*
 // calls below. Only called when GOPluginManager::HasGameplayEventHooks() is true, so this stays a
 // no-op cost when no plugin has registered for gameplay events.
 static GOUnitEvent buildUnitEvent(Player* player, const ThingTemplate* unitType, Object* producer, Real percentComplete, ProductionID productionID)
@@ -402,14 +402,11 @@ void ProductionUpdate::cancelUpgrade( const UpgradeTemplate *upgrade )
 	Money *money = player->getMoney();
 	money->deposit( production->m_upgradeToResearch->calcCostToBuild( player ), TRUE, FALSE );
 
-	// NGMP: Attribute the event to whoever queued it, not the producer's
+	// Attribute the event to whoever queued it, not the producer's
 	// current controller - the producer may have been captured since queueing, and a plugin's queue
 	// tracking is keyed by the playerIndex the queue event originally carried.
 	if (GOPluginManager::HasGameplayEventHooks())
 	{
-		// Attribute this event to whoever queued it, not the producer's current controller - the
-		// producer may have been captured since queueing, and a plugin's queue tracking is keyed by
-		// the playerIndex the queue event originally carried.
 		Player *eventPlayer = (production->getQueuingPlayer() != nullptr) ? production->getQueuingPlayer() : player;
 		GOUpgradeEvent ev = buildUpgradeEvent(eventPlayer, production->m_upgradeToResearch, getObject(), production->getPercentComplete());
 		GOPluginManager::DispatchUpgradeCancelled(ev);

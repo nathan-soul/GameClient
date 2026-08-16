@@ -61,7 +61,6 @@
 #include "Common/DamageFX.h"
 #include "Common/MultiplayerSettings.h"
 #include "Common/Recorder.h"
-#include "GameNetwork/GeneralsOnline/Plugins/PluginManager.h"
 #include "Common/SpecialPower.h"
 #include "Common/TerrainTypes.h"
 #include "Common/Upgrade.h"
@@ -115,6 +114,7 @@
 #include "../OnlineServices_Init.h"
 #include "GameNetwork/GeneralsOnline/DiscordRichPresence.h"
 #include "GameNetwork/GeneralsOnline/OnlineServices_LobbyInterface.h"
+#include "GameNetwork/GeneralsOnline/Plugins/PluginManager.h"
 #include "GameNetwork/GameSpyOverlay.h"
 #include <chrono>
 #include "WW3D2/ww3d.h"
@@ -832,9 +832,10 @@ void GameEngine::init()
 
 	HideControlBar();
 
-	// NGMP: Load every plugin DLL (*.goplugin.dll) found in the plugins directory once at startup.
-	// Each plugin opts into whichever hook categories it supports (see PluginABI.h); a plugin that
-	// fails to load is logged and skipped, never fatal.
+	// Load every plugin DLL (*.goplugin.dll) found in one level of
+	// subfolders under the plugins directory, once at startup. Each plugin opts into whichever
+	// hook categories it supports (see PluginABI.h); a plugin that fails to load is logged and
+	// skipped, never fatal.
 	GOPluginManager::LoadPluginsFromDirectory("plugins");
 
 	m_discordRichPresence = new GeneralsOnlineDiscordRPC();
@@ -995,9 +996,9 @@ void GameEngine::update()
 			TheAudio->UPDATE();
 			TheGameClient->UPDATE();
 
-			// NGMP: Tick every loaded plugin (GO_Plugin_Tick) once per frame, unconditionally — not
-			// gated behind GameLogic pause state, so a plugin's own polling (e.g. tracking the
-			// active-player roster) is never blocked by a paused simulation.
+			// Tick every loaded plugin (GO_Plugin_Tick) once per frame,
+			// unconditionally - not gated behind GameLogic pause state, so a plugin's own polling
+			// (e.g. tracking the active-player roster) is never blocked by a paused simulation.
 			GOPluginManager::Tick();
 
 			TheMessageStream->propagateMessages();

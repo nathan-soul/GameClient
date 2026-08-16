@@ -1,11 +1,8 @@
 #pragma once
 
-// NGMP: Host-side loader/dispatcher for the generic plugin ABI
-// (see PluginABI.h): loads every plugin DLL once at startup and fans engine events out to the
-// plugins that registered for them.
-
 // ------------------------------------------------------------------------------------------------
-// GOPluginManager — host-side loader/dispatcher for the generic plugin ABI (see PluginABI.h).
+// GOPluginManager - host-side loader/dispatcher for the generic plugin
+// ABI (see PluginABI.h).
 //
 // Loads any number of plugin DLLs, each opting into one or more hook categories. Engine call
 // sites (ProductionUpdate/SpecialPowerModule, InGameUI, CommandXlat/WindowXlat, GameEngine) call
@@ -36,7 +33,7 @@ public:
 	// observer or dead, which is also true during replay playback
 	// (which runs with GAME_REPLAY, whose local player is the observer player). Every Dispatch*
 	// function and Tick() are gated on this, so a plugin never receives gameplay data or
-	// draw/input callbacks during a live match — that data is an information-advantage vector
+	// draw/input callbacks during a live match - that data is an information-advantage vector
 	// for a match participant.
 	static bool IsLocalPlayerObserver();
 

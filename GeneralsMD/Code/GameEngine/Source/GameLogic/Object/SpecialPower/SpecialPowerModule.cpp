@@ -544,7 +544,7 @@ void SpecialPowerModule::markSpecialPowerTriggered( const Coord3D *location )
 //-------------------------------------------------------------------------------------------------
 void SpecialPowerModule::aboutToDoSpecialPower( const Coord3D *location )
 {
-	// NGMP: Dispatch a C-ABI special-power event to any plugin that
+	// Dispatch a C-ABI special-power event to any plugin that
 	// registered for gameplay events (e.g. the observer overlay's cooldown panels).
 	if (GOPluginManager::HasGameplayEventHooks())
 	{
