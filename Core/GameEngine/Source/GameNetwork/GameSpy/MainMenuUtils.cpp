@@ -900,9 +900,9 @@ void StartPatchCheck()
 
 	NGMP_OnlineServicesManager::GetInstance()->StartVersionCheck([](bool bSuccess, bool bNeedsUpdate)
 		{
-#if defined(USE_TEST_ENV) || defined(USE_DEBUG_ON_LIVE_SERVER)
+			// Observer/plugin-dev builds never want the update gate, in any environment or flag state.
+			// Workspace-local divergence - MUST NOT be pushed upstream (see CLAUDE.md).
 			bNeedsUpdate = false;
-#endif
 			cantConnectBeforeOnline = !bSuccess;
 			mustDownloadPatch = bNeedsUpdate;
 
