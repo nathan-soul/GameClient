@@ -63,7 +63,6 @@
 #include "GameClient/GameWindowID.h"
 #include "GameClient/GUICallbacks.h"
 #include "GameClient/InGameUI.h"
-#include "GameNetwork/GeneralsOnline/Plugins/PluginManager.h"
 #include "GameClient/VideoPlayer.h"
 #include "GameClient/Mouse.h"
 #include "GameClient/GadgetStaticText.h"
@@ -100,6 +99,7 @@
 #include "../NetworkMesh.h"
 #include "GameNetwork/NetworkDefs.h"
 #include "GameNetwork/NetworkInterface.h"
+#include "GameNetwork/GeneralsOnline/Plugins/PluginManager.h"
 extern NetworkInterface * TheNetwork;
 #include "ValveNetworkingSockets/steam/isteamnetworkingsockets.h"
 #endif
@@ -3882,12 +3882,12 @@ void InGameUI::postWindowDraw()
 	if (m_observerNotificationPointSize > 0)
 		drawObserverNotifications(hudOffsetX, hudOffsetY);
 
-	// Per-frame overlay draw hook for IRenderHooks plugins (e.g. an
-	// observer-overlay plugin drawing unit queues/power cooldowns). Called last, in the same
-	// screen-space 2D context as the draw* calls above, so a plugin can use the host's 2D draw
-	// primitives (GOPluginHostAPI::drawText2D/drawRect2D) without touching 3D state.
+#if defined(GENERALS_ONLINE)
+	// Per-frame overlay draw hook for IRenderHooks plugins, called last so it shares the same
+	// screen-space 2D context as the draw* calls above.
 	if (GOPluginManager::HasRenderHooks())
 		GOPluginManager::DispatchDrawOverlay();
+#endif
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -3919,6 +3919,42 @@ void InGameUI::drawPluginText2D(Int x, Int y, const char* utf8Text, Color color)
 }
 
 //-------------------------------------------------------------------------------------------------
+// Backing implementation for GOPluginHostAPI::drawText2DScaled (Plan 12).
+// See plans\plugin-framework\design-notes.md for the font-caching and clamping rationale.
+//-------------------------------------------------------------------------------------------------
+void InGameUI::drawPluginText2DScaled(Int x, Int y, const char* utf8Text, Color color, Real sizeScale, Bool bold)
+{
+	if (utf8Text == nullptr || utf8Text[0] == '\0' || TheDisplayStringManager == nullptr || TheFontLibrary == nullptr)
+		return;
+
+	// Step 1: scale the host's own message point size, clamped to what FontLibrary::getFont accepts.
+	const Int baseSize = TheGlobalLanguageData ? TheGlobalLanguageData->adjustFontSize(m_messagePointSize) : m_messagePointSize;
+	Int effectiveSize = (Int)((Real)baseSize * sizeScale + 0.5f);
+	if (effectiveSize < FONT_MIN_POINT_SIZE) effectiveSize = FONT_MIN_POINT_SIZE;
+	if (effectiveSize > FONT_MAX_POINT_SIZE) effectiveSize = FONT_MAX_POINT_SIZE;
+
+	// Step 2: getFont caches by (name, pointSize, bold), so a new combination costs one creation.
+	GameFont* font = TheFontLibrary->getFont(m_messageFont, effectiveSize, bold);
+	if (font == nullptr)
+		return;
+
+	DisplayString* displayString = TheDisplayStringManager->newDisplayString();
+	if (displayString == nullptr)
+		return;
+
+	displayString->setFont(font);
+
+	// Step 3: the ABI carries UTF-8/ASCII, the display string wants wide characters.
+	UnicodeString text;
+	text.translate(AsciiString(utf8Text));
+	displayString->setText(text);
+
+	displayString->draw(x, y, color, GameMakeColor(0, 0, 0, 255));
+
+	TheDisplayStringManager->freeDisplayString(displayString);
+}
+
+//-------------------------------------------------------------------------------------------------
 // Backing implementation for GOPluginHostAPI::drawRect2D.
 //-------------------------------------------------------------------------------------------------
 void InGameUI::drawPluginRect2D(Int x, Int y, Int width, Int height, Color color, Bool filled)
@@ -3930,6 +3966,17 @@ void InGameUI::drawPluginRect2D(Int x, Int y, Int width, Int height, Color color
 		TheDisplay->drawFillRect(x, y, width, height, color);
 	else
 		TheDisplay->drawOpenRect(x, y, width, height, 1.0f, color);
+}
+
+//-------------------------------------------------------------------------------------------------
+/** A single 2D line for a plugin: one rotated quad however long it is. */
+//-------------------------------------------------------------------------------------------------
+void InGameUI::drawPluginLine2D(Int x1, Int y1, Int x2, Int y2, Real thickness, Color color)
+{
+	if (TheDisplay == nullptr)
+		return;
+
+	TheDisplay->drawLine(x1, y1, x2, y2, thickness, color);
 }
 
 //-------------------------------------------------------------------------------------------------

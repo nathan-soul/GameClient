@@ -177,70 +177,68 @@ GameMessageDisposition WindowTranslator::translateGameMessage(const GameMessage 
 	WinInputReturnCode returnCode = WIN_INPUT_NOT_USED;
 
 #if defined(GENERALS_ONLINE)
-	// Mouse passthrough for IRenderHooks plugins. Deliberately placed
-	// before the mouse-lock early-return below (unlike everything else in this function) so a
-	// plugin's own drawn UI keeps receiving mouse input even while the tactical view has mouse
-	// input locked (e.g. camera drag) - this is a side-channel notification, never a consumer, so
-	// firing here changes nothing about how the engine itself handles the message.
+	// Mouse passthrough for IRenderHooks plugins, deliberately ahead of the mouse-lock early return
+	// below - see plans\plugin-framework\design-notes.md.
 	if (GOPluginManager::HasRenderHooks())
 	{
-		uint32_t modifierFlags = 0;
-		if (TheKeyboard != nullptr)
-		{
-			if (TheKeyboard->isCtrl())  modifierFlags |= 1;
-			if (TheKeyboard->isShift()) modifierFlags |= 2;
-			if (TheKeyboard->isAlt())   modifierFlags |= 4;
-		}
-
+		// Step 1: classify the message. buttonIndex stays -1 for anything that is not a click.
+		Int buttonIndex = -1;
+		Bool buttonDown = FALSE;
+		Bool isMouseMove = FALSE;
 		switch (msg->getType())
 		{
 			case GameMessage::MSG_RAW_MOUSE_POSITION:
-			{
-				const ICoord2D& pos = msg->getArgument(0)->pixel;
-				GOPluginManager::DispatchMouseMove((int32_t)pos.x, (int32_t)pos.y);
+				isMouseMove = TRUE;
 				break;
-			}
 			case GameMessage::MSG_RAW_MOUSE_LEFT_BUTTON_DOWN:
 			case GameMessage::MSG_RAW_MOUSE_LEFT_DOUBLE_CLICK:
-			{
-				const ICoord2D& pos = msg->getArgument(0)->pixel;
-				GOPluginManager::DispatchMouseButtonDown(0, (int32_t)pos.x, (int32_t)pos.y, modifierFlags);
+				buttonIndex = 0; buttonDown = TRUE;
 				break;
-			}
 			case GameMessage::MSG_RAW_MOUSE_LEFT_BUTTON_UP:
-			{
-				const ICoord2D& pos = msg->getArgument(0)->pixel;
-				GOPluginManager::DispatchMouseButtonUp(0, (int32_t)pos.x, (int32_t)pos.y, modifierFlags);
+				buttonIndex = 0;
 				break;
-			}
 			case GameMessage::MSG_RAW_MOUSE_MIDDLE_BUTTON_DOWN:
 			case GameMessage::MSG_RAW_MOUSE_MIDDLE_DOUBLE_CLICK:
-			{
-				const ICoord2D& pos = msg->getArgument(0)->pixel;
-				GOPluginManager::DispatchMouseButtonDown(1, (int32_t)pos.x, (int32_t)pos.y, modifierFlags);
+				buttonIndex = 1; buttonDown = TRUE;
 				break;
-			}
 			case GameMessage::MSG_RAW_MOUSE_MIDDLE_BUTTON_UP:
-			{
-				const ICoord2D& pos = msg->getArgument(0)->pixel;
-				GOPluginManager::DispatchMouseButtonUp(1, (int32_t)pos.x, (int32_t)pos.y, modifierFlags);
+				buttonIndex = 1;
 				break;
-			}
 			case GameMessage::MSG_RAW_MOUSE_RIGHT_BUTTON_DOWN:
 			case GameMessage::MSG_RAW_MOUSE_RIGHT_DOUBLE_CLICK:
-			{
-				const ICoord2D& pos = msg->getArgument(0)->pixel;
-				GOPluginManager::DispatchMouseButtonDown(2, (int32_t)pos.x, (int32_t)pos.y, modifierFlags);
+				buttonIndex = 2; buttonDown = TRUE;
 				break;
-			}
 			case GameMessage::MSG_RAW_MOUSE_RIGHT_BUTTON_UP:
-			{
-				const ICoord2D& pos = msg->getArgument(0)->pixel;
-				GOPluginManager::DispatchMouseButtonUp(2, (int32_t)pos.x, (int32_t)pos.y, modifierFlags);
+				buttonIndex = 2;
 				break;
-			}
 			default:
 				break;
+		}
+
+		// Step 2: only the messages above carry a cursor position in argument 0, so read it here.
+		if (isMouseMove || buttonIndex >= 0)
+		{
+			const ICoord2D& pos = msg->getArgument(0)->pixel;
+			if (isMouseMove)
+			{
+				GOPluginManager::DispatchMouseMove((int32_t)pos.x, (int32_t)pos.y);
+			}
+			else
+			{
+				// Step 3: modifier state, in the bit order GORenderCallbacks documents.
+				uint32_t modifierFlags = 0;
+				if (TheKeyboard != nullptr)
+				{
+					if (TheKeyboard->isCtrl())  modifierFlags |= 1;
+					if (TheKeyboard->isShift()) modifierFlags |= 2;
+					if (TheKeyboard->isAlt())   modifierFlags |= 4;
+				}
+
+				if (buttonDown)
+					GOPluginManager::DispatchMouseButtonDown((uint8_t)buttonIndex, (int32_t)pos.x, (int32_t)pos.y, modifierFlags);
+				else
+					GOPluginManager::DispatchMouseButtonUp((uint8_t)buttonIndex, (int32_t)pos.x, (int32_t)pos.y, modifierFlags);
+			}
 		}
 	}
 #endif

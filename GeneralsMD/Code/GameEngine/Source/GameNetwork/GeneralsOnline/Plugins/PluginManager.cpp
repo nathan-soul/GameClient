@@ -1,5 +1,6 @@
 #include "GameNetwork/GeneralsOnline/Plugins/PluginManager.h"
 #include "GameNetwork/GeneralsOnline/NGMP_include.h"
+#include "Common/GlobalData.h"
 #include "Common/NameKeyGenerator.h"
 #include "Common/Player.h"
 #include "Common/PlayerList.h"
@@ -16,23 +17,27 @@
 #include "GameClient/View.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Object.h"
+#include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Module/SpecialPowerModule.h"
 #include "GameLogic/Module/ProductionUpdate.h"
+#include "GameLogic/Module/ContainModule.h"
+#include "GameLogic/Module/SupplyTruckAIUpdate.h"
 #include "GameNetwork/NetworkDefs.h" // MAX_SLOTS
+#include "GameNetwork/GameInfo.h" // GameSlot::getTeamNumber
 
 #include <cctype>
+#include <climits> // INT_MAX
 #include <stdio.h>
+#include <string>
 
 std::vector<GOPluginManager::LoadedPlugin> GOPluginManager::s_plugins;
 std::vector<GOGameplayEventCallbacks> GOPluginManager::s_gameplayEventHooks;
 std::vector<GORenderCallbacks> GOPluginManager::s_renderHooks;
+GOPluginManager::NativeHandleProvider GOPluginManager::s_d3dDevice8Provider = nullptr;
+GOPluginManager::NativeHandleProvider GOPluginManager::s_gameWindowProvider = nullptr;
 
-// ------------------------------------------------------------------------------------------------
-// Host API implementation for the generic plugin framework: loading,
-// the function-pointer table handed to each plugin at Initialize(), and the dispatch fan-out. All
-// callbacks are gated on IsLocalPlayerObserver() so plugins only run for observers. These free
-// functions are what the function-pointer table handed to each plugin at Initialize() points at.
-// ------------------------------------------------------------------------------------------------
+// The free functions the host API table points at. All dispatch is gated on
+// IsLocalPlayerObserver(), so plugins only ever run for observers.
 namespace
 {
 	void HostAPI_Log(const char* msg)
@@ -73,31 +78,56 @@ namespace
 		return (p != nullptr) ? (uint32_t)p->getPlayerColor() : 0;
 	}
 
-	// Resolves the real match participants through the engine's own player-slot name keys
-	// ("player0".."player7"), the same way the in-engine observer UI used to. Walking
-	// ThePlayerList by position instead would include the neutral/civilian player, which is a
-	// perfectly ordinary Player - alive, not an observer - and so silently inflates any
-	// "how many players are in this match" count by one.
-	uint32_t HostAPI_GetActivePlayers(uint32_t* outPlayerIndices, uint32_t maxCount)
-	{
-		if (outPlayerIndices == nullptr || maxCount == 0)
-			return 0;
-		if (ThePlayerList == nullptr || TheNameKeyGenerator == nullptr)
-			return 0;
+	// Walks the engine's player-slot name keys; the callback returns false to stop early. Not free
+	// per call - see plans\plugin-framework\design-notes.md.
+	typedef bool (*SlotPlayerCallback)(Int slot, Player* player, void* userData);
 
-		uint32_t count = 0;
-		for (Int slot = 0; slot < MAX_SLOTS && count < maxCount; ++slot)
+	void ForEachSlotPlayer(SlotPlayerCallback callback, void* userData)
+	{
+		if (callback == nullptr || ThePlayerList == nullptr || TheNameKeyGenerator == nullptr)
+			return;
+
+		for (Int slot = 0; slot < MAX_SLOTS; ++slot)
 		{
 			AsciiString nameKeyStr;
 			nameKeyStr.format("player%d", slot);
 
 			Player* p = ThePlayerList->findPlayerWithNameKey(TheNameKeyGenerator->nameToKey(nameKeyStr));
-			if (p == nullptr || !p->isPlayerActive() || p->isPlayerObserver())
+			if (p == nullptr)
 				continue;
-
-			outPlayerIndices[count++] = (uint32_t)p->getPlayerIndex();
+			if (!callback(slot, p, userData))
+				return;
 		}
-		return count;
+	}
+
+	struct SlotRosterContext
+	{
+		uint32_t* outPlayerIndices;
+		uint32_t maxCount;
+		uint32_t count;
+		bool activeOnly;    // false keeps defeated/resigned players in the roster
+	};
+
+	bool CollectSlotPlayer(Int slot, Player* player, void* userData)
+	{
+		SlotRosterContext* ctx = (SlotRosterContext*)userData;
+		if (player->isPlayerObserver())
+			return true;
+		if (ctx->activeOnly && !player->isPlayerActive())
+			return true;
+
+		ctx->outPlayerIndices[ctx->count++] = (uint32_t)player->getPlayerIndex();
+		return ctx->count < ctx->maxCount;
+	}
+
+	uint32_t HostAPI_GetActivePlayers(uint32_t* outPlayerIndices, uint32_t maxCount)
+	{
+		if (outPlayerIndices == nullptr || maxCount == 0)
+			return 0;
+
+		SlotRosterContext ctx = { outPlayerIndices, maxCount, 0, true };
+		ForEachSlotPlayer(CollectSlotPlayer, &ctx);
+		return ctx.count;
 	}
 
 	// Mirrors the same check the engine's own observer-only UI uses (e.g.
@@ -109,27 +139,42 @@ namespace
 		return GOPluginManager::IsLocalPlayerObserver() ? 1 : 0;
 	}
 
-	// General-power roster. Plugin callbacks carry information about
-	// other players (queues, powers, buildings), so none of it may reach a plugin while the local
-	// client is a match participant - that is an information-advantage vector, not a display bug.
-	// Walks the player template's general-power command set the same way the engine's own observer
-	// UI does: a power counts as owned when the player has the required science and at least one
-	// live object carries its module.
+	// General-power roster. A power counts as owned when the player has the required science and at
+	// least one live object carries its module - the same test the engine's own observer UI uses.
 
 	struct PowerModuleFind
 	{
 		const SpecialPowerTemplate* powerTemplate;
 		SpecialPowerModuleInterface* module;
+		Object* object; // the STRUCTURE carrying the module, for GOGeneralPowerInfo::buildingObjectId
 	};
 
+	// Prefers a structure as the anchor but accepts any carrier - see
+	// plans\plugin-framework\design-notes.md.
 	static void FindPowerModule(Object* obj, void* userData)
 	{
 		if (obj == nullptr)
 			return;
 		PowerModuleFind* find = (PowerModuleFind*)userData;
-		if (find->module != nullptr)
+		// Step 1: a structure is the best possible anchor, so stop once one has been found.
+		if (find->object != nullptr)
 			return;
-		find->module = obj->getSpecialPowerModule(find->powerTemplate);
+
+		SpecialPowerModuleInterface* module = obj->getSpecialPowerModule(find->powerTemplate);
+		if (module == nullptr)
+			return;
+
+		// Step 2: a structure wins outright and also becomes the reported building.
+		if (obj->isKindOf(KINDOF_STRUCTURE))
+		{
+			find->module = module;
+			find->object = obj;
+			return;
+		}
+
+		// Step 3: otherwise keep the first carrier of any kind, with no building to anchor to.
+		if (find->module == nullptr)
+			find->module = module;
 	}
 
 	uint32_t HostAPI_GetPlayerGeneralPowers(uint32_t playerIndex, GOGeneralPowerInfo* outPowers, uint32_t maxCount)
@@ -171,6 +216,7 @@ namespace
 			PowerModuleFind find;
 			find.powerTemplate = sp;
 			find.module = nullptr;
+			find.object = nullptr;
 			player->iterateObjects(FindPowerModule, &find);
 			if (find.module == nullptr)
 				continue;
@@ -178,6 +224,7 @@ namespace
 			GOGeneralPowerInfo& info = outPowers[count];
 			info.templateName = sp->getName().str();
 			info.rechargeFrames = sp->getReloadTime();
+			info.buildingObjectId = (find.object != nullptr) ? (uint32_t)find.object->getID() : 0;
 			const UnsignedInt readyFrame = find.module->getReadyFrame();
 			const UnsignedInt now = (TheGameLogic != nullptr) ? (UnsignedInt)TheGameLogic->getFrame() : 0;
 			info.framesUntilReady = (readyFrame > now) ? (readyFrame - now) : 0;
@@ -253,10 +300,22 @@ namespace
 			TheInGameUI->drawPluginText2D((Int)x, (Int)y, utf8Text, (Color)colorARGB);
 	}
 
+	void HostAPI_DrawText2DScaled(int32_t x, int32_t y, const char* utf8Text, uint32_t colorARGB, float sizeScale, uint8_t bold)
+	{
+		if (TheInGameUI != nullptr)
+			TheInGameUI->drawPluginText2DScaled((Int)x, (Int)y, utf8Text, (Color)colorARGB, (Real)sizeScale, bold != 0);
+	}
+
 	void HostAPI_DrawRect2D(int32_t x, int32_t y, int32_t width, int32_t height, uint32_t colorARGB, uint8_t filled)
 	{
 		if (TheInGameUI != nullptr)
 			TheInGameUI->drawPluginRect2D((Int)x, (Int)y, (Int)width, (Int)height, (Color)colorARGB, filled != 0);
+	}
+
+	void HostAPI_DrawLine2D(int32_t x1, int32_t y1, int32_t x2, int32_t y2, float thickness, uint32_t colorARGB)
+	{
+		if (TheInGameUI != nullptr)
+			TheInGameUI->drawPluginLine2D((Int)x1, (Int)y1, (Int)x2, (Int)y2, (Real)thickness, (Color)colorARGB);
 	}
 
 	void HostAPI_GetScreenSize(int32_t* outWidth, int32_t* outHeight)
@@ -349,6 +408,100 @@ namespace
 		return 1;
 	}
 
+	// Edge inset for clamped off-screen indicators, as a fraction of view height so it scales with
+	// resolution (0.0333 is the original 24 pixels at 720p).
+	const float kEdgeIndicatorMarginFraction = 0.0333f;
+
+	// Like HostAPI_WorldToScreen, but clamps an off-screen point to the view edge instead of
+	// dropping it - see plans\plugin-framework\design-notes.md.
+	uint8_t HostAPI_WorldToScreenClamped(float worldX, float worldY, float worldZ, int32_t* outX, int32_t* outY)
+	{
+		if (TheTacticalView == nullptr)
+			return 0;
+
+		Coord3D world;
+		world.x = worldX;
+		world.y = worldY;
+		world.z = worldZ;
+
+		// Step 1: project, accepting a point beyond the far clip plane as well as an off-frustum one.
+		ICoord2D screen;
+		const View::WorldToScreenReturn result = TheTacticalView->worldToScreenTriReturnAllowFarClip(&world, &screen);
+		if (result == View::WTS_INVALID)
+			return 0;
+
+		if (result == View::WTS_OUTSIDE_FRUSTUM)
+		{
+			// Step 2: clamp against the tactical view's own rectangle, which is not always the
+			// whole display - the projected position is already in full-display coordinates.
+			Int originX = 0;
+			Int originY = 0;
+			TheTacticalView->getOrigin(&originX, &originY);
+			const float viewW = (float)TheTacticalView->getWidth();
+			const float viewH = (float)TheTacticalView->getHeight();
+			const float margin = viewH * kEdgeIndicatorMarginFraction;
+			if (viewW > margin * 2.0f && viewH > margin * 2.0f)
+			{
+				// Step 3: clamp along the ray from the view's centre to the raw (possibly far
+				// off-screen) projected point, so the indicator sits on the nearest edge.
+				const float cx = (float)originX + viewW * 0.5f;
+				const float cy = (float)originY + viewH * 0.5f;
+				float dx = (float)screen.x - cx;
+				float dy = (float)screen.y - cy;
+				const float halfW = viewW * 0.5f - margin;
+				const float halfH = viewH * 0.5f - margin;
+				const float absDx = (dx < 0.0f) ? -dx : dx;
+				const float absDy = (dy < 0.0f) ? -dy : dy;
+				float scale = 1.0f;
+				if (absDx > halfW && absDx > 0.0f)
+					scale = halfW / absDx;
+				if (absDy > halfH && absDy > 0.0f)
+				{
+					const float scaleY = halfH / absDy;
+					if (scaleY < scale)
+						scale = scaleY;
+				}
+				if (scale < 1.0f)
+				{
+					dx *= scale;
+					dy *= scale;
+				}
+				screen.x = (Int)(cx + dx);
+				screen.y = (Int)(cy + dy);
+			}
+		}
+
+		if (outX != nullptr)
+			*outX = (int32_t)screen.x;
+		if (outY != nullptr)
+			*outY = (int32_t)screen.y;
+		return 1;
+	}
+
+	// Classifies by the same KindOf flags the engine's own faction-agnostic code uses, so no
+	// per-faction cases are needed - see plans\plugin-framework\design-notes.md.
+	uint8_t HostAPI_GetObjectBuildingCategory(uint32_t objectId)
+	{
+		if (TheGameLogic == nullptr || objectId == 0)
+			return GO_BUILDING_CATEGORY_NONE;
+
+		Object* obj = TheGameLogic->findObjectByID((ObjectID)objectId);
+		if (obj == nullptr || !obj->isKindOf(KINDOF_STRUCTURE))
+			return GO_BUILDING_CATEGORY_NONE;
+
+		if (obj->isKindOf(KINDOF_COMMANDCENTER))
+			return GO_BUILDING_CATEGORY_COMMAND_CENTER;
+		if (obj->isKindOf(KINDOF_FS_WARFACTORY))
+			return GO_BUILDING_CATEGORY_WAR_FACTORY;
+		if (obj->isKindOf(KINDOF_FS_BARRACKS))
+			return GO_BUILDING_CATEGORY_BARRACKS;
+		if (obj->isKindOf(KINDOF_FS_AIRFIELD))
+			return GO_BUILDING_CATEGORY_AIRFIELD;
+		if (obj->isKindOf(KINDOF_FS_SUPPLY_CENTER))
+			return GO_BUILDING_CATEGORY_SUPPLY_STASH;
+		return GO_BUILDING_CATEGORY_NONE;
+	}
+
 	uint8_t HostAPI_GetObjectScreenBounds(uint32_t objectId, int32_t* outX, int32_t* outY, int32_t* outWidth, int32_t* outHeight)
 	{
 		if (TheGameLogic == nullptr || TheTacticalView == nullptr || objectId == 0)
@@ -391,6 +544,30 @@ namespace
 		return 1;
 	}
 
+	// Projects the same point the engine draws its own health bar at - see plans\plugin-framework\design-notes.md.
+	uint8_t HostAPI_GetObjectHealthBarScreenPosition(uint32_t objectId, int32_t* outX, int32_t* outY)
+	{
+		if (TheGameLogic == nullptr || TheTacticalView == nullptr || objectId == 0)
+			return 0;
+
+		Object* obj = TheGameLogic->findObjectByID((ObjectID)objectId);
+		if (obj == nullptr)
+			return 0;
+
+		Coord3D pos;
+		obj->getHealthBoxPosition(pos);
+
+		ICoord2D screen;
+		if (!TheTacticalView->worldToScreen(&pos, &screen))
+			return 0;
+
+		if (outX != nullptr)
+			*outX = (int32_t)screen.x;
+		if (outY != nullptr)
+			*outY = (int32_t)screen.y;
+		return 1;
+	}
+
 	// Camera control. Same look-at path the engine's own observer actions
 	// use, so a plugin can jump the viewport to where a gameplay event happened when the user
 	// clicks on it.
@@ -419,6 +596,453 @@ namespace
 		if (TheDisplay != nullptr)
 			TheDisplay->drawRemainingRectClock((Int)x, (Int)y, (Int)width, (Int)height, (Int)percent, (UnsignedInt)colorARGB);
 	}
+
+	// Both handles come from the device layer through GOPluginManager's provider seam.
+
+	void* HostAPI_GetD3DDevice8()
+	{
+		return GOPluginManager::GetD3DDevice8();
+	}
+
+	void* HostAPI_GetGameWindow()
+	{
+		return GOPluginManager::GetGameWindow();
+	}
+
+	struct EnumerateObjectsContext
+	{
+		void (*callback)(uint32_t, float, float, float, void*);
+		void* userData;
+		uint32_t count;
+	};
+
+	void EnumerateObjectsCallback(Object* object, void* userData)
+	{
+		EnumerateObjectsContext* context = (EnumerateObjectsContext*)userData;
+		if (object == nullptr || context->callback == nullptr)
+			return;
+		const Coord3D* position = object->getPosition();
+		if (position == nullptr)
+			return;
+		context->callback((uint32_t)object->getID(), position->x, position->y, position->z, context->userData);
+		++context->count;
+	}
+
+	uint32_t HostAPI_EnumeratePlayerObjects(uint32_t playerIndex,
+		void (*callback)(uint32_t, float, float, float, void*), void* userData)
+	{
+		Player* player = FindPlayerByIndex(playerIndex);
+		if (player == nullptr || callback == nullptr)
+			return 0;
+		EnumerateObjectsContext context = { callback, userData, 0 };
+		player->iterateObjects(EnumerateObjectsCallback, &context);
+		return context.count;
+	}
+
+	uint32_t HostAPI_GetContainedObjects(uint32_t containerObjectId,
+		GOContainedObjectInfo* outObjects, uint32_t maxCount)
+	{
+		if (TheGameLogic == nullptr || containerObjectId == 0 || outObjects == nullptr || maxCount == 0)
+			return 0;
+		Object* container = TheGameLogic->findObjectByID((ObjectID)containerObjectId);
+		if (container == nullptr || container->getContain() == nullptr)
+			return 0;
+		const ContainedItemsList* items = container->getContain()->getContainedItemsList();
+		if (items == nullptr)
+			return 0;
+		uint32_t count = 0;
+		for (ContainedItemsList::const_iterator it = items->begin(); it != items->end() && count < maxCount; ++it)
+		{
+			Object* object = *it;
+			if (object == nullptr || object->getTemplate() == nullptr)
+				continue;
+			GOContainedObjectInfo& info = outObjects[count++];
+			info.objectId = (uint32_t)object->getID();
+			info.templateName = object->getTemplate()->getName().str();
+			info.playerIndex = object->getControllingPlayer() != nullptr
+				? (uint32_t)object->getControllingPlayer()->getPlayerIndex() : 0;
+		}
+		return count;
+	}
+
+	uint8_t HostAPI_GetObjectTargetPosition(uint32_t objectId, float* outX, float* outY, float* outZ)
+	{
+		if (TheGameLogic == nullptr || objectId == 0)
+			return 0;
+
+		Object* obj = TheGameLogic->findObjectByID((ObjectID)objectId);
+		if (obj == nullptr)
+			return 0;
+
+		AIUpdateInterface* ai = obj->getAIUpdateInterface();
+		if (ai == nullptr)
+			return 0;
+
+		// Attacking a specific object: point at that object's current position.
+		Object* victim = ai->getCurrentVictim();
+		if (victim != nullptr)
+		{
+			const Coord3D* pos = victim->getPosition();
+			if (pos != nullptr)
+			{
+				if (outX != nullptr) *outX = pos->x;
+				if (outY != nullptr) *outY = pos->y;
+				if (outZ != nullptr) *outZ = pos->z;
+				return 1;
+			}
+		}
+
+		// A goal position only counts for an explicit attack order, never a move-to or guard - see
+		// plans\plugin-framework\design-notes.md.
+		const StateID state = ai->getCurrentStateID();
+		if (state != AI_ATTACK_MOVE_TO && state != AI_ATTACK_POSITION)
+			return 0;
+
+		const Coord3D* goal = ai->getGoalPosition();
+		if (goal == nullptr)
+			return 0;
+
+		if (outX != nullptr) *outX = goal->x;
+		if (outY != nullptr) *outY = goal->y;
+		if (outZ != nullptr) *outZ = goal->z;
+		return 1;
+	}
+
+	uint8_t HostAPI_IsObjectAirborne(uint32_t objectId)
+	{
+		if (TheGameLogic == nullptr || objectId == 0)
+			return 0;
+		Object* obj = TheGameLogic->findObjectByID((ObjectID)objectId);
+		return (obj != nullptr && obj->isAirborneTarget()) ? 1 : 0;
+	}
+
+	uint8_t HostAPI_IsObjectVehicle(uint32_t objectId)
+	{
+		if (TheGameLogic == nullptr || objectId == 0)
+			return 0;
+		Object* obj = TheGameLogic->findObjectByID((ObjectID)objectId);
+		return (obj != nullptr && obj->isKindOf(KINDOF_VEHICLE)) ? 1 : 0;
+	}
+
+	// ---- Player card queries (Plan 5). Same FindPlayerByIndex resolution as every other
+	// per-player query above. ----
+
+	// Each of the string-returning queries below owns one distinct function-local buffer, so only
+	// its own most recent return value is live - see plans\plugin-framework\design-notes.md.
+	const char* HostAPI_GetPlayerName(uint32_t playerIndex)
+	{
+		Player* p = FindPlayerByIndex(playerIndex);
+		if (p == nullptr)
+			return "";
+		// getPlayerDisplayName() is a UnicodeString; the ABI only carries UTF-8/ASCII.
+		static AsciiString s_playerName;
+		s_playerName.translate(p->getPlayerDisplayName());
+		return s_playerName.str();
+	}
+
+	const char* HostAPI_GetPlayerFactionTemplate(uint32_t playerIndex)
+	{
+		Player* p = FindPlayerByIndex(playerIndex);
+		if (p == nullptr)
+			return "";
+		// getSide() is the template's "Side" INI field ("AmericaLaserGeneral"), not
+		// getPlayerTemplate()->getName(), which carries an unreadable "Faction" prefix.
+		return p->getSide().str();
+	}
+
+	uint32_t HostAPI_GetPlayerMoney(uint32_t playerIndex)
+	{
+		Player* p = FindPlayerByIndex(playerIndex);
+		return (p != nullptr) ? (uint32_t)p->getMoney()->countMoney() : 0;
+	}
+
+	// Both skill-point figures are absolute totals, so they are already a progress bar's numerator
+	// and denominator - see plans\plugin-framework\design-notes.md.
+	int32_t HostAPI_GetPlayerRank(uint32_t playerIndex, uint32_t* outCurrentXP, uint32_t* outNextXP)
+	{
+		Player* p = FindPlayerByIndex(playerIndex);
+		if (p == nullptr)
+			return -1;
+		const Int rankLevel = p->getRankLevel();
+		if (rankLevel <= 0)
+			return -1;
+		if (outCurrentXP != nullptr)
+			*outCurrentXP = (uint32_t)p->getSkillPoints();
+		if (outNextXP != nullptr)
+		{
+			// At the rank cap there is no next rank, and the threshold is INT_MAX - report 0
+			// rather than a meaningless huge denominator.
+			const Int levelUp = p->getSkillPointsLevelUp();
+			*outNextXP = (levelUp >= INT_MAX) ? 0 : (uint32_t)levelUp;
+		}
+		return (int32_t)(rankLevel - 1);
+	}
+
+	// getEnergy(), like getMoney() and getScoreKeeper(), returns the address of a Player member and
+	// is never null once the Player itself resolved, so none of the three is null-checked.
+	uint8_t HostAPI_GetPlayerPowerState(uint32_t playerIndex, uint32_t* outPowerGenerated, uint32_t* outPowerDrain)
+	{
+		Player* p = FindPlayerByIndex(playerIndex);
+		if (p == nullptr)
+			return 0;
+		const Energy* energy = p->getEnergy();
+		if (outPowerGenerated != nullptr)
+			*outPowerGenerated = (uint32_t)energy->getProduction();
+		if (outPowerDrain != nullptr)
+			*outPowerDrain = (uint32_t)energy->getConsumption();
+		return 1;
+	}
+
+	struct CountContext { uint32_t count; };
+
+	// A builder is anything carrying a DozerAIInterface, which covers all three factions - see
+	// plans\plugin-framework\design-notes.md.
+	void CountBuilderCallback(Object* obj, void* userData)
+	{
+		if (obj == nullptr)
+			return;
+		AIUpdateInterface* ai = obj->getAIUpdateInterface();
+		if (ai != nullptr && ai->getDozerAIInterface() != nullptr)
+			((CountContext*)userData)->count++;
+	}
+
+	uint32_t HostAPI_GetPlayerBuilderCount(uint32_t playerIndex)
+	{
+		Player* p = FindPlayerByIndex(playerIndex);
+		if (p == nullptr)
+			return 0;
+		CountContext ctx = { 0 };
+		p->iterateObjects(CountBuilderCallback, &ctx);
+		return ctx.count;
+	}
+
+	// Counts units actually working the supply line right now, not every supply unit - see
+	// plans\plugin-framework\design-notes.md.
+	void CountActiveGathererCallback(Object* obj, void* userData)
+	{
+		if (obj == nullptr)
+			return;
+		AIUpdateInterface* ai = obj->getAIUpdateInterface();
+		if (ai == nullptr)
+			return;
+		SupplyTruckAIInterface* supplyAI = ai->getSupplyTruckAIInterface();
+		if (supplyAI != nullptr && supplyAI->isCurrentlyFerryingSupplies())
+			((CountContext*)userData)->count++;
+	}
+
+	uint32_t HostAPI_GetPlayerActiveGathererCount(uint32_t playerIndex)
+	{
+		Player* p = FindPlayerByIndex(playerIndex);
+		if (p == nullptr)
+			return 0;
+		CountContext ctx = { 0 };
+		p->iterateObjects(CountActiveGathererCallback, &ctx);
+		return ctx.count;
+	}
+
+	// The score screen's cumulative figure, deliberately raw rather than a rate - see plans\plugin-framework\design-notes.md.
+	uint32_t HostAPI_GetPlayerTotalMoneyEarned(uint32_t playerIndex)
+	{
+		Player* p = FindPlayerByIndex(playerIndex);
+		if (p == nullptr)
+			return 0;
+		return (uint32_t)p->getScoreKeeper()->getTotalMoneyEarned();
+	}
+
+	// Looks up by raw template name rather than a live object, so it also resolves a template a
+	// plugin only knows the name of (e.g. GOContainedObjectInfo::templateName from a garrison query).
+	const char* HostAPI_GetTemplateDisplayName(const char* templateName)
+	{
+		if (templateName == nullptr || templateName[0] == '\0' || TheThingFactory == nullptr)
+			return "";
+		const ThingTemplate* tt = TheThingFactory->findTemplate(AsciiString(templateName));
+		if (tt == nullptr)
+			return "";
+		static AsciiString s_templateDisplayName;
+		s_templateDisplayName.translate(tt->getDisplayName());
+		return s_templateDisplayName.str();
+	}
+
+	struct SampleTemplateContext { AsciiString templateName; bool found; };
+
+	// Same qualifying check as CountBuilderCallback, but stops recording once one match is found -
+	// this only needs a representative icon, not an exact count.
+	void SampleBuilderTemplateCallback(Object* obj, void* userData)
+	{
+		SampleTemplateContext* ctx = (SampleTemplateContext*)userData;
+		if (ctx->found || obj == nullptr)
+			return;
+		AIUpdateInterface* ai = obj->getAIUpdateInterface();
+		if (ai != nullptr && ai->getDozerAIInterface() != nullptr && obj->getTemplate() != nullptr)
+		{
+			ctx->templateName = obj->getTemplate()->getName();
+			ctx->found = true;
+		}
+	}
+
+	// Same qualifying check as CountActiveGathererCallback (isCurrentlyFerryingSupplies, not merely
+	// "is a supply unit"), so the sampled icon matches what getPlayerActiveGathererCount is counting.
+	void SampleGathererTemplateCallback(Object* obj, void* userData)
+	{
+		SampleTemplateContext* ctx = (SampleTemplateContext*)userData;
+		if (ctx->found || obj == nullptr)
+			return;
+		AIUpdateInterface* ai = obj->getAIUpdateInterface();
+		if (ai == nullptr)
+			return;
+		SupplyTruckAIInterface* supplyAI = ai->getSupplyTruckAIInterface();
+		if (supplyAI != nullptr && supplyAI->isCurrentlyFerryingSupplies() && obj->getTemplate() != nullptr)
+		{
+			ctx->templateName = obj->getTemplate()->getName();
+			ctx->found = true;
+		}
+	}
+
+	const char* HostAPI_GetPlayerBuilderTemplateName(uint32_t playerIndex)
+	{
+		Player* p = FindPlayerByIndex(playerIndex);
+		if (p == nullptr)
+			return "";
+		SampleTemplateContext ctx = {};
+		p->iterateObjects(SampleBuilderTemplateCallback, &ctx);
+		static AsciiString s_builderTemplateName;
+		s_builderTemplateName = ctx.templateName;
+		return s_builderTemplateName.str();
+	}
+
+	// The base game has three distinct DozerAIInterface-carrying templates (USA Dozer, China Dozer,
+	// GLA Worker); the extra headroom is for mods that add their own - see
+	// plans\plugin-framework\design-notes.md.
+	const uint32_t kMaxBuilderTypeBuckets = 8;
+
+	struct BuilderTypeBucket { AsciiString name; uint32_t count; };
+	struct BuilderTypeCountContext
+	{
+		BuilderTypeBucket buckets[kMaxBuilderTypeBuckets];
+		uint32_t bucketCount = 0;
+	};
+
+	// As CountBuilderCallback, but keyed by template so a captured Worker is not collapsed into a
+	// native Dozer - see plans\plugin-framework\design-notes.md.
+	void CountBuilderTypeCallback(Object* obj, void* userData)
+	{
+		if (obj == nullptr)
+			return;
+		AIUpdateInterface* ai = obj->getAIUpdateInterface();
+		if (ai == nullptr || ai->getDozerAIInterface() == nullptr)
+			return;
+		const ThingTemplate* tt = obj->getTemplate();
+		if (tt == nullptr)
+			return;
+
+		BuilderTypeCountContext* ctx = (BuilderTypeCountContext*)userData;
+		const AsciiString& name = tt->getName();
+		for (uint32_t i = 0; i < ctx->bucketCount; ++i)
+		{
+			if (ctx->buckets[i].name == name)
+			{
+				ctx->buckets[i].count++;
+				return;
+			}
+		}
+		if (ctx->bucketCount < kMaxBuilderTypeBuckets)
+		{
+			ctx->buckets[ctx->bucketCount].name = name;
+			ctx->buckets[ctx->bucketCount].count = 1;
+			ctx->bucketCount++;
+		}
+	}
+
+	// Per-type breakdown of the player's live builder units - see PluginABI.h for the contract.
+	uint32_t HostAPI_GetPlayerBuilderTemplateCounts(uint32_t playerIndex, const char** outNames, uint32_t* outCounts, uint32_t maxCount)
+	{
+		if (outNames == nullptr || outCounts == nullptr || maxCount == 0)
+			return 0;
+		Player* p = FindPlayerByIndex(playerIndex);
+		if (p == nullptr)
+			return 0;
+
+		BuilderTypeCountContext ctx;
+		p->iterateObjects(CountBuilderTypeCallback, &ctx);
+
+		// This function's own backing storage for the returned pointers.
+		static AsciiString s_builderTemplateNames[kMaxBuilderTypeBuckets];
+		const uint32_t n = (ctx.bucketCount < maxCount) ? ctx.bucketCount : maxCount;
+		for (uint32_t i = 0; i < n; ++i)
+		{
+			s_builderTemplateNames[i] = ctx.buckets[i].name;
+			outNames[i] = s_builderTemplateNames[i].str();
+			outCounts[i] = ctx.buckets[i].count;
+		}
+		return n;
+	}
+
+	const char* HostAPI_GetPlayerGathererTemplateName(uint32_t playerIndex)
+	{
+		Player* p = FindPlayerByIndex(playerIndex);
+		if (p == nullptr)
+			return "";
+		SampleTemplateContext ctx = {};
+		p->iterateObjects(SampleGathererTemplateCallback, &ctx);
+		static AsciiString s_gathererTemplateName;
+		s_gathererTemplateName = ctx.templateName;
+		return s_gathererTemplateName.str();
+	}
+
+	struct SlotLookupContext { uint32_t playerIndex; Int slot; };
+
+	bool MatchSlotByPlayerIndex(Int slot, Player* player, void* userData)
+	{
+		SlotLookupContext* ctx = (SlotLookupContext*)userData;
+		if ((uint32_t)player->getPlayerIndex() != ctx->playerIndex)
+			return true;
+		ctx->slot = slot;
+		return false;
+	}
+
+	// playerIndex (Player::getPlayerIndex()) and the lobby slot index GameSlot is keyed by are two
+	// different numbering spaces, so the slot has to be found first and then looked up in TheGameInfo.
+	int32_t HostAPI_GetPlayerTeamNumber(uint32_t playerIndex)
+	{
+		if (TheGameInfo == nullptr)
+			return -1;
+
+		SlotLookupContext ctx = { playerIndex, -1 };
+		ForEachSlotPlayer(MatchSlotByPlayerIndex, &ctx);
+		if (ctx.slot < 0)
+			return -1;
+
+		const GameSlot* gameSlot = TheGameInfo->getConstSlot(ctx.slot);
+		return (gameSlot != nullptr) ? gameSlot->getTeamNumber() : -1;
+	}
+
+	// As HostAPI_GetActivePlayers but without the isPlayerActive() filter, so the roster is stable
+	// for the whole match - see plans\plugin-framework\design-notes.md.
+	uint32_t HostAPI_GetMatchPlayers(uint32_t* outPlayerIndices, uint32_t maxCount)
+	{
+		if (outPlayerIndices == nullptr || maxCount == 0)
+			return 0;
+
+		SlotRosterContext ctx = { outPlayerIndices, maxCount, 0, false };
+		ForEachSlotPlayer(CollectSlotPlayer, &ctx);
+		return ctx.count;
+	}
+
+	uint8_t HostAPI_GetPlayerIsDefeated(uint32_t playerIndex)
+	{
+		Player* p = FindPlayerByIndex(playerIndex);
+		return (p != nullptr && !p->isPlayerActive()) ? 1 : 0;
+	}
+
+	const char* HostAPI_GetUserDataPath()
+	{
+		// Cached in a function-local static because the ABI promises a pointer that stays valid for
+		// the process lifetime, while getPath_UserData() hands back a temporary.
+		static std::string s_userDataPath;
+		if (s_userDataPath.empty() && TheGlobalData != nullptr)
+			s_userDataPath = TheGlobalData->getPath_UserData().str();
+		return s_userDataPath.c_str();
+	}
 } // anonymous namespace
 
 // ------------------------------------------------------------------------------------------------
@@ -428,10 +1052,28 @@ void GOPluginManager::Log(const char* msg)
 	NetworkLog(ELogVerbosity::LOG_RELEASE, "[Plugin] %s", msg);
 }
 
+// Called by GameEngineDevice once its display is up, before any plugin is loaded.
+void GOPluginManager::SetNativeHandleProviders(NativeHandleProvider d3dDevice8, NativeHandleProvider gameWindow)
+{
+	s_d3dDevice8Provider = d3dDevice8;
+	s_gameWindowProvider = gameWindow;
+}
+
+void* GOPluginManager::GetD3DDevice8()
+{
+	return (s_d3dDevice8Provider != nullptr) ? s_d3dDevice8Provider() : nullptr;
+}
+
+void* GOPluginManager::GetGameWindow()
+{
+	return (s_gameWindowProvider != nullptr) ? s_gameWindowProvider() : nullptr;
+}
+
 GOPluginHostAPI GOPluginManager::BuildHostAPI()
 {
 	GOPluginHostAPI api = {};
 	api.abiVersion = GO_PLUGIN_ABI_VERSION;
+	api.structSize = (uint32_t)sizeof(GOPluginHostAPI);
 	api.log = HostAPI_Log;
 	api.registerGameplayEventHooks = HostAPI_RegisterGameplayEventHooks;
 	api.registerRenderHooks = HostAPI_RegisterRenderHooks;
@@ -442,6 +1084,7 @@ GOPluginHostAPI GOPluginManager::BuildHostAPI()
 	api.drawTemplateIcon2D = HostAPI_DrawTemplateIcon2D;
 	api.drawPowerIcon2D = HostAPI_DrawPowerIcon2D;
 	api.drawText2D = HostAPI_DrawText2D;
+	api.drawText2DScaled = HostAPI_DrawText2DScaled;
 	api.drawRect2D = HostAPI_DrawRect2D;
 	api.getScreenSize = HostAPI_GetScreenSize;
 	api.getLogicFrame = HostAPI_GetLogicFrame;
@@ -449,19 +1092,43 @@ GOPluginHostAPI GOPluginManager::BuildHostAPI()
 	api.getUnitProductionProgress = HostAPI_GetUnitProductionProgress;
 	api.getUpgradeProductionProgress = HostAPI_GetUpgradeProductionProgress;
 	api.worldToScreen = HostAPI_WorldToScreen;
+	api.worldToScreenClamped = HostAPI_WorldToScreenClamped;
+	api.getObjectBuildingCategory = HostAPI_GetObjectBuildingCategory;
 	api.getObjectScreenBounds = HostAPI_GetObjectScreenBounds;
+	api.getObjectHealthBarScreenPosition = HostAPI_GetObjectHealthBarScreenPosition;
 	api.teleportViewportTo = HostAPI_TeleportViewportTo;
 	api.drawRectClock2D = HostAPI_DrawRectClock2D;
 	api.drawRemainingRectClock2D = HostAPI_DrawRemainingRectClock2D;
+	api.getD3DDevice8 = HostAPI_GetD3DDevice8;
+	api.getGameWindow = HostAPI_GetGameWindow;
+	api.enumeratePlayerObjects = HostAPI_EnumeratePlayerObjects;
+	api.getContainedObjects = HostAPI_GetContainedObjects;
+	api.getObjectTargetPosition = HostAPI_GetObjectTargetPosition;
+	api.isObjectAirborne = HostAPI_IsObjectAirborne;
+	api.isObjectVehicle = HostAPI_IsObjectVehicle;
+	api.getPlayerName = HostAPI_GetPlayerName;
+	api.getPlayerFactionTemplate = HostAPI_GetPlayerFactionTemplate;
+	api.getPlayerMoney = HostAPI_GetPlayerMoney;
+	api.getPlayerRank = HostAPI_GetPlayerRank;
+	api.getPlayerPowerState = HostAPI_GetPlayerPowerState;
+	api.getPlayerBuilderCount = HostAPI_GetPlayerBuilderCount;
+	api.getPlayerActiveGathererCount = HostAPI_GetPlayerActiveGathererCount;
+	api.getPlayerTotalMoneyEarned = HostAPI_GetPlayerTotalMoneyEarned;
+	api.getTemplateDisplayName = HostAPI_GetTemplateDisplayName;
+	api.getPlayerBuilderTemplateName = HostAPI_GetPlayerBuilderTemplateName;
+	api.getPlayerBuilderTemplateCounts = HostAPI_GetPlayerBuilderTemplateCounts;
+	api.getPlayerGathererTemplateName = HostAPI_GetPlayerGathererTemplateName;
+	api.getPlayerTeamNumber = HostAPI_GetPlayerTeamNumber;
+	api.getMatchPlayers = HostAPI_GetMatchPlayers;
+	api.getPlayerIsDefeated = HostAPI_GetPlayerIsDefeated;
+	api.getUserDataPath = HostAPI_GetUserDataPath;
+	api.drawLine2D = HostAPI_DrawLine2D;
 	return api;
 }
 
-//-------------------------------------------------------------------------------------------------
-// The single host API table handed to every plugin. Function-local static, so it is built once and
-// then lives for the rest of the process: plugins retain this pointer indefinitely, so it must not
-// be a temporary. Every entry points at a free function, so there is nothing per-plugin about it
-// and one shared instance is correct.
-//-------------------------------------------------------------------------------------------------
+// The one table handed to every plugin. A function-local static because plugins retain the pointer
+// indefinitely, so it must not be a temporary; every entry is a free function, so one instance is
+// correct for all of them.
 const GOPluginHostAPI& GOPluginManager::GetHostAPI()
 {
 	static const GOPluginHostAPI s_hostAPI = BuildHostAPI();
@@ -513,11 +1180,9 @@ static std::string ExtractJsonStringField(const std::string& json, const char* k
 	return value;
 }
 
-// Optional sidecar manifest next to the DLL (foo.goplugin.dll -> foo.goplugin.json) with
-// author/website info for the load log line. Purely informational: GOPluginInfo from the plugin's
-// own export stays authoritative for ABI version and hook categories, so a missing or malformed
-// manifest is never a reason to refuse a plugin. Returns a fragment to append to the load log
-// line, or "".
+// Optional sidecar manifest (foo.goplugin.dll -> foo.goplugin.json) with author info for the load
+// log. Purely informational - GOPluginInfo stays authoritative, so a missing or malformed manifest
+// never refuses a plugin. Returns a log fragment, or "".
 static std::string ReadManifestSummary(const char* dllPath)
 {
 	std::string path(dllPath);
@@ -592,16 +1257,9 @@ bool GOPluginManager::LoadPlugin(const char* dllPath)
 	loaded.tick = fnTick;
 	loaded.info = info;
 
-	// Must outlive this call: every plugin keeps the pointer it is handed and calls through it for
-	// the rest of the process (see the lifetime note in PluginABI.h). Building it into a local and
-	// passing its address would hand out a pointer into a stack frame that dies on return - the
-	// plugin's first call after load would then jump through whatever reused that stack.
-	//
-	// A plugin may call registerGameplayEventHooks/registerRenderHooks
-	// during Initialize() and then still return false. Snapshot both hook vectors' sizes first and
-	// roll back on failure - otherwise the callbacks it just registered would keep pointing into
-	// the DLL we are about to FreeLibrary() below, and the next dispatch would call through a freed
-	// function pointer.
+	// A plugin may register hooks during Initialize() and then still return false. Snapshot both
+	// vector sizes and roll back on failure, or those callbacks keep pointing into the DLL we are
+	// about to FreeLibrary() and the next dispatch calls through freed memory.
 	const size_t gameplayHooksBefore = s_gameplayEventHooks.size();
 	const size_t renderHooksBefore = s_renderHooks.size();
 	if (!fnInitialize(&GetHostAPI()))
@@ -722,13 +1380,9 @@ void GOPluginManager::UnloadAll()
 	s_renderHooks.clear();
 }
 
-// ------------------------------------------------------------------------------------------------
-// Observer gate. One check for the whole framework: plugin callbacks carry information about
-// other players (their production queues, powers, buildings), so none of it may reach a plugin
-// while the local client is a match participant. The same condition the engine's own
-// observer-only UI (observer stats/notifications) is gated on; replay playback runs with
-// GAME_REPLAY, whose local player is the observer player, so it passes.
-// ------------------------------------------------------------------------------------------------
+// One gate for the whole framework: callbacks carry other players' queues, powers and buildings, so
+// none of it may reach a plugin while the local client is a participant. Same condition the engine's
+// own observer-only UI uses; replay playback passes, its local player being the observer.
 bool GOPluginManager::IsLocalPlayerObserver()
 {
 	if (ThePlayerList == nullptr)
@@ -813,6 +1467,22 @@ void GOPluginManager::DispatchSpecialPowerTriggered(const GOSpecialPowerEvent& e
 		return;
 	for (GOGameplayEventCallbacks& cb : s_gameplayEventHooks)
 		if (cb.onSpecialPowerTriggered != nullptr) cb.onSpecialPowerTriggered(&ev);
+}
+
+void GOPluginManager::DispatchObjectDamaged(const GOCombatEvent& ev)
+{
+	if (!IsLocalPlayerObserver())
+		return;
+	for (GOGameplayEventCallbacks& cb : s_gameplayEventHooks)
+		if (cb.onObjectDamaged != nullptr) cb.onObjectDamaged(&ev);
+}
+
+void GOPluginManager::DispatchObjectHealed(const GOCombatEvent& ev)
+{
+	if (!IsLocalPlayerObserver())
+		return;
+	for (GOGameplayEventCallbacks& cb : s_gameplayEventHooks)
+		if (cb.onObjectHealed != nullptr) cb.onObjectHealed(&ev);
 }
 
 // ---- IRenderHooks dispatch. Same observer gate as the gameplay events. ----

@@ -1,20 +1,9 @@
 #pragma once
 
-// ------------------------------------------------------------------------------------------------
-// Generic plugin-hook framework. The host loads any number of
-// out-of-tree plugin DLLs, each opting into gameplay-event or render hook categories, so
-// features like the observer overlay can live outside the engine.
-//
-// GeneralsOnline generic plugin ABI.
-//
-// This header is the contract between the game client (host) and any plugin DLL. It must stay
-// pure C (POD structs, function pointers, primitives only - no STL, no engine types) so plugin
-// projects can compile against it without any engine headers, and both sides always agree on the
-// layout of everything they exchange.
-//
-// The host loads any number of plugin DLLs; each plugin opts into the hook categories it supports
-// at Initialize() time via the host API function table it is handed.
-// ------------------------------------------------------------------------------------------------
+// The contract between the game client (host) and any plugin DLL. Must stay pure C - POD structs,
+// function pointers and primitives only, no STL or engine types - so a plugin compiles against it
+// without engine headers and both sides always agree on layout. The host loads any number of
+// plugins; each opts into hook categories at GO_Plugin_Initialize via the table it is handed.
 
 #include <stdint.h>
 
@@ -29,31 +18,29 @@
 // Bump when the layout of any struct below changes. GOPluginInfo::abiVersion and
 // GOPluginHostAPI::abiVersion are checked against this on load; a mismatch fails the plugin load
 // rather than risk silently misreading a function-pointer table with a different layout.
-#define GO_PLUGIN_ABI_VERSION 1
+#define GO_PLUGIN_ABI_VERSION 4
 
-// ------------------------------------------------------------------------------------------------
-// Hook categories a plugin can use. A plugin advertises which categories it *might* use via
-// GOPluginInfo::hookCategories (informational, used for logging/diagnostics only). Actual use of
-// GAMEPLAY_EVENTS/RENDER requires calling the matching GOPluginHostAPI::register* function during
-// GO_Plugin_Initialize.
-//
-// Only the categories current plugins consume are exposed, so the ABI surface stays as small as
-// the engine has to guarantee. Replay/stream capture, for instance, lives in core engine code
-// rather than behind a plugin hook, because it needs recording and native-UI integration across
-// engine subsystems that a plugin cannot reach.
-// ------------------------------------------------------------------------------------------------
-enum EGOPluginHookCategory : uint32_t
+// Compile-time layout check, spelled without static_assert/_Static_assert so this header still
+// compiles as C89 as well as C++. Both sides fail to build the moment a struct below lays out
+// differently from what this contract says, which is the one failure GO_PLUGIN_ABI_VERSION cannot
+// catch. The expected sizes are the 32-bit (x86) ones - host and plugin are both Win32 builds.
+#define GO_ABI_ASSERT_CONCAT_(a, b) a##b
+#define GO_ABI_ASSERT_CONCAT(a, b) GO_ABI_ASSERT_CONCAT_(a, b)
+#define GO_ABI_ASSERT_LAYOUT(cond) typedef char GO_ABI_ASSERT_CONCAT(goAbiLayoutAssert_, __LINE__)[(cond) ? 1 : -1]
+
+// Hook categories. GOPluginInfo::hookCategories is informational only; actual use requires the
+// matching register* call during GO_Plugin_Initialize. Only the categories plugins consume are
+// exposed, keeping the surface the engine must guarantee small. Carried as uint32_t, never as the
+// enum type - the enum has no base-type specifier.
+enum EGOPluginHookCategory
 {
 	GO_HOOK_NONE                 = 0,
 	GO_HOOK_GAMEPLAY_EVENTS      = 1 << 0, // unit/upgrade/power/building gameplay events
 	GO_HOOK_RENDER               = 1 << 1, // per-frame overlay draw + raw hotkey passthrough
 };
 
-// ------------------------------------------------------------------------------------------------
-// IGameplayEventHooks - production/power/building events. Payloads are plain data (template names
-// as strings, object ids as uint32) rather than engine pointers, since these cross a DLL boundary
-// and must not depend on the host's C++ ABI/class layout.
-// ------------------------------------------------------------------------------------------------
+// Production/power/building events. Payloads are plain data rather than engine pointers, since
+// they cross a DLL boundary and must not depend on the host's C++ class layout.
 struct GOUnitEvent
 {
 	uint32_t playerIndex;
@@ -65,6 +52,7 @@ struct GOUnitEvent
 	float producerPositionY;
 	float producerPositionZ;
 };
+GO_ABI_ASSERT_LAYOUT(sizeof(GOUnitEvent) == 32);
 
 struct GOUpgradeEvent
 {
@@ -76,6 +64,7 @@ struct GOUpgradeEvent
 	float producerPositionY;
 	float producerPositionZ;
 };
+GO_ABI_ASSERT_LAYOUT(sizeof(GOUpgradeEvent) == 28);
 
 struct GOBuildingEvent
 {
@@ -85,6 +74,7 @@ struct GOBuildingEvent
 	float positionY;
 	float positionZ;
 };
+GO_ABI_ASSERT_LAYOUT(sizeof(GOBuildingEvent) == 20);
 
 struct GOSpecialPowerEvent
 {
@@ -95,6 +85,25 @@ struct GOSpecialPowerEvent
 	float locationZ;
 	float rechargeTimeSeconds;     // static reload duration for this power template (0 if unknown)
 };
+GO_ABI_ASSERT_LAYOUT(sizeof(GOSpecialPowerEvent) == 24);
+
+// Shared payload for onObjectDamaged and onObjectHealed; which callback fired implies the
+// direction. See plans\plugin-framework\design-notes.md for where it is raised and why.
+// All four-byte members come first so the three flags pack contiguously at the end.
+struct GOCombatEvent
+{
+	uint32_t objectId;         // the object whose health changed
+	uint32_t sourceObjectId;   // attacker/healer ObjectID (0 if unavailable, e.g. environmental damage)
+	uint32_t playerIndex;      // owner of objectId
+	int32_t amount;            // always positive; onObjectDamaged vs onObjectHealed implies the sign
+	float positionX;           // objectId's world position at the moment of this event
+	float positionY;
+	float positionZ;
+	uint8_t isBuilding;        // KINDOF_STRUCTURE at the moment of this event
+	uint8_t isUnit;            // KINDOF_INFANTRY || KINDOF_VEHICLE - deliberately not "!isBuilding"
+	uint8_t isFlame;           // DAMAGE_FLAME, a continuous per-frame tick source (onObjectDamaged only)
+};
+GO_ABI_ASSERT_LAYOUT(sizeof(GOCombatEvent) == 32);
 
 struct GOGameplayEventCallbacks
 {
@@ -106,6 +115,8 @@ struct GOGameplayEventCallbacks
 	void (*onUpgradeCompleted)(const GOUpgradeEvent* ev);
 	void (*onBuildingDestroyed)(const GOBuildingEvent* ev);
 	void (*onSpecialPowerTriggered)(const GOSpecialPowerEvent* ev);
+	void (*onObjectDamaged)(const GOCombatEvent* ev);
+	void (*onObjectHealed)(const GOCombatEvent* ev);
 };
 
 // One entry in a player's general-power roster (see getPlayerGeneralPowers). templateName points
@@ -115,14 +126,21 @@ struct GOGeneralPowerInfo
 	const char* templateName;    // SpecialPowerTemplate name, e.g. "AmericaSuperweaponParticleCannon"
 	uint32_t rechargeFrames;     // full reload duration in logic frames (0 = recharges instantly)
 	uint32_t framesUntilReady;   // logic frames until it can be triggered again (0 = ready now)
+	uint32_t buildingObjectId;   // ObjectID of the building carrying this power's module (0 if none)
 };
+GO_ABI_ASSERT_LAYOUT(sizeof(GOGeneralPowerInfo) == 16);
 
-// ------------------------------------------------------------------------------------------------
-// IRenderHooks - per-frame overlay draw + raw hotkey passthrough. onDrawOverlay is called once per
-// frame from InGameUI's draw path, in 2D screen-space with the HUD's ortho projection already
-// active, so a plugin can issue its own 2D draw calls (text/quads via the host's drawing primitives
-// exposed through GOPluginHostAPI, see below) without touching 3D state.
-// ------------------------------------------------------------------------------------------------
+struct GOContainedObjectInfo
+{
+	uint32_t objectId;
+	const char* templateName;
+	uint32_t playerIndex;
+};
+GO_ABI_ASSERT_LAYOUT(sizeof(GOContainedObjectInfo) == 12);
+
+// Per-frame overlay draw plus raw input passthrough. onDrawOverlay runs once a frame from
+// InGameUI's draw path, in 2D screen space with the HUD's ortho projection already active, so a
+// plugin can issue the host's 2D primitives without touching 3D state.
 struct GORenderCallbacks
 {
 	void (*onDrawOverlay)();
@@ -131,11 +149,8 @@ struct GORenderCallbacks
 	// matches. modifierFlags: bit0 = CTRL, bit1 = SHIFT, bit2 = ALT.
 	void (*onRawKeyUp)(uint32_t scanCode, uint32_t modifierFlags);
 
-	// Mouse passthrough with the same "fires for every event, engine behavior unaffected" discipline
-	// as onRawKeyUp - a side-channel notification, never gates or consumes the underlying input.
-	// onMouseMove fires far more often than any other hook in this ABI (every raw mouse-move
-	// message, easily dozens of times a second while the cursor moves) - keep handlers cheap.
-	// Coordinates are screen-space pixels, same space as drawText2D/drawRect2D.
+	// Side-channel notification like onRawKeyUp: never gates or consumes the input. Fires more often
+	// than any other hook here, so keep handlers cheap. Screen-space pixels, as drawRect2D.
 	void (*onMouseMove)(int32_t x, int32_t y);
 	// Mouse-button passthrough for clickable plugin UI. Same side-channel
 	// discipline as onMouseMove. buttonIndex: 0 = left, 1 = middle, 2 = right. modifierFlags: bit0 =
@@ -145,18 +160,29 @@ struct GORenderCallbacks
 	void (*onMouseButtonUp)(uint8_t buttonIndex, int32_t x, int32_t y, uint32_t modifierFlags);
 };
 
-// ------------------------------------------------------------------------------------------------
-// Host API - handed to the plugin at GO_Plugin_Initialize time. Registration functions may be
-// called multiple times by the same plugin (e.g. to register both gameplay-event and render
-// hooks); each is independent and optional.
-//
-// LIFETIME: the pointer passed to GO_Plugin_Initialize has process lifetime and stays valid until
-// the plugin is unloaded, so a plugin may retain it. Copying the struct by value is still the safer
-// habit - it costs nothing and does not depend on the host getting this right.
-// ------------------------------------------------------------------------------------------------
+// Production-building purposes a plugin might treat differently. Deliberately closed: the five
+// there was a need to distinguish, not a general taxonomy. Returned as uint8_t, never as the enum.
+enum EGOBuildingCategory
+{
+	GO_BUILDING_CATEGORY_NONE = 0,          // not a building, or a building outside the categories below
+	GO_BUILDING_CATEGORY_COMMAND_CENTER = 1,
+	GO_BUILDING_CATEGORY_WAR_FACTORY = 2,
+	GO_BUILDING_CATEGORY_BARRACKS = 3,
+	GO_BUILDING_CATEGORY_AIRFIELD = 4,
+	GO_BUILDING_CATEGORY_SUPPLY_STASH = 5,
+};
+
+// Handed to the plugin at GO_Plugin_Initialize. Registration functions are independent and
+// optional, and may each be called more than once. LIFETIME: the pointer has process lifetime, so a
+// plugin may retain it - but copying the struct by value costs nothing and does not rely on that.
 struct GOPluginHostAPI
 {
 	uint32_t abiVersion;
+
+	// sizeof(GOPluginHostAPI) as the host compiled it, at a fixed offset so a plugin can read it
+	// before touching anything further down the table. A plugin must refuse to initialize when this
+	// is smaller than its own sizeof - see plans\plugin-framework\design-notes.md.
+	uint32_t structSize;
 
 	void (*log)(const char* msg);
 
@@ -169,33 +195,21 @@ struct GOPluginHostAPI
 	// match currently loaded, index out of range, observer slot, etc). ---
 	uint32_t (*getPlayerColor)(uint32_t playerIndex);      // colorARGB, same packing as drawText2D/drawRect2D
 
-	// Writes the playerIndex of each active, non-observer match participant into outPlayerIndices
-	// and returns how many were written (never more than maxCount). This is the roster query to
-	// build UI from: it walks the engine's real player slots, so the neutral/civilian player is not
-	// in it, and the values returned are the same playerIndex the gameplay-event structs carry -
-	// no second numbering scheme to reconcile. Returns 0 when no match is loaded.
+	// Active, non-observer participants; returns how many were written, never more than maxCount.
+	// Excludes the neutral/civilian player, and the values are the same playerIndex the event
+	// structs carry. Returns 0 when no match is loaded.
 	uint32_t (*getActivePlayers)(uint32_t* outPlayerIndices, uint32_t maxCount);
 
-	// Observer-only delivery gate. TRUE if the local client is
-	// observing/spectating the match rather than playing in it (dead counts as observing, matching
-	// the engine's own observer-UI gating). A render/tick plugin that shows information about other
-	// players (queues, cooldowns, etc.) MUST gate on this before drawing/acting - without it, that
-	// information is visible to a live match participant, which is a gameplay-advantage/cheat vector,
-	// not just a display bug.
-	//
-	// The host additionally enforces this: while it returns false, no gameplay-event or render
-	// callbacks are delivered and GO_Plugin_Tick is not called, so a plugin cannot observe a live
-	// match at all. Replay playback always returns true.
+	// TRUE if the local client is spectating rather than playing (dead counts as spectating; replay
+	// playback is always true). A plugin showing other players' information MUST gate on this: not
+	// doing so exposes it to a live participant, which is a cheat vector, not a display bug. The host
+	// also enforces it - while false, no callbacks are delivered and GO_Plugin_Tick is not called.
 	uint8_t (*isLocalPlayerObserver)();
 
-	// General-power roster query. Enumerates the general powers the
-	// player currently owns, walked from the player template's general-power command set and
-	// gated on the required science plus a live object carrying the power's module (a superweapon
-	// only counts once its building exists). The gameplay-event hooks only fire when a power is
-	// used, so this is the only way to show owned-but-unused powers (e.g. a ready superweapon).
-	// Cooldown state comes from the module's own clock, so it stays correct across
-	// pause/delay/fast-forward. Returns the number written (never more than
-	// maxCount), or 0 when no game is running or the player has no general powers.
+	// General powers the player owns: required science plus a live object carrying the module, so a
+	// superweapon only counts once its building exists. The event hooks fire only on use, so this is
+	// the only way to show owned-but-unused powers. Cooldowns come from the module's own clock and
+	// stay correct across pause and fast-forward. Returns the number written, at most maxCount.
 	uint32_t (*getPlayerGeneralPowers)(uint32_t playerIndex, GOGeneralPowerInfo* outPowers, uint32_t maxCount);
 
 	// --- Icon drawing. Looks up the named template server-side (where the engine's ThingTemplate/
@@ -217,26 +231,25 @@ struct GOPluginHostAPI
 	void (*drawText2D)(int32_t x, int32_t y, const char* utf8Text, uint32_t colorARGB);
 	void (*drawRect2D)(int32_t x, int32_t y, int32_t width, int32_t height, uint32_t colorARGB, uint8_t filled);
 
+	// Like drawText2D, but sizeScale multiplies the host's own message font point size (1.0 matches
+	// drawText2D exactly, values outside the host's supported range are clamped) and bold is
+	// explicit. See plans\plugin-framework\design-notes.md for why this is a separate function.
+	void (*drawText2DScaled)(int32_t x, int32_t y, const char* utf8Text, uint32_t colorARGB, float sizeScale, uint8_t bold);
+
 	// Current render target size in pixels, same coordinate space as drawText2D/drawRect2D/
 	// drawTemplateIcon2D/drawPowerIcon2D/onMouseMove. Lets a render-hook plugin anchor drawn UI to
 	// a screen edge (bottom/right) instead of only a fixed top-left-relative offset. Safe to call
 	// from onDrawOverlay every frame.
 	void (*getScreenSize)(int32_t* outWidth, int32_t* outHeight);
 
-	// --- Simulation clock. The gameplay-event hooks are edge notifications with no timing
-	// information of their own, so a plugin that wants to age anything it recorded (a cooldown, a
-	// "just happened" flash) previously had no choice but to use wall-clock time, which drifts
-	// against a paused, delayed or fast-forwarded simulation. These give the simulation's own
-	// clock instead. Return 0 when no game is running. ---
+	// Simulation clock, for ageing anything recorded from the events - wall-clock time drifts against
+	// a paused, delayed or fast-forwarded simulation. Return 0 when no game is running.
 	uint32_t (*getLogicFrame)();
 	uint32_t (*getLogicFramesPerSecond)();
 
-	// --- Live production progress. GOUnitEvent/GOUpgradeEvent carry percentComplete only as
-	// of the moment they fire, i.e. essentially always 0 for a queued event, and there is no
-	// periodic "progress changed" hook - so anything drawn from the event value alone is frozen.
-	// These read the engine's own ProductionEntry state on demand, which is exact and needs no
-	// build-time arithmetic on the plugin side. Return 0..100, or -1 if that queue entry is not
-	// (or no longer) in the producer's queue. ---
+	// Live production progress, read from the engine's ProductionEntry on demand. The event structs
+	// carry percentComplete only as of the moment they fire - essentially always 0 for a queued
+	// event - and nothing reports progress changing. Return 0..100, or -1 if the entry is gone.
 	float (*getUnitProductionProgress)(uint32_t producerObjectId, int32_t productionID);
 	float (*getUpgradeProductionProgress)(uint32_t producerObjectId, const char* upgradeTemplateName);
 
@@ -251,19 +264,134 @@ struct GOPluginHostAPI
 	// scale from the screen resolution. Returns 0 if the object no longer exists or is off screen.
 	uint8_t (*getObjectScreenBounds)(uint32_t objectId, int32_t* outX, int32_t* outY, int32_t* outWidth, int32_t* outHeight);
 
-	// Camera control for plugins. Moves the observer's viewport to a
-	// world position - for jumping to where a gameplay event happened
-	// (GOUnitEvent::producerPosition*, GOBuildingEvent::position*, GOSpecialPowerEvent::location*)
-	// when the user clicks on drawn UI for that event. Uses the
-	// same camera path as the engine's own observer look-at actions. ---
+	// Same point the engine projects its own health bar onto (Object::getHealthBoxPosition:
+	// top-of-model + 10 world units + the object's healthBoxOffset), projected via worldToScreen.
+	// Returns 0 if the object no longer exists or the point is off screen.
+	uint8_t (*getObjectHealthBarScreenPosition)(uint32_t objectId, int32_t* outX, int32_t* outY);
+
+	// Moves the observer's viewport to a world position, by the same camera path the engine's own
+	// observer look-at actions use - for jumping to where a gameplay event happened.
 	void (*teleportViewportTo)(float worldX, float worldY, float worldZ);
 
-	// --- Clock-wedge draw primitives. The engine's own radial "pie" fill, as used by the
-	// command bar for build progress and power recharge; a plugin could previously only
-	// approximate it with a rectangular bar. percent is 0..100. drawRectClock2D fills the elapsed
-	// wedge, drawRemainingRectClock2D fills the remaining one. ---
+	// The engine's own radial "pie" fill, as the command bar uses for build progress and recharge.
+	// percent is 0..100; drawRectClock2D fills the elapsed wedge, the other the remaining one.
 	void (*drawRectClock2D)(int32_t x, int32_t y, int32_t width, int32_t height, int32_t percent, uint32_t colorARGB);
 	void (*drawRemainingRectClock2D)(int32_t x, int32_t y, int32_t width, int32_t height, int32_t percent, uint32_t colorARGB);
+
+	// D3D8 handles for a plugin with its own UI backend, opaque so no engine types cross the
+	// boundary. The device is the engine's own live IDirect3DDevice8, not a copy: a plugin MUST save
+	// and restore every state it touches. The engine assumes its state survives and cannot recover
+	// from a dirty device.
+	void* (*getD3DDevice8)();
+	void* (*getGameWindow)();
+	uint32_t (*enumeratePlayerObjects)(uint32_t playerIndex,
+		void (*callback)(uint32_t objectId, float posX, float posY, float posZ, void* userData),
+		void* userData);
+	uint32_t (*getContainedObjects)(uint32_t containerObjectId,
+		GOContainedObjectInfo* outObjects, uint32_t maxCount);
+
+	// Target tracking: an object's current attack/move target position (current victim's position
+	// when attacking an object, otherwise the AI state machine's goal position). Returns 0 when the
+	// object is idle or has no target. isObjectAirborne reports Object::isAirborneTarget.
+	uint8_t (*getObjectTargetPosition)(uint32_t objectId, float* outTargetX, float* outTargetY, float* outTargetZ);
+	uint8_t (*isObjectAirborne)(uint32_t objectId);
+
+	// 1 for a KINDOF_VEHICLE. Identifies an upgrade queued on an already-built vehicle, which
+	// getObjectBuildingCategory cannot - a vehicle always reports GO_BUILDING_CATEGORY_NONE.
+	uint8_t (*isObjectVehicle)(uint32_t objectId);
+
+	// Like worldToScreen, but clamps an off-viewport point to just inside the screen edge instead of
+	// dropping it; returns 0 only when no projection is possible at all. For anything that should
+	// survive as an edge indicator when its world anchor pans off-screen.
+	uint8_t (*worldToScreenClamped)(float worldX, float worldY, float worldZ, int32_t* outX, int32_t* outY);
+
+	// Which of the five categories in EGOBuildingCategory a producing building belongs to (or
+	// GO_BUILDING_CATEGORY_NONE if it isn't a building, or isn't one of the five). For per-category
+	// UI treatment - e.g. a different queue-panel offset for airfields vs war factories.
+	uint8_t (*getObjectBuildingCategory)(uint32_t objectId);
+
+	// Player card queries. Pure, same playerIndex semantics as getPlayerColor, returning 0 / empty
+	// string / -1 when it does not resolve. Each string-returning function owns one buffer, so only
+	// its own most recent return value is live - copy it out immediately. Not thread-safe; the whole
+	// ABI runs on the engine's single thread.
+
+	// Player display name. Returns empty string if the player slot is not active.
+	const char* (*getPlayerName)(uint32_t playerIndex);
+
+	// Faction template name (e.g. "America", "China", "GLA", or sub-faction variants like
+	// "AmericaAirForce"). Returns empty string on failure.
+	const char* (*getPlayerFactionTemplate)(uint32_t playerIndex);
+
+	// Current credits (money). Returns 0 if unavailable.
+	uint32_t (*getPlayerMoney)(uint32_t playerIndex);
+
+	// General rank (0-based: 0 == the player's first rank) and skill-point progress toward the
+	// next rank. outCurrentXP is the player's cumulative skill points; outNextXP is the total
+	// skill points required for the next rank (0 at max rank - there is no "next"). Returns -1 if
+	// playerIndex doesn't resolve or the player has no rank yet (rank 0/uninitialized).
+	int32_t (*getPlayerRank)(uint32_t playerIndex, uint32_t* outCurrentXP, uint32_t* outNextXP);
+
+	// Power state: outPowerGenerated / outPowerDrain, in the engine's own energy units. Returns 1
+	// if power data is available, 0 otherwise (outputs left untouched).
+	uint8_t (*getPlayerPowerState)(uint32_t playerIndex, uint32_t* outPowerGenerated, uint32_t* outPowerDrain);
+
+	// Count of the player's live construction units - USA/China Dozer, GLA Worker - identified by
+	// the shared DozerAIInterface (AIUpdateInterface::getDozerAIInterface() != nullptr) rather than
+	// a per-faction template/KindOf list, so it stays correct across all three factions uniformly.
+	// Returns 0 if playerIndex doesn't resolve.
+	uint32_t (*getPlayerBuilderCount)(uint32_t playerIndex);
+
+	// Supply units actually ferrying right now, not merely idle or empty-moving - backed by
+	// SupplyTruckAIInterface::isCurrentlyFerryingSupplies().
+	uint32_t (*getPlayerActiveGathererCount)(uint32_t playerIndex);
+
+	// Cumulative gross money earned this match, not net of spending - the score screen's own figure.
+	// Deliberately the raw counter rather than a rate, so a plugin picks its own averaging window.
+	uint32_t (*getPlayerTotalMoneyEarned)(uint32_t playerIndex);
+
+	// Display name for a template ("AmericaInfantryRifle" -> "Ranger"), via the same lookup the
+	// game's own tooltips use. Empty string if it does not resolve.
+	const char* (*getTemplateDisplayName)(const char* templateName);
+
+	// A sample template name from the same qualifying checks as getPlayerBuilderCount /
+	// getPlayerActiveGathererCount, so a plugin can draw the player's actual builder icon rather
+	// than guess a per-faction template. Empty string if no qualifying unit exists.
+	const char* (*getPlayerBuilderTemplateName)(uint32_t playerIndex);
+
+	// Per-type builder breakdown, which the summed count and the single sample name above cannot
+	// give - neither tells a native Dozer from a captured GLA Worker. Writes up to maxCount parallel
+	// entries and returns how many distinct templates were found. outNames is call-lifetime only.
+	uint32_t (*getPlayerBuilderTemplateCounts)(uint32_t playerIndex, const char** outNames, uint32_t* outCounts, uint32_t maxCount);
+
+	// The gatherer counterpart of getPlayerBuilderTemplateName above, sampling one of the player's
+	// currently supply-ferrying units instead. Same return and storage discipline.
+	const char* (*getPlayerGathererTemplateName)(uint32_t playerIndex);
+
+	// Lobby-configured alliance/team number (GameSlot::getTeamNumber - the same value the skirmish/
+	// lobby "Team" dropdown sets, and what the game's own alliance/enemy checks are based on), NOT a
+	// display-position or player-count index. Returns -1 if playerIndex doesn't resolve or the
+	// player has no team assigned (free-for-all / no alliance).
+	int32_t (*getPlayerTeamNumber)(uint32_t playerIndex);
+
+	// Every real participant including defeated and resigned ones: filters on isPlayerObserver() but
+	// not isPlayerActive(), so the roster does not shrink or reindex when someone dies. Use this
+	// rather than getActivePlayers for roster tracking.
+	uint32_t (*getMatchPlayers)(uint32_t* outPlayerIndices, uint32_t maxCount);
+
+	// 1 if the player is no longer playing (dead or resigned - !Player::isPlayerActive()), 0 if
+	// they're still an active match participant or playerIndex doesn't resolve. Covers both causes
+	// of "no longer playing" with one boolean rather than requiring a plugin to distinguish them.
+	uint8_t (*getPlayerIsDefeated)(uint32_t playerIndex);
+
+	// The engine's per-user data directory, trailing backslash included - where options.ini, Replays
+	// and Maps live, and so where a plugin's user-owned files belong. The plugin's own folder is
+	// under Program Files and is not writable. Process lifetime, never null; empty means unresolved.
+	const char* (*getUserDataPath)();
+
+	// One straight line as a single rotated quad (Render2DClass::Add_Line), same coordinate space and
+	// colour packing as drawRect2D. drawRect2D is axis-aligned, so faking a diagonal through it costs
+	// a quad every few pixels; this costs one whatever the length.
+	void (*drawLine2D)(int32_t x1, int32_t y1, int32_t x2, int32_t y2, float thickness, uint32_t colorARGB);
 };
 
 struct GOPluginInfo
@@ -273,6 +401,7 @@ struct GOPluginInfo
 	const char* version;
 	uint32_t hookCategories; // bitmask of EGOPluginHookCategory, informational only
 };
+GO_ABI_ASSERT_LAYOUT(sizeof(GOPluginInfo) == 16);
 
 // ------------------------------------------------------------------------------------------------
 // Fixed export names every plugin DLL must implement, resolved via GetProcAddress so the DLL

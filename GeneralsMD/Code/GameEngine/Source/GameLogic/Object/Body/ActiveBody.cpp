@@ -59,6 +59,9 @@
 #include "GameLogic/Module/ContainModule.h"
 #include "GameLogic/Module/DamageModule.h"
 #include "GameLogic/Module/DieModule.h"
+#if defined(GENERALS_ONLINE)
+#include "GameNetwork/GeneralsOnline/Plugins/PluginManager.h"
+#endif
 
 
 
@@ -619,6 +622,31 @@ void ActiveBody::attemptDamage( DamageInfo *damageInfo )
 
 				d->onDamage( damageInfo );
 			}
+
+#if defined(GENERALS_ONLINE)
+			// Plan 12: floating damage-number popups - see plans\plugin-framework\design-notes.md.
+			// Step 1: only build the payload when a plugin is actually listening.
+			if (GOPluginManager::HasGameplayEventHooks())
+			{
+				// Step 2: identify the object whose health moved and who caused it.
+				GOCombatEvent ev = {};
+				ev.objectId = (uint32_t)obj->getID();
+				ev.sourceObjectId = (damageInfo->in.m_sourceID != INVALID_ID) ? (uint32_t)damageInfo->in.m_sourceID : 0;
+				Player* owner = obj->getControllingPlayer();
+				ev.playerIndex = (owner != nullptr) ? (uint32_t)owner->getPlayerIndex() : 0;
+				// Step 3: report the same clipped amount the engine recorded above, not a recomputation.
+				ev.amount = (int32_t)(damageInfo->out.m_actualDamageClipped + 0.5f);
+				ev.isBuilding = obj->isKindOf(KINDOF_STRUCTURE) ? 1 : 0;
+				ev.isUnit = (obj->isKindOf(KINDOF_INFANTRY) || obj->isKindOf(KINDOF_VEHICLE)) ? 1 : 0;
+				ev.isFlame = (damageInfo->in.m_damageType == DAMAGE_FLAME) ? 1 : 0;
+				const Coord3D* pos = obj->getPosition();
+				ev.positionX = (pos != nullptr) ? pos->x : 0.0f;
+				ev.positionY = (pos != nullptr) ? pos->y : 0.0f;
+				ev.positionZ = (pos != nullptr) ? pos->z : 0.0f;
+				// Step 4: hand it to every registered plugin.
+				GOPluginManager::DispatchObjectDamaged(ev);
+			}
+#endif
 		}
 
 		if (m_curDamageState != oldState)
@@ -858,6 +886,30 @@ void ActiveBody::attemptHealing( DamageInfo *damageInfo )
 
 				d->onHealing( damageInfo );
 			}
+
+#if defined(GENERALS_ONLINE)
+			// Plan 12: floating heal-number popups. See the symmetric block in attemptDamage above.
+			// Step 1: only build the payload when a plugin is actually listening.
+			if (GOPluginManager::HasGameplayEventHooks())
+			{
+				// Step 2: identify the object whose health moved and who caused it.
+				GOCombatEvent ev = {};
+				ev.objectId = (uint32_t)obj->getID();
+				ev.sourceObjectId = (damageInfo->in.m_sourceID != INVALID_ID) ? (uint32_t)damageInfo->in.m_sourceID : 0;
+				Player* owner = obj->getControllingPlayer();
+				ev.playerIndex = (owner != nullptr) ? (uint32_t)owner->getPlayerIndex() : 0;
+				// Step 3: m_actualDamageClipped is negative for healing; the ABI wants a positive amount.
+				ev.amount = (int32_t)(-damageInfo->out.m_actualDamageClipped + 0.5f);
+				ev.isBuilding = obj->isKindOf(KINDOF_STRUCTURE) ? 1 : 0;
+				ev.isUnit = (obj->isKindOf(KINDOF_INFANTRY) || obj->isKindOf(KINDOF_VEHICLE)) ? 1 : 0;
+				const Coord3D* pos = obj->getPosition();
+				ev.positionX = (pos != nullptr) ? pos->x : 0.0f;
+				ev.positionY = (pos != nullptr) ? pos->y : 0.0f;
+				ev.positionZ = (pos != nullptr) ? pos->z : 0.0f;
+				// Step 4: hand it to every registered plugin.
+				GOPluginManager::DispatchObjectHealed(ev);
+			}
+#endif
 		}
 
 		if (m_curDamageState != oldState)

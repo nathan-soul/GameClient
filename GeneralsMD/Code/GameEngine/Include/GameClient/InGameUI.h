@@ -489,7 +489,9 @@ public:  // ********************************************************************
 	// drawRect2D (see PluginABI.h), called from within GOPluginManager::DispatchDrawOverlay(),
 	// i.e. only ever during postWindowDraw() where screen-space 2D drawing is already set up.
 	void drawPluginText2D(Int x, Int y, const char* utf8Text, Color color);
+	void drawPluginText2DScaled(Int x, Int y, const char* utf8Text, Color color, Real sizeScale, Bool bold);
 	void drawPluginRect2D(Int x, Int y, Int width, Int height, Color color, Bool filled);
+	void drawPluginLine2D(Int x1, Int y1, Int x2, Int y2, Real thickness, Color color);
 
 	/// Ingame video playback
 	virtual void playMovie(const AsciiString& movieName);

@@ -48,9 +48,6 @@
 #include "Common/Radar.h"
 #include "Common/Recorder.h"
 #include "Common/SpecialPower.h"
-#if defined(GENERALS_ONLINE)
-#include "GameNetwork/GeneralsOnline/Plugins/PluginManager.h"
-#endif
 #include "Common/StatsCollector.h"
 #include "Common/ThingTemplate.h"
 #include "Common/GameLOD.h"
@@ -93,6 +90,9 @@
 #include "GameNetwork/GameInfo.h"
 #include "GameNetwork/GameSpyOverlay.h"
 #include "GameNetwork/GameSpy/BuddyThread.h"
+#if defined(GENERALS_ONLINE)
+#include "GameNetwork/GeneralsOnline/Plugins/PluginManager.h"
+#endif
 
 #include "WW3D2/ww3d.h"
 #include "../OnlineServices_Init.h"

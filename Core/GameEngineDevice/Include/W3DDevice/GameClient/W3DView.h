@@ -224,6 +224,7 @@ public:
 	virtual void setFieldOfView( Real angle ) override;							///< Set the horizontal field of view angle
 
   virtual WorldToScreenReturn worldToScreenTriReturn( const Coord3D *w, ICoord2D *s ) override;	///< Transform world coordinate "w" into screen coordinate "s"
+  virtual WorldToScreenReturn worldToScreenTriReturnAllowFarClip( const Coord3D *w, ICoord2D *s ) override;	///< As above, but a point beyond the far clip plane still projects
 	virtual Bool screenToTerrain( const ICoord2D *screen, Coord3D *world ) override;
 	virtual PlaneClass::IntersectionResType screenToWorldAtZ( const ICoord2D *screen, Coord3D *world, Real z ) override;
 
@@ -255,6 +256,8 @@ public:
 	virtual void setGuardBandBias( const Coord2D *gb ) override { m_guardBandBias.x = gb->x; m_guardBandBias.y = gb->y; }
 
 private:
+
+	WorldToScreenReturn projectToScreen( const Coord3D *w, ICoord2D *s, Bool allowFarClip );	///< Shared body of the two worldToScreen* entry points
 
 	CameraClass *m_3DCamera;												///< camera representation for 3D scene
 	CameraClass *m_2DCamera;												///< camera for UI overlayed on top of 3D scene

@@ -2350,6 +2350,24 @@ void W3DView::setFieldOfView( Real angle )
 //-------------------------------------------------------------------------------------------------
 View::WorldToScreenReturn W3DView::worldToScreenTriReturn( const Coord3D *w, ICoord2D *s )
 {
+	return projectToScreen( w, s, FALSE );
+}
+
+//-------------------------------------------------------------------------------------------------
+/** As worldToScreenTriReturn, but a point that is merely beyond the far clip plane still yields a
+	usable screen position instead of WTS_INVALID.
+	See plans\plugin-framework\design-notes.md for why this is a separate entry point. */
+//-------------------------------------------------------------------------------------------------
+View::WorldToScreenReturn W3DView::worldToScreenTriReturnAllowFarClip( const Coord3D *w, ICoord2D *s )
+{
+	return projectToScreen( w, s, TRUE );
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Shared body of the two world-to-screen entry points above. */
+//-------------------------------------------------------------------------------------------------
+View::WorldToScreenReturn W3DView::projectToScreen( const Coord3D *w, ICoord2D *s, Bool allowFarClip )
+{
 	// sanity
 	if( w == nullptr || s == nullptr )
     return WTS_INVALID;
@@ -2361,7 +2379,12 @@ View::WorldToScreenReturn W3DView::worldToScreenTriReturn( const Coord3D *w, ICo
 
 		world.Set( w->x, w->y, w->z );
 		enum CameraClass::ProjectionResType projection = m_3DCamera->Project( screen, world );
-		if (projection != CameraClass::INSIDE_FRUSTUM && projection!=CameraClass::OUTSIDE_FRUSTUM)
+		// Step 1: anything outside the clip planes has no usable position by default.
+		Bool clipped = (projection != CameraClass::INSIDE_FRUSTUM && projection != CameraClass::OUTSIDE_FRUSTUM);
+		// Step 2: far-clip-tolerant callers keep a merely-too-distant point, which does have one.
+		if (clipped && allowFarClip && projection == CameraClass::OUTSIDE_FAR_CLIP)
+			clipped = FALSE;
+		if (clipped)
 		{
 			// Can't get a valid number if it's beyond the clip planes.  jba
 			s->x = 0;

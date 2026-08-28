@@ -1,14 +1,8 @@
 #pragma once
 
-// ------------------------------------------------------------------------------------------------
-// GOPluginManager - host-side loader/dispatcher for the generic plugin
-// ABI (see PluginABI.h).
-//
-// Loads any number of plugin DLLs, each opting into one or more hook categories. Engine call
-// sites (ProductionUpdate/SpecialPowerModule, InGameUI, CommandXlat/WindowXlat, GameEngine) call
-// the Dispatch* functions below; this class fans each call out to every plugin that registered
-// for that category, so call sites stay plugin-agnostic.
-// ------------------------------------------------------------------------------------------------
+// Host-side loader and dispatcher for the plugin ABI (see PluginABI.h). Engine call sites call the
+// Dispatch* functions below and this fans each one out to every plugin registered for that
+// category, so the call sites stay plugin-agnostic.
 
 #include "GameNetwork/GeneralsOnline/Plugins/PluginABI.h"
 #include <vector>
@@ -29,12 +23,9 @@ public:
 	// GameEngine::update(), unconditionally (not gated behind GameLogic pause state).
 	static void Tick();
 
-	// TRUE when the local client is spectating rather than playing: the local player is an
-	// observer or dead, which is also true during replay playback
-	// (which runs with GAME_REPLAY, whose local player is the observer player). Every Dispatch*
-	// function and Tick() are gated on this, so a plugin never receives gameplay data or
-	// draw/input callbacks during a live match - that data is an information-advantage vector
-	// for a match participant.
+	// TRUE when the local client is spectating rather than playing - observer, dead, or replay
+	// playback. Every Dispatch* and Tick() is gated on it, so a plugin never receives gameplay data
+	// during a live match: that would be an information advantage for a participant.
 	static bool IsLocalPlayerObserver();
 
 	// ---- IGameplayEventHooks dispatch (called from ProductionUpdate/SpecialPowerModule/etc) ----
@@ -47,6 +38,8 @@ public:
 	static void DispatchUpgradeCompleted(const GOUpgradeEvent& ev);
 	static void DispatchBuildingDestroyed(const GOBuildingEvent& ev);
 	static void DispatchSpecialPowerTriggered(const GOSpecialPowerEvent& ev);
+	static void DispatchObjectDamaged(const GOCombatEvent& ev);
+	static void DispatchObjectHealed(const GOCombatEvent& ev);
 
 	// ---- IRenderHooks dispatch (called from InGameUI / CommandXlat / WindowXlat) ----
 	static bool HasRenderHooks() { return !s_renderHooks.empty(); }
@@ -63,6 +56,14 @@ public:
 	static void RegisterRenderHooks(const GORenderCallbacks* cb);
 	static void Log(const char* msg);
 
+	// Native-handle seam: this class is device-independent, so GameEngineDevice supplies the D3D
+	// device and window handle at display init - see plans\plugin-framework\design-notes.md.
+	// Both stay null in a headless or non-W3D build, as do the matching host API entries.
+	typedef void* (*NativeHandleProvider)();
+	static void SetNativeHandleProviders(NativeHandleProvider d3dDevice8, NativeHandleProvider gameWindow);
+	static void* GetD3DDevice8();
+	static void* GetGameWindow();
+
 private:
 	struct LoadedPlugin
 	{
@@ -78,6 +79,9 @@ private:
 	static std::vector<LoadedPlugin> s_plugins;
 	static std::vector<GOGameplayEventCallbacks> s_gameplayEventHooks;
 	static std::vector<GORenderCallbacks> s_renderHooks;
+
+	static NativeHandleProvider s_d3dDevice8Provider;
+	static NativeHandleProvider s_gameWindowProvider;
 
 	static GOPluginHostAPI BuildHostAPI();
 

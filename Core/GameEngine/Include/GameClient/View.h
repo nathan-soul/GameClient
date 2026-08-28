@@ -247,6 +247,9 @@ public:
 
   Bool worldToScreen( const Coord3D *w, ICoord2D *s ) { return worldToScreenTriReturn( w, s ) == WTS_INSIDE_FRUSTUM; }	///< Transform world coordinate "w" into screen coordinate "s"
   virtual WorldToScreenReturn worldToScreenTriReturn(const Coord3D *w, ICoord2D *s ) = 0; ///< Like worldToScreen(), but with a more informative return value
+  /// Like worldToScreenTriReturn(), but a point beyond the far clip plane still projects instead of returning WTS_INVALID.
+  /// Only callers doing off-screen edge indicators want this; see plans\plugin-framework\design-notes.md.
+  virtual WorldToScreenReturn worldToScreenTriReturnAllowFarClip(const Coord3D *w, ICoord2D *s ) { return worldToScreenTriReturn( w, s ); }
 
 	/// Transform screen point to the viewed world position on the 3D terrain. Returns true when intersection exists.
 	virtual Bool screenToTerrain( const ICoord2D *screen, Coord3D *world ) = 0;

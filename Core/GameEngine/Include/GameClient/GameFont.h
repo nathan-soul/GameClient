@@ -34,6 +34,11 @@
 #include "Common/AsciiString.h"
 #include "Common/GameMemory.h"
 
+// Point sizes FontLibrary::getFont accepts; it returns nullptr for anything outside this range.
+// Named so callers that clamp a computed size do not have to repeat the literals.
+#define FONT_MIN_POINT_SIZE 1
+#define FONT_MAX_POINT_SIZE 100
+
 //-------------------------------------------------------------------------------------------------
 /** A font for use in the device independent game */
 //-------------------------------------------------------------------------------------------------

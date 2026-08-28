@@ -111,8 +111,26 @@ static void drawFramerateBar();
 
 #include "WinMain.h"
 
+// Not wrapped in #if defined(GENERALS_ONLINE) - unlike z_gameengine, the GameEngineDevice target
+// does not define that macro, and this file is only ever built for the Zero Hour client anyway.
+#include "WW3D2/dx8wrapper.h"
+#include "GameNetwork/GeneralsOnline/Plugins/PluginManager.h"
+
 
 // DEFINE AND ENUMS ///////////////////////////////////////////////////////////
+
+// The plugin framework lives in GameEngine, which must not include WW3D2 or the Main target's
+// WinMain.h - these two are registered with it at display init instead. See
+// plans\plugin-framework\design-notes.md.
+static void* GetD3DDevice8ForPlugins()
+{
+	return (void*)DX8Wrapper::_Get_D3D_Device8();
+}
+
+static void* GetGameWindowForPlugins()
+{
+	return (void*)ApplicationHWnd;
+}
 
 #define no_SAMPLE_DYNAMIC_LIGHT	1
 #ifdef SAMPLE_DYNAMIC_LIGHT
@@ -967,6 +985,9 @@ void W3DDisplay::init()
 
 		DX8WebBrowser::Initialize();
 	}
+
+	// Hand the plugin framework its device-layer handles, before any plugin is loaded.
+	GOPluginManager::SetNativeHandleProviders(GetD3DDevice8ForPlugins, GetGameWindowForPlugins);
 
 	// we're now online
 	m_initialized = true;
