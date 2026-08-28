@@ -602,6 +602,33 @@ void Render2DClass::Render()
 		return;
 	}
 
+	// Both dynamic buffer ctors take an unsigned short count while the fill loops and Draw_Triangles
+	// use the full 32-bit Count(), so a batch over 65535 wrote past the allocation and corrupted the
+	// heap. Render what fits and drop the rest.
+	const int MAX_DYNAMIC_BUFFER_ELEMENTS = 65535;
+	int vertex_count = Vertices.Count();
+	int index_count = Indices.Count();
+	if (vertex_count > MAX_DYNAMIC_BUFFER_ELEMENTS || index_count > MAX_DYNAMIC_BUFFER_ELEMENTS) {
+		if (vertex_count > MAX_DYNAMIC_BUFFER_ELEMENTS) {
+			vertex_count = MAX_DYNAMIC_BUFFER_ELEMENTS;
+		}
+		if (index_count > MAX_DYNAMIC_BUFFER_ELEMENTS) {
+			index_count = MAX_DYNAMIC_BUFFER_ELEMENTS;
+		}
+		// Whole triangles only, and none referencing a vertex that was dropped.
+		int safe_index_count = 0;
+		for (int i = 0; i + 2 < index_count; i += 3) {
+			if (Indices[i] >= vertex_count || Indices[i+1] >= vertex_count || Indices[i+2] >= vertex_count) {
+				break;
+			}
+			safe_index_count = i + 3;
+		}
+		index_count = safe_index_count;
+		if (index_count == 0) {
+			return;
+		}
+	}
+
 	// save the view and projection matrices since we're nuking them
 	Matrix4x4 view,proj;
 	Matrix4x4 identity(true);
@@ -633,14 +660,14 @@ void Render2DClass::Render()
 	DX8Wrapper::Set_View_Identity();
 	DX8Wrapper::Set_Transform(D3DTS_PROJECTION,identity);
 
-	DynamicVBAccessClass vb(BUFFER_TYPE_DYNAMIC_DX8,dynamic_fvf_type,Vertices.Count());
+	DynamicVBAccessClass vb(BUFFER_TYPE_DYNAMIC_DX8,dynamic_fvf_type,vertex_count);
 	{
 		DynamicVBAccessClass::WriteLockClass Lock(&vb);
 		const FVFInfoClass &fi=vb.FVF_Info();
 		unsigned char *va=(unsigned char*)Lock.Get_Formatted_Vertex_Array();
 		int i;
 
-		for (i=0; i<Vertices.Count(); i++)
+		for (i=0; i<vertex_count; i++)
 		{
 			Vector3 temp(Vertices[i].X,Vertices[i].Y,ZValue);
 			*(Vector3*)(va+fi.Get_Location_Offset())=temp;
@@ -650,11 +677,11 @@ void Render2DClass::Render()
 		}
 	}
 
-	DynamicIBAccessClass ib(BUFFER_TYPE_DYNAMIC_DX8,Indices.Count());
+	DynamicIBAccessClass ib(BUFFER_TYPE_DYNAMIC_DX8,index_count);
 	{
 		DynamicIBAccessClass::WriteLockClass Lock(&ib);
 		unsigned short *mem=Lock.Get_Index_Array();
-		for (int i=0; i<Indices.Count(); i++)
+		for (int i=0; i<index_count; i++)
 			mem[i]=Indices[i];
 	}
 
@@ -690,7 +717,7 @@ void Render2DClass::Render()
 	}
 	else
 		DX8Wrapper::Set_Shader(Shader);
-	DX8Wrapper::Draw_Triangles(0,Indices.Count()/3,0,Vertices.Count());
+	DX8Wrapper::Draw_Triangles(0,index_count/3,0,vertex_count);
 
 	DX8Wrapper::Set_Transform(D3DTS_VIEW,view);
 	DX8Wrapper::Set_Transform(D3DTS_PROJECTION,proj);
