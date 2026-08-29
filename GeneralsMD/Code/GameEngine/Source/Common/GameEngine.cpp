@@ -129,7 +129,7 @@ void TearDownGeneralsOnline()
 
 	EGOTearDownReason teardownReason = NGMP_OnlineServicesManager::GetInstance()->GetTeardownReason();
 
-	if (teardownReason != EGOTearDownReason::USER_REQUESTED_SILENT)
+	if (teardownReason != EGOTearDownReason::USER_REQUESTED_SILENT && !IsModerationTeardownReason(teardownReason))
 	{
 		UnicodeString title, body;
 
@@ -143,6 +143,11 @@ void TearDownGeneralsOnline()
 			title = TheGameText->fetch("GUI:GSErrorTitle");
 			body = L"Your connection to the Generals Online servers was lost.";
 		}
+        else if (teardownReason == EGOTearDownReason::AUTH_FAILED)
+        {
+            title = TheGameText->fetch("GUI:GSErrorTitle");
+            body = L"Authentication with the Generals Online servers failed.";
+        }
 		else
 		{
 			title = TheGameText->fetch("GUI:GSErrorTitle");

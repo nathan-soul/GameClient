@@ -11,11 +11,9 @@
 //#define USE_MAULLER_ONEDRIVE_FIX 1
 //#define USE_STUBBJAX_TRANSPORT_CONTAIN_FIX 1
 
-#define GENERALS_ONLINE_VERSION_STRING "062026" // NOTE: Format is critical here for Sentry to work
+#define GENERALS_ONLINE_VERSION_STRING "082826_QFE1" // NOTE: Format is critical here for Sentry to work
 
 #define GENERALS_ONLINE_DISABLE_TEXTURE_FILTERING_AND_AA 1
-
-#define GENERALS_ONLINE_TEMP_FIX_DRAW_ENTIRE_TERRAIN 1
 
 #define GENERALS_ONLINE_LOBBY_MAX_PASSWORD_LENGTH 16
 
@@ -101,11 +99,6 @@ static int FRAME_GROUPING_CAP = 64;
 
 #if !_DEBUG
 #define GENERALS_ONLINE_USE_SENTRY 1
-#endif
-
-// NOTE: This is temporary until we work out why this causes mismatch when some players set it and others dont
-#if !_DEBUG
-#define GENERALS_ONLINE_DISABLE_QUICKSTART_FUNCTIONALITY 1
 #endif
 
 #define GENERALS_ONLINE_WIDESCREEN 1

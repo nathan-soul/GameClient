@@ -2,6 +2,7 @@
 
 #include "GameNetwork/GeneralsOnline/HTTP/HTTPManager.h"
 #include "GameNetwork/GeneralsOnline/HTTP/HTTPRequest.h"
+#include "GameNetwork/GeneralsOnline/OnlineServices_Moderation.h"
 #include "GameNetwork/GeneralsOnline/json.hpp"
 #include <shellapi.h>
 #include <algorithm>
@@ -31,17 +32,44 @@ enum class EAuthResponseResult : int
 	FAILED = 2
 };
 
+struct GetLoginCodeResponse
+{
+	bool success = false;
+    std::string login_code = "";
+    
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(GetLoginCodeResponse, success, login_code)
+};
+
 struct AuthResponse
 {
-	EAuthResponseResult result;
-	std::string session_token;
-	std::string refresh_token;
+	EAuthResponseResult result = EAuthResponseResult::FAILED;
+	std::string session_token = "";
+	std::string refresh_token = "";
 	int64_t user_id = -1;
 	std::string display_name = "";
 	std::string ws_uri = "";
 
-	NLOHMANN_DEFINE_TYPE_INTRUSIVE(AuthResponse, result, session_token, refresh_token, user_id, display_name, ws_uri)
+	// NOTE: _WITH_DEFAULT so endpoints that only return a subset of these fields (e.g. refresh, which doesn't resend profile data) don't throw during parsing
+	NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(AuthResponse, result, session_token, refresh_token, user_id, display_name, ws_uri)
 };
+
+namespace
+{
+	std::string GetBanReason(const std::string& responseBody)
+	{
+		nlohmann::json jsonObject = nlohmann::json::parse(responseBody, nullptr, false, true);
+		if (jsonObject.is_object())
+		{
+			const auto banReason = jsonObject.find("ban_reason");
+			if (banReason != jsonObject.end() && banReason->is_string())
+			{
+				return banReason->get_ref<const std::string&>();
+			}
+		}
+
+		return std::string();
+	}
+}
 
 struct MOTDResponse
 {
@@ -49,27 +77,6 @@ struct MOTDResponse
 
 	NLOHMANN_DEFINE_TYPE_INTRUSIVE(MOTDResponse, MOTD)
 };
-
-std::string GenerateGamecode()
-{
-#if defined(_DEBUG) && !defined(USE_TEST_ENV) && !defined(USE_DEBUG_ON_LIVE_SERVER)
-	return "ILOVECODE";
-#else
-	std::string result;
-	const char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-	const size_t max_index = sizeof(charset) - 1;
-
-	auto seed = std::chrono::system_clock::now().time_since_epoch().count();
-	std::mt19937 generator(seed);
-	std::uniform_int_distribution<> distribution(0, max_index - 1);
-
-	for (int i = 0; i < 32; ++i) {
-		result += charset[distribution(generator)];
-	}
-
-	return result;
-#endif
-}
 
 void NGMP_OnlineServices_AuthInterface::GoToDetermineNetworkCaps()
 {
@@ -169,27 +176,156 @@ void NGMP_OnlineServices_AuthInterface::SendMiddlewareToken(std::string strMWTok
         }, nullptr);
 }
 
+void NGMP_OnlineServices_AuthInterface::OnRefreshTokenFailed(const char* szReason, const std::string& strBody)
+{
+	// log the raw response so refresh failures are actually diagnosable
+	std::string strBodySnippet = strBody.substr(0, 512);
+	NetworkLog(ELogVerbosity::LOG_RELEASE, "[AUTH]: Refresh response body: %s", strBodySnippet.c_str());
+
+	if (m_currentRefreshAttempt < m_maxRefreshAttempts)
+	{
+		// the token itself is still valid for a few more minutes, so try again shortly instead of waiting for the next scheduled refresh
+		m_nextRefreshRetryTime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::utc_clock::now().time_since_epoch()).count() + (m_secondsUntilRefreshRetry * 1000);
+
+		NetworkLog(ELogVerbosity::LOG_RELEASE, "[AUTH]: Token refresh attempt %d of %d failed (%s), retrying in %ds", m_currentRefreshAttempt, m_maxRefreshAttempts, szReason, m_secondsUntilRefreshRetry);
+		return;
+	}
+
+	// TODO_JWT: More graceful handling
+	NetworkLog(ELogVerbosity::LOG_RELEASE, "[AUTH]: Token refresh failed after %d attempts (%s), tearing down", m_currentRefreshAttempt, szReason);
+
+	// we couldnt renew our token, so things are about to go really bad
+	m_nextRefreshRetryTime = -1;
+	m_currentRefreshAttempt = 0;
+	NGMP_OnlineServicesManager::GetInstance()->SetPendingFullTeardown(EGOTearDownReason::AUTH_FAILED);
+}
+
+void NGMP_OnlineServices_AuthInterface::RefreshToken()
+{
+	++m_currentRefreshAttempt;
+
+	// clear any pending retry, this attempt supersedes it
+	m_nextRefreshRetryTime = -1;
+
+	NetworkLog(ELogVerbosity::LOG_RELEASE, "[AUTH]: Starting token refresh (attempt %d of %d)", m_currentRefreshAttempt, m_maxRefreshAttempts);
+
+	// so we dont keep retrying while the request is pending
+	m_tokenCreationTime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::utc_clock::now().time_since_epoch()).count();
+
+    std::string strRefreshURI = NGMP_OnlineServicesManager::GetAPIEndpoint("RefreshToken");
+
+    if (!m_strRefreshToken.empty())
+    {
+        std::map<std::string, std::string> mapHeaders;
+
+        // attach refresh token. NOTE: service auth is disabled for this request, otherwise the session token would overwrite this header
+        mapHeaders["Authorization"] = "Bearer " + m_strRefreshToken;
+
+        NGMP_OnlineServicesManager::GetInstance()->GetHTTPManager()->SendPOSTRequest(strRefreshURI.c_str(), EIPProtocolVersion::DONT_CARE, mapHeaders, "", [=](bool bSuccess, int statusCode, std::string strBody, HTTPRequest* pReq)
+            {
+                if (statusCode >= 400 && statusCode < 500)
+                {
+					if (statusCode == 423)
+					{
+						NetworkLog(ELogVerbosity::LOG_RELEASE, "[AUTH]: Account ban detected during token refresh, tearing down");
+						m_tokenCreationTime = -1;
+						m_nextRefreshRetryTime = -1;
+						m_currentRefreshAttempt = 0;
+						HandleModerationDisconnect(EOnlineModerationAction::BAN, GetBanReason(strBody));
+						return;
+					}
+
+					OnRefreshTokenFailed(std::format("HTTP {}", statusCode).c_str(), strBody);
+                }
+                else
+                {
+                    try
+                    {
+                        nlohmann::json jsonObject = nlohmann::json::parse(strBody, nullptr, false, true);
+                        AuthResponse authResp = jsonObject.get<AuthResponse>();
+
+                        if (authResp.result == EAuthResponseResult::SUCCEEDED && !authResp.session_token.empty())
+                        {
+                            NetworkLog(ELogVerbosity::LOG_RELEASE, "[AUTH]: Token refreshed successfully!");
+
+                            m_currentRefreshAttempt = 0;
+                            m_nextRefreshRetryTime = -1;
+
+                            // the refresh endpoint may not rotate the refresh token, only save it if we actually got a new one, otherwise we'd wipe the stored credentials
+                            if (!authResp.refresh_token.empty())
+                            {
+                                SaveCredentials(authResp.refresh_token.c_str());
+                            }
+                            else
+                            {
+                                m_tokenCreationTime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::utc_clock::now().time_since_epoch()).count();
+                            }
+
+                            // store data locally
+                            m_strToken = authResp.session_token;
+
+                            // refresh responses don't necessarily resend profile data, don't clobber what we already have
+                            if (authResp.user_id != -1)
+                            {
+                                m_userID = authResp.user_id;
+                            }
+
+                            if (!authResp.display_name.empty())
+                            {
+                                m_strDisplayName = authResp.display_name;
+                            }
+                        }
+                        else if (authResp.result == EAuthResponseResult::SUCCEEDED)
+                        {
+                            OnRefreshTokenFailed("succeeded but no session_token", strBody);
+                        }
+                        else
+                        {
+                            OnRefreshTokenFailed(std::format("auth result {}", (int)authResp.result).c_str(), strBody);
+                        }
+                    }
+                    catch (const std::exception& e)
+                    {
+                        OnRefreshTokenFailed(std::format("malformed response ({})", e.what()).c_str(), strBody);
+                    }
+                    catch (...)
+                    {
+                        OnRefreshTokenFailed("malformed response", strBody);
+                    }
+                }
+
+            }, nullptr, -1, true /* bDisableServiceAuth, we're authenticating with the refresh token here, not the session token */);
+    }
+    else
+    {
+		// nothing to refresh with, we're going through the full login flow instead
+		DoFullLoginFlow();
+    }
+}
+
 void NGMP_OnlineServices_AuthInterface::BeginLogin()
 {
+	m_tokenCreationTime = -1;
+
 	std::string strLoginURI = NGMP_OnlineServicesManager::GetAPIEndpoint("LoginWithToken");
 
 	std::string strRefreshToken;
-	bool bValidCreds = GetCredentials(strRefreshToken);
-	if (bValidCreds)
+	bool bValidCreds = GetCredentials();
+	if (bValidCreds && !m_strRefreshToken.empty())
 	{
 		// login
 		std::map<std::string, std::string> mapHeaders;
 
 		nlohmann::json j;
-		j["reserved_0"] = std::string();
-		j["reserved_1"] = std::string();
-		j["reserved_2"] = std::string();
-		j["exe_crc"] = TheGlobalData->m_exeCRC;
+		j["machine_guid"] = GetMachineGuid();
+		j["mac_addr"] = GetPrimaryMacAddress();
+		j["vol_serial"] = GetVolumeSerial();
+		j["exe_crc"] = getGameExeCRC();
 		j["ini_crc"] = TheGlobalData->m_iniCRC;
 		std::string strPostData = j.dump();
 
-		// attach refresh token
-		mapHeaders["Authorization"] = "Bearer " + strRefreshToken;
+		// attach refresh token. NOTE: service auth is disabled for this request, otherwise a stale session token would overwrite this header
+		mapHeaders["Authorization"] = "Bearer " + m_strRefreshToken;
 
 
 		NGMP_OnlineServicesManager::GetInstance()->GetHTTPManager()->SendPOSTRequest(strLoginURI.c_str(), EIPProtocolVersion::DONT_CARE, mapHeaders, strPostData.c_str(), [=](bool bSuccess, int statusCode, std::string strBody, HTTPRequest* pReq)
@@ -199,17 +335,13 @@ void NGMP_OnlineServices_AuthInterface::BeginLogin()
 				{
 					if (statusCode == 423)
 					{
-						ClearGSMessageBoxes();
-						GSMessageBoxOk(UnicodeString(L"Account Banned"), UnicodeString(L"You are banned. You can file an appeal in Discord."), []()
-							{
-								TheShell->pop();
-							});
+						ShowLoginBanDialog(GetBanReason(strBody));
 						return;
 					}
 					else
 					{
 						NetworkLog(ELogVerbosity::LOG_RELEASE, "LOGIN: Login failed due to 4XX code, trying to re-auth");
-						DoReAuth();
+						DoFullLoginFlow();
 					}
 				}
 				else
@@ -240,91 +372,135 @@ void NGMP_OnlineServices_AuthInterface::BeginLogin()
 						else if (authResp.result == EAuthResponseResult::FAILED)
 						{
 							NetworkLog(ELogVerbosity::LOG_RELEASE, "LOGIN: Login failed, trying to re-auth");
-							DoReAuth();
+							DoFullLoginFlow();
 						}
 					}
 					catch (...)
 					{
 						NetworkLog(ELogVerbosity::LOG_RELEASE, "LOGIN: Resp parse failed, trying to re-auth");
-						DoReAuth();
+						DoFullLoginFlow();
 					}
 				}
 
-			}, nullptr);
+			}, nullptr, -1, true /* bDisableServiceAuth, we're authenticating with the refresh token here, not the session token */);
 	}
 	else
 	{
-		m_bWaitingLogin = true;
-		m_lastCheckCode = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::utc_clock::now().time_since_epoch()).count();
-
-		m_strCode = GenerateGamecode();
-
-#if defined(USE_TEST_ENV)
-		std::string strURI = std::format("http://www.playgenerals.online/login/?gamecode={}&env=test", m_strCode.c_str());
-#else
-		std::string strURI = std::format("http://www.playgenerals.online/login/?gamecode={}", m_strCode.c_str());
-#endif
-
-		ClearGSMessageBoxes();
-		GSMessageBoxCancel(UnicodeString(L"Logging In"), UnicodeString(L"Please continue in your web browser"), []()
-			{
-                if (NGMP_OnlineServicesManager::GetInstance() != nullptr)
-                {
-                    NGMP_OnlineServicesManager::GetInstance()->SetPendingFullTeardown(EGOTearDownReason::USER_REQUESTED_SILENT);
-                }
-
-				NGMP_OnlineServices_AuthInterface* pAuthInterface = NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_AuthInterface>();
-				if (pAuthInterface != nullptr)
-				{
-					pAuthInterface->OnLoginComplete(ELoginResult::UserCancelled, "");
-				}
-			});
-
-#if !defined(_DEBUG) || defined(USE_TEST_ENV) || defined(USE_DEBUG_ON_LIVE_SERVER)
-		ShellExecuteA(NULL, "open", strURI.c_str(), NULL, NULL, SW_SHOWNORMAL);
-#endif
-			
-
-			
+		DoFullLoginFlow();
 	}
 }
 
-void NGMP_OnlineServices_AuthInterface::DoReAuth()
+void NGMP_OnlineServices_AuthInterface::DoFullLoginFlow()
 {
-	NetworkLog(ELogVerbosity::LOG_RELEASE, "LOGIN: DoReAuth");
-	ClearGSMessageBoxes();
-    GSMessageBoxCancel(UnicodeString(L"Logging In"), UnicodeString(L"Please continue in your web browser"), []()
-        {
-            if (NGMP_OnlineServicesManager::GetInstance() != nullptr)
-            {
-                NGMP_OnlineServicesManager::GetInstance()->SetPendingFullTeardown(EGOTearDownReason::USER_REQUESTED_SILENT);
-            }
+	NetworkLog(ELogVerbosity::LOG_RELEASE, "LOGIN: DoFullLoginFlow");
 
-            NGMP_OnlineServices_AuthInterface* pAuthInterface = NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_AuthInterface>();
-            if (pAuthInterface != nullptr)
-            {
-				pAuthInterface->OnLoginComplete(ELoginResult::UserCancelled , "");
-            }
-        });
+    // get a game login code from server
+    std::string strGetLoginCodeURI = NGMP_OnlineServicesManager::GetAPIEndpoint("LoginCode");
+    std::map<std::string, std::string> mapHeaders;
+	NGMP_OnlineServicesManager::GetInstance()->GetHTTPManager()->SendGETRequest(strGetLoginCodeURI.c_str(), EIPProtocolVersion::DONT_CARE, mapHeaders, [=](bool bSuccess, int statusCode, std::string strBody, HTTPRequest* pReq)
+		{
+			std::function<void(void)> fnGetLoginCodeFailed = [this]()
+				{
+					// stop checking
+					m_bWaitingLogin = false;
+					m_strCode = std::string();
+					m_lastCheckCode = -1;
 
-	// do normal login flow, token is bad or expired etc
-	m_bWaitingLogin = true;
-	m_lastCheckCode = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::utc_clock::now().time_since_epoch()).count();
-	m_strCode = GenerateGamecode();
+
+					ClearGSMessageBoxes();
+					GSMessageBoxOk(UnicodeString(L"Login Failed"), UnicodeString(L"Failed to retrieve login code"), []()
+						{
+							TheShell->pop();
+						});
+				};
+
+			if (!bSuccess || (statusCode >= 400 && statusCode < 500))
+			{
+				fnGetLoginCodeFailed();
+			}
+			else
+			{
+				try
+				{
+					nlohmann::json jsonObject = nlohmann::json::parse(strBody, nullptr, false, true);
+					GetLoginCodeResponse authResp = jsonObject.get<GetLoginCodeResponse>();
+
+					if (authResp.success)
+					{
+						m_currentRefreshAttempt = 0;
+
+						m_bWaitingLogin = true;
+						m_lastCheckCode = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::utc_clock::now().time_since_epoch()).count();
+
+						m_strCode = authResp.login_code;
+						NetworkLog(ELogVerbosity::LOG_DEBUG, "Login Code is %s", m_strCode.c_str());
 
 #if defined(USE_TEST_ENV)
-	std::string strURI = std::format("http://www.playgenerals.online/login/?gamecode={}&env=test", m_strCode.c_str());
+                        std::string strURI = std::format("http://www.playgenerals.online/login/?gamecode={}&env=test", m_strCode.c_str());
 #else
-	std::string strURI = std::format("http://www.playgenerals.online/login/?gamecode={}", m_strCode.c_str());
+                        std::string strURI = std::format("http://www.playgenerals.online/login/?gamecode={}", m_strCode.c_str());
 #endif
 
+                        ClearGSMessageBoxes();
+                        GSMessageBoxCancel(UnicodeString(L"Logging In"), UnicodeString(L"Please continue in your web browser"), []()
+                            {
+                                if (NGMP_OnlineServicesManager::GetInstance() != nullptr)
+                                {
+                                    NGMP_OnlineServicesManager::GetInstance()->SetPendingFullTeardown(EGOTearDownReason::USER_REQUESTED_SILENT);
+                                }
+
+                                NGMP_OnlineServices_AuthInterface* pAuthInterface = NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_AuthInterface>();
+                                if (pAuthInterface != nullptr)
+                                {
+                                    pAuthInterface->OnLoginComplete(ELoginResult::UserCancelled, "");
+                                }
+                            });
+
 #if !defined(_DEBUG) || defined(USE_TEST_ENV) || defined(USE_DEBUG_ON_LIVE_SERVER)
-	ShellExecuteA(NULL, "open", strURI.c_str(), NULL, NULL, SW_SHOWNORMAL);
+                        ShellExecuteA(NULL, "open", strURI.c_str(), NULL, NULL, SW_SHOWNORMAL);
 #endif
+                    }
+                    else
+                    {
+						fnGetLoginCodeFailed();
+                    }
+                }
+                catch (const std::exception& /*e*/)
+                {
+					fnGetLoginCodeFailed();
+                }
+                catch (...)
+                {
+					fnGetLoginCodeFailed();
+                }
+            }
+        });
 }
 
 void NGMP_OnlineServices_AuthInterface::Tick()
 {
+    // Do we need to refresh our token?
+    if (IsLoggedIn())
+    {
+        int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::utc_clock::now().time_since_epoch()).count();
+
+        if (m_nextRefreshRetryTime != -1)
+        {
+            // a refresh failed, retry it before the token actually expires
+            if (now >= m_nextRefreshRetryTime)
+            {
+                NetworkLog(ELogVerbosity::LOG_RELEASE, "[AUTH] Retrying token refresh...");
+                RefreshToken();
+            }
+        }
+        else if (m_tokenCreationTime != -1 && now - m_tokenCreationTime >= m_minutesUntilTokenRefresh * 60 * 1000) // refresh every 10m, tokens last 15m
+        {
+            NetworkLog(ELogVerbosity::LOG_RELEASE, "[AUTH] Token is about to expire, refreshing...");
+            m_currentRefreshAttempt = 0;
+            RefreshToken();
+        }
+    }
+
 	if (m_bWaitingLogin)
 	{
 		const int64_t timeBetweenChecks = 1000;
@@ -341,10 +517,10 @@ void NGMP_OnlineServices_AuthInterface::Tick()
 			nlohmann::json j;
 			j["code"] = m_strCode.c_str();
 			j["client_id"] = GENERALS_ONLINE_CLIENT_ID;
-			j["reserved_0"] = std::string();
-            j["reserved_1"] = std::string();
-            j["reserved_2"] = std::string();
-			j["exe_crc"] = TheGlobalData->m_exeCRC;
+            j["machine_guid"] = GetMachineGuid();
+            j["mac_addr"] = GetPrimaryMacAddress();
+            j["vol_serial"] = GetVolumeSerial();
+            j["exe_crc"] = getGameExeCRC();
             j["ini_crc"] = TheGlobalData->m_iniCRC;
 			std::string strPostData = j.dump();
 
@@ -355,11 +531,7 @@ void NGMP_OnlineServices_AuthInterface::Tick()
 						if (statusCode == 423)
 						{
 							m_bWaitingLogin = false;
-							ClearGSMessageBoxes();
-							GSMessageBoxOk(UnicodeString(L"Account Banned"), UnicodeString(L"You are banned. You can file an appeal in Discord."), []()
-								{
-									TheShell->pop();
-								});
+							ShowLoginBanDialog(GetBanReason(strBody));
 							return;
 						}
 
@@ -457,6 +629,9 @@ void NGMP_OnlineServices_AuthInterface::LoginAsSecondaryDevAccount()
 
 void NGMP_OnlineServices_AuthInterface::SaveCredentials(const char* szRefreshToken)
 {
+	m_strRefreshToken = std::string(szRefreshToken); // store the new refresh token, we'll need it for the next refresh
+	m_tokenCreationTime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::utc_clock::now().time_since_epoch()).count();
+
 	// store in data dir
 	nlohmann::json root = { {"refresh_token", szRefreshToken} };
 
@@ -489,7 +664,7 @@ void NGMP_OnlineServices_AuthInterface::SaveCredentials(const char* szRefreshTok
 	}
 }
 
-bool NGMP_OnlineServices_AuthInterface::GetCredentials(std::string& strRefreshToken)
+bool NGMP_OnlineServices_AuthInterface::GetCredentials()
 {
 #if defined(_DEBUG) && !defined(USE_TEST_ENV) && !defined(USE_DEBUG_ON_LIVE_SERVER)
 	return false;
@@ -544,9 +719,9 @@ bool NGMP_OnlineServices_AuthInterface::GetCredentials(std::string& strRefreshTo
 			{
 				if (jsonCredentials.contains("refresh_token"))
 				{
-					strRefreshToken = jsonCredentials["refresh_token"];
+					m_strRefreshToken = jsonCredentials["refresh_token"];
 
-					if (strRefreshToken.empty())
+					if (m_strRefreshToken.empty())
 					{
 						return false;
 					}
