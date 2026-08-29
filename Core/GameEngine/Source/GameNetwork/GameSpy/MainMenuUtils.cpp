@@ -901,6 +901,11 @@ void StartPatchCheck()
 	NGMP_OnlineServicesManager::GetInstance()->StartVersionCheck([](bool bSuccess, bool bNeedsUpdate)
 		{
 			// Observer/plugin-dev builds never want the update gate, in any environment or flag state.
+			//
+			// NOTE: this verdict is useless as a "new release" signal. The version check sends a
+			// CRC32 of the whole exe file, and a locally built exe matches no official release, so
+			// the service answers NEEDS_UPDATE on every launch forever. Do not build notifications
+			// on it - it is an exe-identity check, not a release check.
 			// Workspace-local divergence - MUST NOT be pushed upstream (see CLAUDE.md).
 			bNeedsUpdate = false;
 			cantConnectBeforeOnline = !bSuccess;
